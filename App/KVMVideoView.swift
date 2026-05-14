@@ -37,6 +37,37 @@ final class KVMVideoView: NSView {
     /// Driven by an @AppStorage toggle in KVMWindowView.
     var hideCursorOverVideo: Bool = false
 
+    /// Trackpad-scroll accumulator. macOS trackpads fire at
+    /// 60-120 Hz with sub-detent deltas; emitting one HID wheel
+    /// report per NSEvent over-scrolls the host by an order of
+    /// magnitude. We accumulate fractional deltas (scaled down)
+    /// and drain integer detents at ~60 Hz via `wheelThrottler`.
+    /// Real-wheel input bypasses this and goes through the
+    /// existing `clampWheelDelta` path. See plan
+    /// `ok-let-s-go-back-humble-mountain.md` for the tuning
+    /// rationale.
+    private var wheelAccumulator = WheelAccumulator(
+        scale: KVMVideoView.wheelScale,
+        capPerEmit: KVMVideoView.wheelEmitCap
+    )
+    private var wheelThrottler = InputThrottler(interval: KVMVideoView.wheelEmitInterval)
+
+    /// Three tunable knobs for trackpad scroll. Pulled out as
+    /// statics so they're easy to find and adjust after real-
+    /// hardware testing.
+    /// - `wheelScale`: raw delta units per emitted detent.
+    ///   Calibrated for "slow 1s swipe ≈ 3 detents." Expect to
+    ///   bisect in 20-50 range.
+    /// - `wheelEmitCap`: max absolute detents per emit during
+    ///   sustained input. Bounds the per-frame jump on the host;
+    ///   residual drains in subsequent emit windows.
+    /// - `wheelEmitInterval`: ~60 Hz emit rate. Matches typical
+    ///   display refresh and the trackpad's own input rate, so
+    ///   we don't queue up multiple events per window.
+    private static let wheelScale: Double = 30
+    private static let wheelEmitCap: Int8 = 10
+    private static let wheelEmitInterval: Duration = .milliseconds(16)
+
     /// Cursor used inside `videoContentRect` while video is actually
     /// flowing — a 1×1 fully-transparent image. Avoids the
     /// double-cursor look (our local cursor + the host's cursor
@@ -233,26 +264,79 @@ final class KVMVideoView: NSView {
     override func otherMouseUp(with event: NSEvent) { sendPointer(event: event, motion: false) }
 
     override func scrollWheel(with event: NSEvent) {
-        // Match the JetKVM web frontend's clampWheel shape — ±1 per
-        // event for typical scroll, delta/100 for fast/accelerated
-        // scrolls. Keeping the per-NSEvent emission rate (60+ Hz on
-        // trackpad) instead of accumulating into bigger ticks gives
-        // the host a steady stream of small wheel reports, which
-        // feels smoother end-to-end than fewer/larger ones.
+        // NSEvent.scrollingDelta > 0 = user scrolled up; HID wheel
+        // positive = wheel rotated up = page scrolls up. Same sign,
+        // no negation needed (the web frontend negates because
+        // browser WheelEvent.deltaY uses the opposite convention).
+        if event.hasPreciseScrollingDeltas {
+            handleTrackpadScroll(event)
+        } else {
+            handleWheelScroll(event)
+        }
+    }
+
+    /// Trackpad / Magic Mouse swipe path. Accumulates fractional
+    /// `scrollingDelta` units and drains integer detents at the
+    /// `wheelEmitInterval` cadence — see `WheelAccumulator` for the
+    /// math. Flushes immediately at gesture end so the user's input
+    /// isn't held back by the throttle on the final frame.
+    private func handleTrackpadScroll(_ event: NSEvent) {
+        let phase = event.phase
+        let momentum = event.momentumPhase
+
+        // .began: clear stale residual from any prior gesture. Same
+        // for momentum's .began — a fresh momentum cycle is logically
+        // a continuation, but resetting here is harmless because the
+        // user's finger-down lifecycle already drained the gesture.
+        if phase.contains(.began) {
+            wheelAccumulator.reset()
+            wheelThrottler.reset()
+        }
+
+        // .cancelled: user told the OS to discard the gesture. Drop
+        // any accumulated detents on the floor; do not emit.
+        if phase.contains(.cancelled) {
+            wheelAccumulator.reset()
+            wheelThrottler.reset()
+            return
+        }
+
+        wheelAccumulator.add(
+            deltaY: Double(event.scrollingDeltaY),
+            deltaX: Double(event.scrollingDeltaX)
+        )
+
+        // Flush at terminal events regardless of the throttle so the
+        // last bit of accumulated motion lands on the host. Two
+        // terminal events: (a) finger lift without momentum, (b)
+        // momentum has finished decaying.
+        let fingerEndedWithoutMomentum = phase.contains(.ended) && momentum.isEmpty
+        let momentumEnded = momentum.contains(.ended)
+        let shouldFlush = fingerEndedWithoutMomentum || momentumEnded || wheelThrottler.shouldEmit()
+        guard shouldFlush else { return }
+
+        let (y, x) = wheelAccumulator.flushInteger()
+        if y != 0 || x != 0 {
+            session?.sendWheelReport(wheelY: y, wheelX: x)
+        }
+    }
+
+    /// Real-wheel path (USB mouse, scroll-wheel devices reporting
+    /// `hasPreciseScrollingDeltas == false`). Events arrive at
+    /// detent rate already, so we emit immediately per event using
+    /// the same `clampWheelDelta` shape the web frontend uses.
+    private func handleWheelScroll(_ event: NSEvent) {
         let yTick = Self.clampWheelDelta(event.scrollingDeltaY)
         let xTick = Self.clampWheelDelta(event.scrollingDeltaX)
         if yTick == 0 && xTick == 0 { return }
-        // NSEvent.scrollingDeltaY > 0 = user scrolled up; HID wheel
-        // positive = wheel rotated up = page scrolls up. Same sign,
-        // no negation needed (unlike the web frontend which negates
-        // because browser WheelEvent.deltaY uses the opposite
-        // convention).
         session?.sendWheelReport(wheelY: yTick, wheelX: xTick)
     }
 
-    /// Mirror of `useMouse.ts`'s `clampWheel`. Maps an NSEvent /
-    /// WheelEvent delta to a small Int8 wheel tick: ±1 for normal
-    /// scroll, `delta/100` for very fast (`|delta| >= 100`) scroll.
+    /// Mirror of `useMouse.ts`'s `clampWheel`. Maps a non-precise
+    /// (real-wheel) NSEvent delta to a small Int8 wheel tick: ±1
+    /// for normal detents, `delta/100` for very fast (|delta| ≥ 100)
+    /// wheel spins. Used only on the non-precise path; trackpad
+    /// input uses `WheelAccumulator` instead.
     private static func clampWheelDelta(_ delta: CGFloat) -> Int8 {
         if delta == 0 { return 0 }
         let scaled: CGFloat
