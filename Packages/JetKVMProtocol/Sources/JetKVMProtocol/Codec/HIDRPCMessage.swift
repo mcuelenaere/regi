@@ -8,11 +8,12 @@ import Foundation
 /// `internal/hidrpc/hidrpc.go:13-25` and per-message payload shapes in
 /// `internal/hidrpc/message.go`.
 ///
-/// Opcode 0x04 (`WheelReport`) is firmware-version-gated. Newer
-/// firmware advertises it via `DeviceMetadata.supportedHIDRPCOpcodes`;
-/// older firmware silently drops unknown opcodes. Session.sendWheelReport
-/// branches on the advertisement and falls back to the JSON-RPC
-/// `wheelReport` method when the binary opcode isn't supported.
+/// Opcode 0x04 (`WheelReport`) is firmware-version-gated. JetKVM
+/// firmware >= 0.5.9 dispatches it; older firmware silently drops
+/// unknown opcodes. `Session.sendWheelReport` checks
+/// `DeviceMetadata.firmwareIsAtLeast(...)` and falls back to the
+/// JSON-RPC `wheelReport` method when the binary opcode isn't
+/// supported.
 public enum HIDRPCMessage: Sendable, Equatable {
     /// HID-RPC protocol version. The server enforces a handshake on the
     /// `hidrpc` channel before it'll act on any input.

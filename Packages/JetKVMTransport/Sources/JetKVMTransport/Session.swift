@@ -110,6 +110,12 @@ public final class Session {
     public private(set) var statsHistory: [ConnectionStats] = []
     public static let maxStatsHistory = 60
 
+    /// Minimum JetKVM firmware version that dispatches the binary
+    /// `wheelReport` opcode (0x04) over the HID-RPC channel. Older
+    /// firmware silently drops unknown opcodes, so the JSON-RPC
+    /// `wheelReport` method is used below this version.
+    public static let binaryWheelMinVersion = "0.5.9"
+
     private var endpoint: DeviceEndpoint?
     private var http: HTTPClient?
     private var signaling: SignalingClient?
@@ -429,17 +435,23 @@ public final class Session {
     }
 
     /// Forward a scroll-wheel event. Routes through the binary
-    /// `wheelReport` opcode on the unreliable-ordered HID channel when
-    /// the firmware advertises it (saves ~70 bytes/event vs JSON-RPC,
-    /// drops the per-event JSON parse on the device, and rides the
-    /// drop-tolerant channel mouse motion uses). Falls back to the
-    /// JSON-RPC `wheelReport` method on older firmware that doesn't
-    /// advertise `0x04` in `supportedHIDRPCOpcodes`. Fire-and-forget;
-    /// failures are logged but not propagated, matching sendKeypress /
-    /// sendPointer semantics so call sites don't have to await.
+    /// `wheelReport` opcode (0x04) on the unreliable-ordered HID
+    /// channel when the firmware is recent enough to dispatch it
+    /// (saves ~70 bytes/event vs JSON-RPC, drops the per-event JSON
+    /// parse on the device, and rides the drop-tolerant channel mouse
+    /// motion uses). Falls back to the JSON-RPC `wheelReport` method
+    /// on older firmware.
+    ///
+    /// Gating is by firmware version (>= 0.5.9 ships the binary
+    /// dispatch handler) rather than a runtime capability
+    /// advertisement — no opcode-list field exists in the
+    /// `device-metadata` payload and there's no plan to add one
+    /// upstream. Fire-and-forget; failures are logged but not
+    /// propagated, matching sendKeypress / sendPointer semantics so
+    /// call sites don't have to await.
     public func sendWheelReport(wheelY: Int8, wheelX: Int8) {
         if wheelY == 0 && wheelX == 0 { return }
-        let useBinary = deviceMetadata?.supportedHIDRPCOpcodes?.contains(0x04) == true
+        let useBinary = deviceMetadata?.firmwareIsAtLeast(Self.binaryWheelMinVersion) == true
         if useBinary {
             guard hidReady, let webrtc else { return }
             let message = HIDRPCMessage.wheelReport(deltaY: wheelY, deltaX: wheelX)

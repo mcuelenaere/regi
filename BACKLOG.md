@@ -5,33 +5,6 @@ to be picked up cold without re-litigating the original investigation.
 
 ---
 
-## Binary HID-RPC opcode for wheel — awaiting firmware release
-
-Client-side work is done. `Session.sendWheelReport` branches on
-`DeviceMetadata.supportedHIDRPCOpcodes` and prefers the binary
-`wheelReport` (0x04) frame on `hidrpc-unreliable-ordered` when
-the firmware advertises it. Older firmware that omits the
-capability field keeps using the JSON-RPC `wheelReport` method.
-
-**Firmware status:** dispatch + capability advertisement added on
-the upstream branch `claude/priceless-hellman-d92f06` (jetkvm
-repo). Waiting on merge + a tagged firmware release before any
-user-facing device actually exercises the binary path. Until
-then the fallback covers production.
-
-**Verification when a firmware release ships:**
-
-1. Update a JetKVM to a build that includes the dispatch.
-2. Confirm via `console.log` / WS inspection that
-   `device-metadata` carries `supportedHIDRPCOpcodes` containing
-   `0x04`.
-3. Scroll-test on real hardware; verify wire frames flow on
-   `hidrpc-unreliable-ordered` (3-byte `[0x04][deltaY][deltaX]`)
-   instead of as JSON-RPC `wheelReport` calls on the rpc
-   channel.
-
----
-
 ## Clipboard sync between client and host (feasibility limited)
 
 **Why this is harder for a hardware KVM than for a VM.** All the

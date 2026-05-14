@@ -33,63 +33,56 @@ final class SignalingMessageTests: XCTestCase {
         XCTAssertEqual(msg, .deviceMetadata(DeviceMetadata(deviceVersion: "")))
     }
 
-    func testDecodeDeviceMetadataWithSupportedOpcodes() throws {
-        // Go's `encoding/json` serializes []byte as base64. SupportedInputOpcodes()
-        // returns {0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09} which is
-        // base64 "AgMEBQYHCAk=".
-        let json = #"""
-        {"type":"device-metadata","data":{"deviceVersion":"v0.5.0","supportedHIDRPCOpcodes":"AgMEBQYHCAk="}}
-        """#.data(using: .utf8)!
-        let msg = try decoder.decode(SignalingMessage.self, from: json)
-        guard case .deviceMetadata(let metadata) = msg else {
-            return XCTFail("expected deviceMetadata, got \(msg)")
-        }
-        XCTAssertEqual(metadata.deviceVersion, "v0.5.0")
-        XCTAssertEqual(
-            metadata.supportedHIDRPCOpcodes,
-            Set<UInt8>([0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09])
-        )
+    // MARK: - firmwareIsAtLeast
+
+    func testFirmwareIsAtLeastEqualPasses() {
+        let m = DeviceMetadata(deviceVersion: "0.5.9")
+        XCTAssertTrue(m.firmwareIsAtLeast("0.5.9"))
     }
 
-    func testDecodeDeviceMetadataAbsentOpcodesIsNil() throws {
-        // Legacy firmware leaves the field off entirely.
-        let json = #"""
-        {"type":"device-metadata","data":{"deviceVersion":"v0.4.7"}}
-        """#.data(using: .utf8)!
-        let msg = try decoder.decode(SignalingMessage.self, from: json)
-        guard case .deviceMetadata(let metadata) = msg else {
-            return XCTFail("expected deviceMetadata, got \(msg)")
-        }
-        XCTAssertNil(metadata.supportedHIDRPCOpcodes)
+    func testFirmwareIsAtLeastHigherPatchPasses() {
+        let m = DeviceMetadata(deviceVersion: "0.5.10")
+        XCTAssertTrue(m.firmwareIsAtLeast("0.5.9"))
     }
 
-    func testDecodeDeviceMetadataMalformedBase64IsNil() throws {
-        // Garbled base64 shouldn't fail the whole metadata decode —
-        // we'd rather fall back to the JSON-RPC path than crash the
-        // connect flow.
-        let json = #"""
-        {"type":"device-metadata","data":{"deviceVersion":"v0.5.0","supportedHIDRPCOpcodes":"not-base64!!!"}}
-        """#.data(using: .utf8)!
-        let msg = try decoder.decode(SignalingMessage.self, from: json)
-        guard case .deviceMetadata(let metadata) = msg else {
-            return XCTFail("expected deviceMetadata, got \(msg)")
-        }
-        XCTAssertNil(metadata.supportedHIDRPCOpcodes)
+    func testFirmwareIsAtLeastLowerPatchFails() {
+        let m = DeviceMetadata(deviceVersion: "0.5.8")
+        XCTAssertFalse(m.firmwareIsAtLeast("0.5.9"))
     }
 
-    func testEncodeDeviceMetadataWithOpcodesRoundTrip() throws {
-        // Round-trip: encode our model, decode it back, expect equality.
-        // Sorted-keys output makes the test deterministic. Sorting the
-        // opcode set inside encode() means the base64 output is also
-        // deterministic.
-        let original = DeviceMetadata(
-            deviceVersion: "v0.5.0",
-            supportedHIDRPCOpcodes: [0x02, 0x04, 0x06]
-        )
-        let envelope = SignalingMessage.deviceMetadata(original)
-        let data = try encoder.encode(envelope)
-        let decoded = try decoder.decode(SignalingMessage.self, from: data)
-        XCTAssertEqual(decoded, envelope)
+    func testFirmwareIsAtLeastHigherMinorPasses() {
+        let m = DeviceMetadata(deviceVersion: "0.6.0")
+        XCTAssertTrue(m.firmwareIsAtLeast("0.5.9"))
+    }
+
+    func testFirmwareIsAtLeastHigherMajorPasses() {
+        let m = DeviceMetadata(deviceVersion: "1.0.0")
+        XCTAssertTrue(m.firmwareIsAtLeast("0.5.9"))
+    }
+
+    func testFirmwareIsAtLeastStripsLeadingV() {
+        let m = DeviceMetadata(deviceVersion: "v0.5.9")
+        XCTAssertTrue(m.firmwareIsAtLeast("0.5.9"))
+        XCTAssertTrue(m.firmwareIsAtLeast("v0.5.9"))
+    }
+
+    func testFirmwareIsAtLeastShortVersionPadsWithZeros() {
+        // "0.5" treated as "0.5.0" → less than "0.5.9".
+        XCTAssertFalse(DeviceMetadata(deviceVersion: "0.5").firmwareIsAtLeast("0.5.9"))
+        // "0.5.9" trivially >= "0.5" (i.e. "0.5.0").
+        XCTAssertTrue(DeviceMetadata(deviceVersion: "0.5.9").firmwareIsAtLeast("0.5"))
+    }
+
+    func testFirmwareIsAtLeastFailsClosedOnEmpty() {
+        // Legacy firmware sends an empty deviceVersion; we already
+        // treat that as a hard error elsewhere, but the gate must
+        // stay off so it can't accidentally trip a feature path.
+        XCTAssertFalse(DeviceMetadata(deviceVersion: "").firmwareIsAtLeast("0.5.9"))
+    }
+
+    func testFirmwareIsAtLeastFailsClosedOnNonNumeric() {
+        XCTAssertFalse(DeviceMetadata(deviceVersion: "garbage").firmwareIsAtLeast("0.5.9"))
+        XCTAssertFalse(DeviceMetadata(deviceVersion: "0.5.x").firmwareIsAtLeast("0.5.9"))
     }
 
     // MARK: - offer

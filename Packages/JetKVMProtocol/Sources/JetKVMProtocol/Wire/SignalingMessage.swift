@@ -27,43 +27,44 @@ public enum SignalingMessage: Sendable, Equatable {
 /// Initial server→client message.
 public struct DeviceMetadata: Codable, Sendable, Equatable {
     public let deviceVersion: String
-    /// HID-RPC opcodes the firmware actually dispatches on the binary
-    /// channel. `nil` on older firmware that doesn't advertise the
-    /// field — callers should fall back to the JSON-RPC path for any
-    /// opcode that isn't in this set. Wire shape is `[]byte` server-
-    /// side, which Go's `encoding/json` serializes as a base64 string.
-    public let supportedHIDRPCOpcodes: Set<UInt8>?
 
-    public init(deviceVersion: String, supportedHIDRPCOpcodes: Set<UInt8>? = nil) {
+    public init(deviceVersion: String) {
         self.deviceVersion = deviceVersion
-        self.supportedHIDRPCOpcodes = supportedHIDRPCOpcodes
     }
 
-    private enum CodingKeys: String, CodingKey {
-        case deviceVersion
-        case supportedHIDRPCOpcodes
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.deviceVersion = try container.decode(String.self, forKey: .deviceVersion)
-        if let base64 = try container.decodeIfPresent(String.self, forKey: .supportedHIDRPCOpcodes),
-           let bytes = Data(base64Encoded: base64) {
-            self.supportedHIDRPCOpcodes = Set(bytes)
-        } else {
-            self.supportedHIDRPCOpcodes = nil
+    /// True iff `deviceVersion` parses as a dotted-numeric version
+    /// (with an optional leading `v`) and is >= `minVersion`. Used to
+    /// gate features by JetKVM firmware version when there's no
+    /// runtime capability advertisement to lean on.
+    ///
+    /// Fail-closed: returns `false` if either side fails to parse, so
+    /// an ambiguous version string leaves feature gates off rather
+    /// than maybe-on.
+    public func firmwareIsAtLeast(_ minVersion: String) -> Bool {
+        guard let lhs = Self.parseVersion(deviceVersion),
+              let rhs = Self.parseVersion(minVersion) else {
+            return false
         }
+        // Compare component-by-component, padding the shorter side
+        // with zeros: "0.5" == "0.5.0" < "0.5.9".
+        let maxLen = max(lhs.count, rhs.count)
+        for i in 0..<maxLen {
+            let l = i < lhs.count ? lhs[i] : 0
+            let r = i < rhs.count ? rhs[i] : 0
+            if l != r { return l > r }
+        }
+        return true
     }
 
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(deviceVersion, forKey: .deviceVersion)
-        if let opcodes = supportedHIDRPCOpcodes {
-            // Match the firmware's wire shape so round-trip tests pass:
-            // []byte → base64 string.
-            let data = Data(opcodes.sorted())
-            try container.encode(data.base64EncodedString(), forKey: .supportedHIDRPCOpcodes)
+    private static func parseVersion(_ s: String) -> [Int]? {
+        let stripped = s.hasPrefix("v") ? String(s.dropFirst()) : s
+        guard !stripped.isEmpty else { return nil }
+        var result: [Int] = []
+        for part in stripped.split(separator: ".") {
+            guard let n = Int(part) else { return nil }
+            result.append(n)
         }
+        return result.isEmpty ? nil : result
     }
 }
 
