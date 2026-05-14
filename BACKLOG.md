@@ -5,36 +5,30 @@ to be picked up cold without re-litigating the original investigation.
 
 ---
 
-## Improve scroll performance for trackpads (e.g. MacBook Pro)
+## Binary HID-RPC opcode for wheel — awaiting firmware release
 
-**Symptom:** trackpad scrolling on the host feels chunky and
-bursty. A real scroll wheel feels fine — it fires at ~5-10
-detents/sec, one tick per detent. macOS trackpads fire
-`NSEvent.scrollWheel` at 60-120Hz, and our per-event JSON-RPC
-`wheelReport` (`Session.sendWheelReport` →
-`Session+RPC.sendWheelReportRPC`) eats real time on encode +
-WebRTC SCTP transit + decode + dispatch on the host. TigerVNC's
-VNC fork doesn't exhibit this on the same hardware because its
-wheel path is an in-process call — no per-tick parsing overhead.
+Client-side work is done. `Session.sendWheelReport` branches on
+`DeviceMetadata.supportedHIDRPCOpcodes` and prefers the binary
+`wheelReport` (0x04) frame on `hidrpc-unreliable-ordered` when
+the firmware advertises it. Older firmware that omits the
+capability field keeps using the JSON-RPC `wheelReport` method.
 
-**Two paths, roughly cheapest first:**
+**Firmware status:** dispatch + capability advertisement added on
+the upstream branch `claude/priceless-hellman-d92f06` (jetkvm
+repo). Waiting on merge + a tagged firmware release before any
+user-facing device actually exercises the binary path. Until
+then the fallback covers production.
 
-1. **Client-side coalescing in `KVMVideoView.scrollWheel`.**
-   Accumulate deltas over a ~16ms window, fire one `wheelReport`
-   per window with the summed deltas. JetKVM's web frontend
-   already does this (its `scrollThrottling` setting). Pure
-   client change, no server impact, probably enough on its own.
+**Verification when a firmware release ships:**
 
-2. **Binary HID-RPC opcode for wheel.** `internal/hidrpc/hidrpc.go`
-   already defines `TypeWheelReport = 0x04` but the dispatch is
-   missing from `handleHidRPCMessage`'s switch — every wheel
-   tick takes the JSON-RPC slow path instead. A two-byte binary
-   frame over the unreliable-ordered HID channel would skip JSON
-   entirely. Requires an upstream JetKVM patch; client side is
-   ~3 small edits in `JetKVMProtocol/Codec/HIDRPCMessage.swift`,
-   `Session.sendWheelReport`, and `KVMVideoView.scrollWheel`.
-
-Measure before doing both — coalescing alone may close the gap.
+1. Update a JetKVM to a build that includes the dispatch.
+2. Confirm via `console.log` / WS inspection that
+   `device-metadata` carries `supportedHIDRPCOpcodes` containing
+   `0x04`.
+3. Scroll-test on real hardware; verify wire frames flow on
+   `hidrpc-unreliable-ordered` (3-byte `[0x04][deltaY][deltaX]`)
+   instead of as JSON-RPC `wheelReport` calls on the rpc
+   channel.
 
 ---
 

@@ -8,12 +8,11 @@ import Foundation
 /// `internal/hidrpc/hidrpc.go:13-25` and per-message payload shapes in
 /// `internal/hidrpc/message.go`.
 ///
-/// Opcode 0x04 (`WheelReport`) is reserved server-side but has no
-/// encoder/decoder/handler on the binary HID-RPC channel (verified
-/// 2026-05). Scroll wheel support is delivered through the JSON-RPC
-/// channel instead — the server exposes a `wheelReport(wheelY, wheelX)`
-/// method that funnels into the same `gadget.{Abs,Rel}MouseWheelReport`
-/// HID gadget call. Session.sendWheelReport(...) is the typed wrapper.
+/// Opcode 0x04 (`WheelReport`) is firmware-version-gated. Newer
+/// firmware advertises it via `DeviceMetadata.supportedHIDRPCOpcodes`;
+/// older firmware silently drops unknown opcodes. Session.sendWheelReport
+/// branches on the advertisement and falls back to the JSON-RPC
+/// `wheelReport` method when the binary opcode isn't supported.
 public enum HIDRPCMessage: Sendable, Equatable {
     /// HID-RPC protocol version. The server enforces a handshake on the
     /// `hidrpc` channel before it'll act on any input.
@@ -39,6 +38,11 @@ public enum HIDRPCMessage: Sendable, Equatable {
     /// 0..32767 over the full video frame; buttons is the boot-mouse
     /// button bitmask.
     case pointerReport(x: Int32, y: Int32, buttons: UInt8)
+
+    /// 0x04. Scroll-wheel detents. `deltaY` is the vertical wheel,
+    /// `deltaX` the horizontal one — both signed bytes. Firmware-
+    /// gated; see the type-doc above.
+    case wheelReport(deltaY: Int8, deltaX: Int8)
 
     /// 0x05. Single key press/release.
     case keypressReport(key: UInt8, pressed: Bool)
@@ -110,6 +114,7 @@ extension HIDRPCMessage {
         case .handshake: return 0x01
         case .keyboardReport: return 0x02
         case .pointerReport: return 0x03
+        case .wheelReport: return 0x04
         case .keypressReport: return 0x05
         case .mouseReport: return 0x06
         case .keyboardMacroReport: return 0x07
@@ -135,6 +140,9 @@ extension HIDRPCMessage {
             out.appendBigEndian(x)
             out.appendBigEndian(y)
             out.append(buttons)
+        case .wheelReport(let deltaY, let deltaX):
+            out.append(UInt8(bitPattern: deltaY))
+            out.append(UInt8(bitPattern: deltaX))
         case .keypressReport(let key, let pressed):
             out.append(key)
             out.append(pressed ? 0x01 : 0x00)
@@ -188,6 +196,17 @@ extension HIDRPCMessage {
                 x: Int32(bigEndianAt: payload, offset: 0),
                 y: Int32(bigEndianAt: payload, offset: 4),
                 buttons: payload[8]
+            )
+
+        case 0x04:
+            // Server validates `len(m.d) != 2` strictly
+            // (internal/hidrpc/message.go:209).
+            guard payload.count == 2 else {
+                throw HIDRPCDecodingError.truncated(messageType: type, expectedAtLeast: 2, actual: payload.count)
+            }
+            self = .wheelReport(
+                deltaY: Int8(bitPattern: payload[0]),
+                deltaX: Int8(bitPattern: payload[1])
             )
 
         case 0x05:

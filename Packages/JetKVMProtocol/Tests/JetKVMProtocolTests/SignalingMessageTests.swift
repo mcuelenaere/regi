@@ -33,6 +33,65 @@ final class SignalingMessageTests: XCTestCase {
         XCTAssertEqual(msg, .deviceMetadata(DeviceMetadata(deviceVersion: "")))
     }
 
+    func testDecodeDeviceMetadataWithSupportedOpcodes() throws {
+        // Go's `encoding/json` serializes []byte as base64. SupportedInputOpcodes()
+        // returns {0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09} which is
+        // base64 "AgMEBQYHCAk=".
+        let json = #"""
+        {"type":"device-metadata","data":{"deviceVersion":"v0.5.0","supportedHIDRPCOpcodes":"AgMEBQYHCAk="}}
+        """#.data(using: .utf8)!
+        let msg = try decoder.decode(SignalingMessage.self, from: json)
+        guard case .deviceMetadata(let metadata) = msg else {
+            return XCTFail("expected deviceMetadata, got \(msg)")
+        }
+        XCTAssertEqual(metadata.deviceVersion, "v0.5.0")
+        XCTAssertEqual(
+            metadata.supportedHIDRPCOpcodes,
+            Set<UInt8>([0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09])
+        )
+    }
+
+    func testDecodeDeviceMetadataAbsentOpcodesIsNil() throws {
+        // Legacy firmware leaves the field off entirely.
+        let json = #"""
+        {"type":"device-metadata","data":{"deviceVersion":"v0.4.7"}}
+        """#.data(using: .utf8)!
+        let msg = try decoder.decode(SignalingMessage.self, from: json)
+        guard case .deviceMetadata(let metadata) = msg else {
+            return XCTFail("expected deviceMetadata, got \(msg)")
+        }
+        XCTAssertNil(metadata.supportedHIDRPCOpcodes)
+    }
+
+    func testDecodeDeviceMetadataMalformedBase64IsNil() throws {
+        // Garbled base64 shouldn't fail the whole metadata decode —
+        // we'd rather fall back to the JSON-RPC path than crash the
+        // connect flow.
+        let json = #"""
+        {"type":"device-metadata","data":{"deviceVersion":"v0.5.0","supportedHIDRPCOpcodes":"not-base64!!!"}}
+        """#.data(using: .utf8)!
+        let msg = try decoder.decode(SignalingMessage.self, from: json)
+        guard case .deviceMetadata(let metadata) = msg else {
+            return XCTFail("expected deviceMetadata, got \(msg)")
+        }
+        XCTAssertNil(metadata.supportedHIDRPCOpcodes)
+    }
+
+    func testEncodeDeviceMetadataWithOpcodesRoundTrip() throws {
+        // Round-trip: encode our model, decode it back, expect equality.
+        // Sorted-keys output makes the test deterministic. Sorting the
+        // opcode set inside encode() means the base64 output is also
+        // deterministic.
+        let original = DeviceMetadata(
+            deviceVersion: "v0.5.0",
+            supportedHIDRPCOpcodes: [0x02, 0x04, 0x06]
+        )
+        let envelope = SignalingMessage.deviceMetadata(original)
+        let data = try encoder.encode(envelope)
+        let decoded = try decoder.decode(SignalingMessage.self, from: data)
+        XCTAssertEqual(decoded, envelope)
+    }
+
     // MARK: - offer
 
     func testEncodeOfferWrapsSdpInSdField() throws {

@@ -109,6 +109,36 @@ final class HIDRPCMessageTests: XCTestCase {
         XCTAssertThrowsError(try HIDRPCMessage(wireFormat: Data([0x05, 0x04])))
     }
 
+    // MARK: - WheelReport (0x04) — 2-byte payload, signed int8 deltas
+
+    func testEncodeWheelReportPositiveDeltas() {
+        let msg = HIDRPCMessage.wheelReport(deltaY: 3, deltaX: 1)
+        XCTAssertEqual(msg.wireFormat, Data([0x04, 0x03, 0x01]))
+    }
+
+    func testEncodeWheelReportNegativeDeltas() {
+        // -1 + Int8.min two's-complement
+        let msg = HIDRPCMessage.wheelReport(deltaY: -1, deltaX: -128)
+        XCTAssertEqual(msg.wireFormat, Data([0x04, 0xFF, 0x80]))
+    }
+
+    func testRoundTripWheelReportAllSignedRange() throws {
+        for dy in [Int8.min, -1, 0, 1, Int8.max] {
+            for dx in [Int8.min, -1, 0, 1, Int8.max] {
+                let original = HIDRPCMessage.wheelReport(deltaY: dy, deltaX: dx)
+                let decoded = try HIDRPCMessage(wireFormat: original.wireFormat)
+                XCTAssertEqual(decoded, original, "deltaY=\(dy), deltaX=\(dx)")
+            }
+        }
+    }
+
+    func testWheelReportShortPayloadFails() {
+        // Server rejects anything but exactly 2 payload bytes
+        // (internal/hidrpc/message.go:209). Match that strictly.
+        XCTAssertThrowsError(try HIDRPCMessage(wireFormat: Data([0x04, 0x01])))
+        XCTAssertThrowsError(try HIDRPCMessage(wireFormat: Data([0x04, 0x01, 0x02, 0x03])))
+    }
+
     // MARK: - MouseReport (0x06) — 3-byte payload, signed int8 deltas
 
     func testEncodeMouseReportPositiveDeltas() {
@@ -249,6 +279,7 @@ final class HIDRPCMessageTests: XCTestCase {
             (.handshake(version: 0x01), 0x01),
             (.keyboardReport(modifier: 0, keys: []), 0x02),
             (.pointerReport(x: 0, y: 0, buttons: 0), 0x03),
+            (.wheelReport(deltaY: 0, deltaX: 0), 0x04),
             (.keypressReport(key: 0, pressed: false), 0x05),
             (.mouseReport(dx: 0, dy: 0, buttons: 0), 0x06),
             (.keyboardMacroReport(

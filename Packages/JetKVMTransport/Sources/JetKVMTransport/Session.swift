@@ -428,20 +428,30 @@ public final class Session {
         }
     }
 
-    /// Forward a scroll-wheel event. Routes through JSON-RPC's
-    /// `wheelReport` rather than the binary HID-RPC channel — the
-    /// binary opcode for wheel reports is unimplemented server-side
-    /// (see HIDRPCMessage.swift). Fire-and-forget; failures are
-    /// logged but not propagated, matching sendKeypress / sendPointer
-    /// semantics so call sites don't have to await.
+    /// Forward a scroll-wheel event. Routes through the binary
+    /// `wheelReport` opcode on the unreliable-ordered HID channel when
+    /// the firmware advertises it (saves ~70 bytes/event vs JSON-RPC,
+    /// drops the per-event JSON parse on the device, and rides the
+    /// drop-tolerant channel mouse motion uses). Falls back to the
+    /// JSON-RPC `wheelReport` method on older firmware that doesn't
+    /// advertise `0x04` in `supportedHIDRPCOpcodes`. Fire-and-forget;
+    /// failures are logged but not propagated, matching sendKeypress /
+    /// sendPointer semantics so call sites don't have to await.
     public func sendWheelReport(wheelY: Int8, wheelX: Int8) {
-        guard rpcReady else { return }
         if wheelY == 0 && wheelX == 0 { return }
-        Task { [weak self] in
-            do {
-                try await self?.sendWheelReportRPC(wheelY: wheelY, wheelX: wheelX)
-            } catch {
-                log.error("wheelReport(y=\(wheelY, privacy: .public), x=\(wheelX, privacy: .public)) failed: \(describe(error), privacy: .public)")
+        let useBinary = deviceMetadata?.supportedHIDRPCOpcodes?.contains(0x04) == true
+        if useBinary {
+            guard hidReady, let webrtc else { return }
+            let message = HIDRPCMessage.wheelReport(deltaY: wheelY, deltaX: wheelX)
+            Task { await webrtc.sendHID(message, on: .unreliableOrdered) }
+        } else {
+            guard rpcReady else { return }
+            Task { [weak self] in
+                do {
+                    try await self?.sendWheelReportRPC(wheelY: wheelY, wheelX: wheelX)
+                } catch {
+                    log.error("wheelReport(y=\(wheelY, privacy: .public), x=\(wheelX, privacy: .public)) failed: \(describe(error), privacy: .public)")
+                }
             }
         }
     }
