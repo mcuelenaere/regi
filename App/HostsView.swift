@@ -5,14 +5,6 @@ extension Notification.Name {
     /// shortcut). HostsView listens via .onReceive and presents the
     /// add-host sheet — the same one the toolbar's `+` button opens.
     static let regiAddHost = Notification.Name("RegiAddHost")
-
-    /// Posted by the `Window > Hosts` command (⌘0) and from
-    /// AppDelegate's `applicationShouldHandleReopen` (dock-icon
-    /// click). KVMSessionWindow listens via .onReceive and calls
-    /// `openWindow(id: "hosts")` — needed because the hosts
-    /// window's WindowGroup can't be opened from a Commands
-    /// closure when the AppDelegate is the trigger.
-    static let regiShowHosts = Notification.Name("RegiShowHosts")
 }
 
 /// Root window: list of saved hosts plus mDNS-discovered devices on
@@ -92,13 +84,6 @@ struct HostsView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .regiAddHost)) { _ in
             showingAdd = true
-        }
-        // Dock-icon right-click → "Show Hosts" → AppDelegate posts
-        // this. When the hosts window is already open and we're in
-        // the tree, `openWindow(id: "hosts")` is the canonical way
-        // to bring this single-instance window forward.
-        .onReceive(NotificationCenter.default.publisher(for: .regiShowHosts)) { _ in
-            openWindow(id: "hosts")
         }
         .sheet(item: $editing) { host in
             HostFormSheet(

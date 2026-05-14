@@ -27,7 +27,6 @@ struct KVMSessionWindow: View {
     /// which costs an IDR on resume).
     private static let pauseDebounce: Duration = .seconds(5)
     @Environment(\.dismissWindow) private var dismissWindow
-    @Environment(\.openWindow) private var openWindow
     @Environment(TrustedHostStore.self) private var trustStore
 
     var body: some View {
@@ -128,20 +127,6 @@ struct KVMSessionWindow: View {
         ) { note in
             guard (note.object as? NSWindow) === ownWindow else { return }
             updateBandwidthGate()
-        }
-        // `Window > Hosts` (⌘0) and the dock-icon reopen both post
-        // this notification. We translate it to `openWindow(id:
-        // "hosts")` here because AppDelegate doesn't have access to
-        // SwiftUI's openWindow environment value. The hosts window
-        // group is single-instance, so openWindow either brings an
-        // existing hosts window forward or creates a fresh one —
-        // either way the user is back at the host list.
-        //
-        // We accept that every open session window will react to
-        // each notification; openWindow is idempotent so the
-        // duplicate calls are harmless.
-        .onReceive(NotificationCenter.default.publisher(for: .regiShowHosts)) { _ in
-            openWindow(id: "hosts")
         }
     }
 

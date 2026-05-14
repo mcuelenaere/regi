@@ -1,5 +1,8 @@
 import SwiftUI
 import JetKVMTransport
+import OSLog
+
+private let log = Logger(subsystem: "app.regi.mac", category: "app")
 
 /// Identifier for a KVM session window. Carries the full set of
 /// fields needed to connect (display name + endpoint) so the same
@@ -46,13 +49,37 @@ struct KVMSessionWindowID: Hashable, Codable {
 }
 
 /// Bridges SwiftUI's App lifecycle to a small NSApplicationDelegate.
-/// Used to opt into "quit when the last window closes" and to add
-/// a "Show Hosts" item to the dock-icon right-click menu so the
-/// user can re-summon the hosts window after closing it (while a
-/// session window keeps the app alive).
+/// Implements Sublime-style window management:
+///   - Closing the last window leaves the app alive (returning `false`
+///     from `applicationShouldTerminateAfterLastWindowClosed`).
+///   - Clicking the dock icon when no windows are visible reopens the
+///     Hosts window (`applicationShouldHandleReopen`).
+///   - Dock right-click adds a "Show Hosts" entry that does the same.
+///
+/// `openWindow(id:)` lives on the SwiftUI environment and isn't
+/// reachable from a plain NSObject. To reopen Hosts from any windowing
+/// state — including "no windows alive, no views to receive a
+/// notification" — we invoke the SwiftUI-auto-generated `Window >
+/// Hosts` menu item via `NSApp.sendAction`. SwiftUI registers that
+/// item for every `Window` scene and it ends up calling
+/// `openWindow(id: "hosts")` under the hood whether or not an
+/// instance currently exists.
 private final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        true
+        false
+    }
+
+    /// Dock left-click reopen handler. When no windows are visible,
+    /// open Hosts; otherwise let macOS perform its standard behaviour
+    /// (bring app forward, no extra window).
+    func applicationShouldHandleReopen(
+        _ sender: NSApplication,
+        hasVisibleWindows flag: Bool
+    ) -> Bool {
+        if !flag {
+            openHostsViaMenu()
+        }
+        return true
     }
 
     /// Items to add to the dock icon's right-click menu. The
@@ -70,14 +97,28 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         return menu
     }
 
-    /// `openWindow(id:)` lives on the SwiftUI environment and
-    /// can't be reached from a plain NSObject, so we post a
-    /// notification HostsView / KVMSessionWindow pick up. The
-    /// hosts scene is a `Window` (single-instance), so the
-    /// resulting `openWindow(id: "hosts")` either brings the
-    /// existing window forward or opens a fresh one.
     @objc private func showHosts(_ sender: Any?) {
-        NotificationCenter.default.post(name: .regiShowHosts, object: nil)
+        openHostsViaMenu()
+    }
+
+    /// Look up the SwiftUI-auto-generated `Window > Hosts` item by its
+    /// localized title and trigger it. Works regardless of whether the
+    /// hosts window is currently open, closed, or never opened this
+    /// session — SwiftUI's underlying action calls
+    /// `openWindow(id: "hosts")`.
+    private func openHostsViaMenu() {
+        guard let windowsMenu = NSApp.windowsMenu else {
+            log.error("openHostsViaMenu: NSApp.windowsMenu is nil — cannot reopen Hosts")
+            return
+        }
+        let target = String(localized: "Hosts")
+        for item in windowsMenu.items where item.title == target {
+            if let action = item.action {
+                NSApp.sendAction(action, to: item.target, from: self)
+                return
+            }
+        }
+        log.error("openHostsViaMenu: no 'Hosts' item in Window menu — SwiftUI menu structure may have changed")
     }
 }
 
@@ -108,7 +149,11 @@ extension FocusedValues {
 /// "New KVM Session Window" entries — both wrong: hosts is single-
 /// instance, session windows are opened by selecting a host).
 ///
-/// Menu contents switch based on which window is frontmost:
+/// Top entry is always "Show Hosts" (⇧⌘H) so the launcher is one
+/// keystroke away regardless of focus — matches the dock right-click
+/// item and lets the user reopen Hosts from a session window or from
+/// the menu bar when no window is frontmost. Below that, menu
+/// contents switch based on which window is frontmost:
 ///   - hosts window focused   → "Add Host…"
 ///   - KVM session focused    → "Show Controls" / "Show Connection
 ///                              Stats" (no "Disconnect" — ⌘W close-
@@ -116,9 +161,17 @@ extension FocusedValues {
 ///                              down via KVMSessionWindow.onDisappear)
 struct RegiCommands: Commands {
     @FocusedValue(\.sessionActions) private var sessionActions
+    @Environment(\.openWindow) private var openWindow
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
+            Button("Show Hosts") {
+                openWindow(id: "hosts")
+            }
+            .keyboardShortcut("h", modifiers: [.command, .shift])
+
+            Divider()
+
             if let sessionActions {
                 Button("Show Controls", action: sessionActions.toggleControls)
                     .keyboardShortcut("k", modifiers: .command)
@@ -132,11 +185,11 @@ struct RegiCommands: Commands {
             }
         }
         // No custom `Window > Hosts` command: SwiftUI auto-injects
-        // a Window menu entry for every open scene (titled "Regi"
-        // for the hosts window via the `Window("Regi", …)` first
-        // parameter). Adding our own duplicated it. Together with
-        // the dock-icon reopen wired up in AppDelegate, the auto-
-        // entry covers the navigation case.
+        // a Window menu entry for every scene (titled "Hosts" via the
+        // `Window("Hosts", …)` first parameter). AppDelegate also
+        // invokes that auto-entry via NSApp.sendAction for the dock
+        // left-click reopen + right-click "Show Hosts" paths, so all
+        // three reopen surfaces share one underlying mechanism.
     }
 }
 
