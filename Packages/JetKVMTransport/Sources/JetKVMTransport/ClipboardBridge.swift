@@ -133,6 +133,18 @@ public final class ClipboardBridge {
     private let sendFrame: @Sendable (Data) async -> Bool
     private let inboundOffersContinuation: AsyncStream<ResolvedOffer>.Continuation
 
+    /// `true` when the App layer has called `engage()` — the user has
+    /// opted into clipboard sync for this session. The bridge stays
+    /// silent on the wire until engaged: no Hello, no offers. Cleared
+    /// by `disengage()`. The agent's WS to JetKVM can cycle freely
+    /// without producing Hello flood — only an engaged Regi initiates.
+    private var isEngaged: Bool = false
+    /// Mirror of the host_bridge data-channel ready state. Lets
+    /// `engage()` ship Hello immediately if the channel happens to
+    /// already be open, and lets `handleChannelReadyChange(true)`
+    /// ship Hello if engagement happened first.
+    private var channelReady: Bool = false
+
     private var nextOutboundOfferId: UInt32 = 1
     /// Single-slot: the most recently sent offer. Used to serve inbound
     /// `ClipboardRequestV1` against the App layer's source. Prior
@@ -160,15 +172,45 @@ public final class ClipboardBridge {
         inboundOffersContinuation.finish()
     }
 
+    // MARK: - Engagement
+
+    /// The App layer calls this when the user opts into clipboard sync
+    /// for this session (toggle on + agent present). The bridge
+    /// initiates the Hello dance — ships our `Envelope{hello}` to the
+    /// agent now if the channel is open, and on every subsequent
+    /// channel-ready transition until `disengage()` is called.
+    ///
+    /// Idempotent. Calling `engage()` while already engaged is a no-op.
+    public func engage() async {
+        guard !isEngaged else { return }
+        isEngaged = true
+        if channelReady {
+            await sendHello()
+        }
+    }
+
+    /// Opposite of `engage()`. Bridge stops initiating Hello on channel
+    /// readiness. Already-exchanged peer state (peerHello) is retained
+    /// so a quick toggle-off/on doesn't waste a round trip — only a
+    /// channel close clears it.
+    public func disengage() {
+        isEngaged = false
+    }
+
     // MARK: - Channel lifecycle
 
     /// Called by Session's pump when the `host_bridge` data channel's
-    /// readyState changes. On `true` we send our `Hello`; on `false` we
-    /// clear all per-connection state so a reconnect starts fresh.
+    /// readyState changes. On `true` we (re-)initiate the Hello dance
+    /// iff currently engaged; on `false` we clear all per-connection
+    /// state so a reconnect starts fresh.
     public func handleChannelReadyChange(_ ready: Bool) async {
-        if ready {
+        let prevReady = channelReady
+        channelReady = ready
+        if ready && !prevReady && isEngaged {
+            // Fresh channel + we're engaged — re-do the Hello dance.
             await sendHello()
-        } else {
+        }
+        if !ready {
             peerHello = nil
             pendingInbound = nil
             lastOutboundOffer = nil

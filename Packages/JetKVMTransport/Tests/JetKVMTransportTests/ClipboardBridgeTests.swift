@@ -58,20 +58,80 @@ final class ClipboardBridgeTests: XCTestCase {
         )
     }
 
-    // MARK: - Channel readiness
+    // MARK: - Channel readiness + engagement
 
-    func testChannelReadySendsHello() async {
+    func testChannelReadyWithoutEngagementIsSilent() async {
         let sink = CapturingSink()
         let bridge = makeBridge(sink: sink)
         await bridge.handleChannelReadyChange(true)
+        // No Hello should fly — Regi is client-initiated, the bridge
+        // stays silent on the wire until engage() is called.
+        XCTAssertEqual(sink.frames.count, 0)
+    }
 
+    func testEngageBeforeChannelReadyDefersHello() async throws {
+        let sink = CapturingSink()
+        let bridge = makeBridge(sink: sink)
+        await bridge.engage()
+        // Channel isn't open yet — engage() can't ship a Hello.
+        XCTAssertEqual(sink.frames.count, 0)
+        // When the channel becomes ready, the deferred Hello fires.
+        await bridge.handleChannelReadyChange(true)
         XCTAssertEqual(sink.frames.count, 1)
-        let decoded = try! ClipboardCodec.decode(sink.frames[0])
+        let decoded = try ClipboardCodec.decode(sink.frames[0])
+        guard case .hello = decoded else { return XCTFail("expected hello") }
+    }
+
+    func testEngageWhileChannelReadySendsHelloImmediately() async throws {
+        let sink = CapturingSink()
+        let bridge = makeBridge(sink: sink)
+        await bridge.handleChannelReadyChange(true)
+        XCTAssertEqual(sink.frames.count, 0)
+        await bridge.engage()
+        XCTAssertEqual(sink.frames.count, 1)
+        let decoded = try ClipboardCodec.decode(sink.frames[0])
         guard case .hello(let h) = decoded else {
             return XCTFail("expected hello, got \(decoded)")
         }
         XCTAssertEqual(h.compressions, [.none, .deflate])
         XCTAssertEqual(h.supportedFeatures, [.clipboardWriteV1])
+    }
+
+    func testEngageIsIdempotent() async {
+        let sink = CapturingSink()
+        let bridge = makeBridge(sink: sink)
+        await bridge.handleChannelReadyChange(true)
+        await bridge.engage()
+        await bridge.engage()  // second call no-op
+        await bridge.engage()
+        XCTAssertEqual(sink.frames.count, 1)
+    }
+
+    func testChannelCycleReEngagedReHellos() async {
+        // While engaged, every channel-ready transition re-initiates
+        // the Hello dance — peerHello cleared on close, so we want a
+        // fresh exchange on reopen.
+        let sink = CapturingSink()
+        let bridge = makeBridge(sink: sink)
+        await bridge.engage()
+        await bridge.handleChannelReadyChange(true)
+        XCTAssertEqual(sink.frames.count, 1)
+        await bridge.handleChannelReadyChange(false)
+        await bridge.handleChannelReadyChange(true)
+        XCTAssertEqual(sink.frames.count, 2)
+    }
+
+    func testDisengageStopsReHelloingOnChannelCycle() async {
+        let sink = CapturingSink()
+        let bridge = makeBridge(sink: sink)
+        await bridge.engage()
+        await bridge.handleChannelReadyChange(true)
+        XCTAssertEqual(sink.frames.count, 1)
+        bridge.disengage()
+        await bridge.handleChannelReadyChange(false)
+        await bridge.handleChannelReadyChange(true)
+        // No new Hello after disengage.
+        XCTAssertEqual(sink.frames.count, 1)
     }
 
     // MARK: - Inbound
@@ -250,7 +310,8 @@ final class ClipboardBridgeTests: XCTestCase {
         source.contents = ["text/plain": Data("hello".utf8)]
         bridge.source = source
 
-        // Ship + receive the peer's hello first.
+        // Engage + ship + receive the peer's hello first.
+        await bridge.engage()
         await bridge.handleChannelReadyChange(true)
         await bridge.handleInboundFrame(makeHello())
         sink.frames.removeAll()  // drop our own hello
@@ -274,6 +335,7 @@ final class ClipboardBridgeTests: XCTestCase {
         source.contents = ["text/plain": Data(payload.utf8)]
         bridge.source = source
 
+        await bridge.engage()
         await bridge.handleChannelReadyChange(true)
         await bridge.handleInboundFrame(makeHello())
         sink.frames.removeAll()
@@ -298,6 +360,7 @@ final class ClipboardBridgeTests: XCTestCase {
         source.contents = ["image/png": bigPng]
         bridge.source = source
 
+        await bridge.engage()
         await bridge.handleChannelReadyChange(true)
         await bridge.handleInboundFrame(makeHello())
         sink.frames.removeAll()
@@ -320,6 +383,7 @@ final class ClipboardBridgeTests: XCTestCase {
         source.contents = ["image/png": bigPng]
         bridge.source = source
 
+        await bridge.engage()
         await bridge.handleChannelReadyChange(true)
         await bridge.handleInboundFrame(makeHello())
         sink.frames.removeAll()
@@ -348,6 +412,7 @@ final class ClipboardBridgeTests: XCTestCase {
         source.contents = ["image/png": Data(repeating: 0x42, count: 100 * 1024)]
         bridge.source = source
 
+        await bridge.engage()
         await bridge.handleChannelReadyChange(true)
         await bridge.handleInboundFrame(makeHello())
         sink.frames.removeAll()
@@ -375,6 +440,7 @@ final class ClipboardBridgeTests: XCTestCase {
         source.contents = ["image/png": Data([0xAB])]
         bridge.source = source
 
+        await bridge.engage()
         await bridge.handleChannelReadyChange(true)
         await bridge.handleInboundFrame(makeHello())
         sink.frames.removeAll()

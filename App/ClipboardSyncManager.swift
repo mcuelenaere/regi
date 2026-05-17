@@ -111,8 +111,20 @@ final class ClipboardSyncManager {
             && session.clipboardBridge != nil
     }
 
+    /// Tracks whether `start()` is currently in effect so reconcile()
+    /// can log on edges only — `stop()` was previously logging on
+    /// every reconcile that landed in stop, including idempotent
+    /// "still inactive" calls.
+    private var wasActive: Bool = false
+
     private func reconcile() {
-        if isActive {
+        let nowActive = isActive
+        if nowActive == wasActive {
+            // No-op transition; don't churn the log.
+            return
+        }
+        wasActive = nowActive
+        if nowActive {
             start()
         } else {
             stop()
@@ -120,7 +132,6 @@ final class ClipboardSyncManager {
     }
 
     private func start() {
-        guard pollTimer == nil else { return }
         guard let bridge = session.clipboardBridge else { return }
 
         // Wire our pasteboard source into the bridge so outbound +
@@ -132,8 +143,6 @@ final class ClipboardSyncManager {
         lastObservedChangeCount = NSPasteboard.general.changeCount
         lastAppliedInboundChangeCount = NSPasteboard.general.changeCount
 
-        // Start polling. `Timer.scheduledTimer(...)` retains the
-        // closure; the [weak self] avoids a retain cycle.
         pollTimer = Timer.scheduledTimer(
             withTimeInterval: Self.pollInterval,
             repeats: true
@@ -141,12 +150,19 @@ final class ClipboardSyncManager {
             Task { @MainActor in self?.checkLocalClipboard() }
         }
 
-        // Consume inbound offers.
         inboundTask = Task { @MainActor [weak self, weak bridge] in
             guard let bridge else { return }
             for await offer in bridge.inboundOffers {
                 self?.applyInboundOffer(offer)
             }
+        }
+
+        // Initiate the Hello dance now. The bridge stays silent on
+        // the wire until this — Regi is the one that decides when a
+        // clipboard-sync session begins. If the channel later cycles,
+        // the bridge re-Hellos on its own since it's now engaged.
+        Task { @MainActor [weak bridge] in
+            await bridge?.engage()
         }
 
         log.info("clipboard sync active")
@@ -157,13 +173,11 @@ final class ClipboardSyncManager {
         pollTimer = nil
         inboundTask?.cancel()
         inboundTask = nil
-        // Detach source so a bridge that outlives us (unlikely but
-        // safer) doesn't keep using our reference.
         session.clipboardBridge?.source = nil
-        if pollTimer == nil && inboundTask == nil {
-            log.info("clipboard sync inactive")
-        }
+        session.clipboardBridge?.disengage()
+        log.info("clipboard sync inactive")
     }
+
 
     // MARK: - Outbound (local change → host)
 
