@@ -19,6 +19,12 @@ let package = Package(
             name: "JetKVMProtocol",
             dependencies: [
                 .product(name: "SwiftProtobuf", package: "swift-protobuf"),
+            ],
+            exclude: [
+                // Source-of-truth schema; regenerated bindings live in
+                // Clipboard/generated/. The .proto itself isn't a Swift
+                // source — SPM would otherwise warn about it.
+                "Clipboard/agent.proto",
             ]
         ),
         .testTarget(name: "JetKVMProtocolTests", dependencies: ["JetKVMProtocol"]),
