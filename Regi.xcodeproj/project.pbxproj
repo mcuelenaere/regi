@@ -30,6 +30,8 @@
 		FD00000000000000000000FD /* HostFormSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = F400000000000000000000F4 /* HostFormSheet.swift */; };
 		FE00000000000000000000FE /* ConnectionStatusView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F500000000000000000000F5 /* ConnectionStatusView.swift */; };
 		FF00000000000000000000FF /* KVMSessionWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = F600000000000000000000F6 /* KVMSessionWindow.swift */; };
+		DE00000000000000000000DE /* ClipboardSyncManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD00000000000000000000CD /* ClipboardSyncManager.swift */; };
+		DF00000000000000000000DF /* NSPasteboardClipboardSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE00000000000000000000CE /* NSPasteboardClipboardSource.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -55,6 +57,8 @@
 		F400000000000000000000F4 /* HostFormSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostFormSheet.swift; sourceTree = "<group>"; };
 		F500000000000000000000F5 /* ConnectionStatusView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionStatusView.swift; sourceTree = "<group>"; };
 		F600000000000000000000F6 /* KVMSessionWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KVMSessionWindow.swift; sourceTree = "<group>"; };
+		CD00000000000000000000CD /* ClipboardSyncManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClipboardSyncManager.swift; sourceTree = "<group>"; };
+		CE00000000000000000000CE /* NSPasteboardClipboardSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NSPasteboardClipboardSource.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -103,6 +107,8 @@
 				CC00000000000000000000CC /* HostKeyDetector.swift */,
 				C800000000000000000000C8 /* ControlPanel.swift */,
 				C900000000000000000000C9 /* StatsPanel.swift */,
+				CD00000000000000000000CD /* ClipboardSyncManager.swift */,
+				CE00000000000000000000CE /* NSPasteboardClipboardSource.swift */,
 				C200000000000000000000C2 /* Info.plist */,
 			);
 			path = App;
@@ -222,6 +228,8 @@
 				DD00000000000000000000DD /* HostKeyDetector.swift in Sources */,
 				D900000000000000000000D9 /* ControlPanel.swift in Sources */,
 				DA00000000000000000000DA /* StatsPanel.swift in Sources */,
+				DE00000000000000000000DE /* ClipboardSyncManager.swift in Sources */,
+				DF00000000000000000000DF /* NSPasteboardClipboardSource.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

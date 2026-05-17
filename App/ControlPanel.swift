@@ -2,14 +2,20 @@ import SwiftUI
 import JetKVMProtocol
 import JetKVMTransport
 
-/// Popover content with ATX power buttons, codec preference, and
-/// stream quality slider. Fed by Session's cached control-plane
-/// state — Session refreshes once when the rpc channel opens.
+/// Popover content with ATX power buttons, codec preference, stream
+/// quality slider, and clipboard-sync toggle. Fed by Session's
+/// cached control-plane state — Session refreshes once when the rpc
+/// channel opens.
 struct ControlPanel: View {
     @Environment(Session.self) private var session
     @State private var showResetConfirm = false
     @State private var showPowerLongConfirm = false
     @State private var pendingError: String?
+    /// Persisted across launches; consumed by ClipboardSyncManager
+    /// in KVMSessionWindow to decide whether to actually shuttle
+    /// pasteboard data. Off by default — every local clipboard
+    /// write while it's on flows to the connected host.
+    @AppStorage("RegiClipboardSyncEnabled") private var clipboardSyncEnabled: Bool = false
 
     private var rpcDisabled: Bool { !session.rpcReady }
 
@@ -20,6 +26,8 @@ struct ControlPanel: View {
             codecSection
             Divider()
             qualitySection
+            Divider()
+            clipboardSection
             if let err = pendingError {
                 Text(err)
                     .font(.caption)
@@ -139,6 +147,31 @@ struct ControlPanel: View {
                 step: 0.1
             )
             .disabled(rpcDisabled || session.streamQualityFactor == nil)
+        }
+    }
+
+    // MARK: - Clipboard sync
+
+    private var clipboardSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Clipboard sync").font(.headline)
+                Spacer()
+                Text(session.clipboardAgentState == .active ? "Agent connected" : "Agent disconnected")
+                    .font(.caption)
+                    .foregroundStyle(session.clipboardAgentState == .active ? .green : .secondary)
+            }
+            Toggle("Sync local clipboard with host", isOn: $clipboardSyncEnabled)
+                .disabled(session.clipboardAgentState != .active)
+            if session.clipboardAgentState != .active {
+                Text("Install the JetKVM Helper on the host to enable clipboard sync.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if clipboardSyncEnabled {
+                Text("Every local clipboard write while this is on flows to the host. Password-manager copies marked transient are skipped.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 

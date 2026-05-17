@@ -13,6 +13,10 @@ import JetKVMTransport
 struct KVMSessionWindow: View {
     let sessionID: KVMSessionWindowID
     @State private var session = Session()
+    @State private var clipboardSync: ClipboardSyncManager?
+    /// Mirror of the ControlPanel toggle so we can drive
+    /// ClipboardSyncManager from this view's lifecycle.
+    @AppStorage("RegiClipboardSyncEnabled") private var clipboardSyncEnabled: Bool = false
     @State private var ownWindow: NSWindow?
     /// True between this window's didEnterFullScreen and
     /// didExitFullScreen notifications. Drives StatusStrip
@@ -65,7 +69,19 @@ struct KVMSessionWindow: View {
             // First connection attempt fires on appear. We use .task
             // (not .onAppear) so the connect coroutine is cancelled if
             // the window goes away mid-flight.
+            if clipboardSync == nil {
+                clipboardSync = ClipboardSyncManager(
+                    session: session,
+                    initialEnabled: clipboardSyncEnabled
+                )
+            }
             await connect()
+        }
+        .onChange(of: clipboardSyncEnabled) { _, newValue in
+            clipboardSync?.setEnabled(newValue)
+        }
+        .onChange(of: session.clipboardAgentState) { _, _ in
+            clipboardSync?.sessionStateChanged()
         }
         .onDisappear {
             // Session.disconnect is async; fire-and-forget so the
