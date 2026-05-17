@@ -1,0 +1,126 @@
+// JetKVM host-agent ↔ client wire protocol — VENDORED.
+//
+// Upstream: jetkvm/jetkvm repo, branch claude/affectionate-lederberg-d93701,
+// path ui/src/utils/agentProtocol/agent.proto. Last vendored at firmware
+// commit 0c0a023cbe75e930778e371fce8396afe9cf251e. When updating, re-pull
+// from upstream, refresh that SHA, and re-run scripts/generate_proto.sh.
+//
+// ---- BEGIN VERBATIM COPY ----
+//
+// Each WebSocket binary frame relayed between the host-side clipboard agent
+// and the JetKVM client (web UI today; native clients later) is one
+// serialized `Envelope`. The Go relay in internal/clipboard does NOT decode
+// these messages — it forwards opaque bytes. Both endpoints (this repo's
+// frontend and any third-party agent) implement this schema directly.
+//
+// Versioning:
+//   - Envelope.version is the wire version. v1 = 1. A v2 wire will use a
+//     different value so v1 endpoints fast-fail rather than mis-decode.
+//   - Per-feature versions live in the Feature enum (e.g. FEATURE_CLIPBOARD_-
+//     WRITE_V1); v2 of an existing feature is a new enum value, never a
+//     reuse.
+//   - Compression and Status enums use proto3's standard forward-compat:
+//     unknown numeric values are preserved by readers and simply not
+//     selected by writers.
+
+syntax = "proto3";
+
+package jetkvm.agent.v1;
+
+// Compression algorithm for a representation's bytes. Aligned with IANA's
+// HTTP Content-Encoding registry. v1 ships exactly these two values; future
+// versions add new enum values without removing or repurposing existing
+// ones.
+enum Compression {
+  COMPRESSION_UNSPECIFIED = 0;  // proto3 default; never sent on the wire
+  COMPRESSION_NONE        = 1;  // identity / passthrough
+  COMPRESSION_DEFLATE     = 2;  // raw RFC 1951 (no zlib wrapper, no gzip header)
+}
+
+// Versioned feature an endpoint supports. Each enum value is one specific
+// version of one feature; v2 of an existing feature gets its own value.
+enum Feature {
+  FEATURE_UNSPECIFIED        = 0;
+  FEATURE_CLIPBOARD_WRITE_V1 = 1;  // enables ClipboardOfferV1 / RequestV1 / ResponseV1
+}
+
+// Envelope is the single proto message written into each WS binary frame.
+// Receivers MUST reject any envelope whose `version` is not 1.
+message Envelope {
+  uint32 version = 1;  // = 1 for v1
+  oneof message {
+    Hello               hello    = 2;
+    ClipboardOfferV1    offer    = 3;
+    ClipboardRequestV1  request  = 4;
+    ClipboardResponseV1 response = 5;
+  }
+}
+
+// Hello is the first envelope each side sends after the WS upgrade. Until
+// the peer's Hello is parsed, the sender MUST NOT use any compression the
+// peer did not advertise, and MUST NOT send messages gated by a feature
+// the peer did not advertise.
+message Hello {
+  uint32              protocol_version   = 1;  // = 1 in v1
+  repeated Compression compressions       = 2;  // sender can DECODE these
+  repeated Feature     supported_features = 3;
+}
+
+// ClipboardOfferV1 announces one clipboard event (one user copy) and lists
+// all available representations. A new offer implicitly invalidates any
+// outstanding earlier offer from the same sender on this connection.
+//
+// Inline policy: a sender SHOULD inline a Format (via InlineData) when the
+// post-compression byte count is ≤ 64 KiB. Larger representations advertise
+// only size_hint; the peer fetches them with ClipboardRequestV1.
+message ClipboardOfferV1 {
+  uint32          offer_id = 1;  // monotonic per sender; starts at 1
+  repeated Format formats  = 2;  // ≥ 1
+
+  message Format {
+    // Wire MIME (e.g. "text/plain;charset=utf-8", "text/html", "image/png").
+    // Senders MUST normalize to a MIME the Web Clipboard API accepts:
+    // mandatory (text/plain, text/html, image/png), optional (text/uri-list,
+    // image/svg+xml), or "web "-prefixed custom MIMEs.
+    string mime = 1;
+
+    oneof body {
+      InlineData inline    = 2;
+      uint64     size_hint = 3;  // uncompressed-byte estimate; advisory
+    }
+  }
+
+  message InlineData {
+    Compression compression = 1;
+    bytes       data        = 2;  // bytes encoded per `compression`
+  }
+}
+
+// ClipboardRequestV1 pulls one representation of a previously-announced
+// offer. MUST NOT be sent for a representation that was already inlined.
+message ClipboardRequestV1 {
+  uint32 offer_id = 1;
+  string mime     = 2;
+}
+
+// ClipboardResponseV1 answers exactly one ClipboardRequestV1. If the request
+// can't be honored, status is non-OK and compression/data are absent.
+//
+// Senders MUST NOT produce a response whose serialized size would exceed
+// the relay's 8 MiB WS frame cap — for oversized representations the sender
+// returns status = STATUS_TOO_LARGE without data instead.
+message ClipboardResponseV1 {
+  uint32      offer_id    = 1;
+  string      mime        = 2;
+  Status      status      = 3;
+  Compression compression = 4;  // meaningful only when status == STATUS_OK
+  bytes       data        = 5;  // present only when status == STATUS_OK
+
+  enum Status {
+    STATUS_UNSPECIFIED = 0;  // proto3 default; never sent on the wire
+    STATUS_OK          = 1;
+    STATUS_UNAVAILABLE = 2;  // offer expired / format gone
+    STATUS_TOO_LARGE   = 3;  // payload would exceed relay's 8 MiB frame cap
+    STATUS_ERROR       = 4;  // sender-side failure (opaque)
+  }
+}
