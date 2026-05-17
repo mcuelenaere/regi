@@ -106,6 +106,11 @@ public final class Session {
     /// notification + a bootstrap `getClipboardAgentState` RPC at
     /// rpc-ready. `.absent` until proven otherwise.
     public internal(set) var clipboardAgentState: ClipboardAgentState = .absent
+    /// Wire-protocol bridge for the `host_bridge` data channel.
+    /// Constructed on connect; nil between sessions. The App layer
+    /// injects a `ClipboardSource` (NSPasteboard-backed) into
+    /// `clipboardBridge?.source` so it can ship and receive offers.
+    public private(set) var clipboardBridge: ClipboardBridge?
 
     /// Most recent connection-quality sample. Updated ~1 Hz once the
     /// peer connection is up.
@@ -481,6 +486,16 @@ public final class Session {
         incoming: AsyncThrowingStream<SignalingMessage, Error>,
         rpc: JSONRPCClient
     ) {
+        // 0. Stand up the clipboard bridge. Lives for the session
+        //    lifetime; the App layer wires a NSPasteboard-backed
+        //    `ClipboardSource` into `bridge.source` and consumes
+        //    `bridge.inboundOffers`. The closure captures `webrtc`
+        //    weakly so we don't keep the facade alive past teardown.
+        let bridge = ClipboardBridge { [weak webrtc] data in
+            guard let webrtc else { return false }
+            return await webrtc.sendHostBridge(data)
+        }
+        self.clipboardBridge = bridge
         // 1. Server → us: answers and ICE candidates from signaling stream.
         pumpTasks.append(Task { [weak self] in
             do {
@@ -566,7 +581,21 @@ public final class Session {
             }
         })
 
-        // 9. Connection-quality sampler. Drives the live FPS/RTT in
+        // 9. host_bridge channel pumps — feed the clipboard bridge.
+        //    Ready-state drives the Hello handshake; binary frames are
+        //    the wire-protocol envelopes the bridge decodes.
+        pumpTasks.append(Task { @MainActor [weak self] in
+            for await ready in await webrtc.hostBridgeReadyState {
+                await self?.clipboardBridge?.handleChannelReadyChange(ready)
+            }
+        })
+        pumpTasks.append(Task { @MainActor [weak self] in
+            for await frame in await webrtc.incomingHostBridgeFrames {
+                await self?.clipboardBridge?.handleInboundFrame(frame)
+            }
+        })
+
+        // 10. Connection-quality sampler. Drives the live FPS/RTT in
         //    the status strip and the Stats panel sparklines.
         pumpTasks.append(Task { @MainActor [weak self] in
             for await sample in await webrtc.stats {
@@ -574,7 +603,7 @@ public final class Session {
             }
         })
 
-        // 10. KeypressKeepAlive heartbeat — fires every 50ms on the
+        // 11. KeypressKeepAlive heartbeat — fires every 50ms on the
         //     reliable HID channel for as long as any key is held.
         //     The JetKVM gadget driver auto-releases held keys after
         //     ~100ms of no HID traffic; the keep-alive fills any gap
@@ -846,6 +875,7 @@ public final class Session {
         videoCodecPreference = nil
         failsafe = nil
         clipboardAgentState = .absent
+        clipboardBridge = nil
         latestStats = nil
         statsHistory = []
         modifierTracker.reset()
