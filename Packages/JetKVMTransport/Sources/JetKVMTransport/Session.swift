@@ -101,6 +101,11 @@ public final class Session {
     /// hasn't sent one yet; `.active == true` is the signal that the
     /// device is in failsafe mode and the UI should warn the user.
     public internal(set) var failsafe: FailsafeModeNotification?
+    /// Presence of a host-side clipboard agent on the connected
+    /// JetKVM. Driven by the `clipboardAgentStateChanged` push
+    /// notification + a bootstrap `getClipboardAgentState` RPC at
+    /// rpc-ready. `.absent` until proven otherwise.
+    public internal(set) var clipboardAgentState: ClipboardAgentState = .absent
 
     /// Most recent connection-quality sample. Updated ~1 Hz once the
     /// peer connection is up.
@@ -637,6 +642,16 @@ public final class Session {
                 failsafe = f
             }
 
+        case "clipboardAgentStateChanged":
+            // Wire shape: `{ "state": "absent" | "active" }` (see firmware
+            // clipboard.go:125). Drop the notification on shape or value
+            // mismatch rather than clobber state with .absent.
+            struct Payload: Decodable { let state: String }
+            if let p = try? n.decodeParams(Payload.self),
+               let s = ClipboardAgentState(rawValue: p.state) {
+                clipboardAgentState = s
+            }
+
         default:
             // Unhandled events (otaState, networkState, dcState,
             // willReboot, keyboardLedState, etc.) — silently ignore
@@ -830,6 +845,7 @@ public final class Session {
         streamQualityFactor = nil
         videoCodecPreference = nil
         failsafe = nil
+        clipboardAgentState = .absent
         latestStats = nil
         statsHistory = []
         modifierTracker.reset()

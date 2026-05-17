@@ -92,6 +92,17 @@ extension Session {
         try await rpcCall(method: "getUSBState")
     }
 
+    // MARK: - Clipboard agent
+    //
+    // Bootstrap call paired with the `clipboardAgentStateChanged` push
+    // notification handled in Session. Wire shape: a bare string —
+    // "absent" or "active".
+
+    public func getClipboardAgentState() async throws -> ClipboardAgentState {
+        let raw: String = try await rpcCall(method: "getClipboardAgentState")
+        return ClipboardAgentState(rawValue: raw) ?? .absent
+    }
+
     // MARK: - Convenience: initial state fetch + optimistic updates
 
     /// Fetch every cached control-plane field in parallel. Called
@@ -106,12 +117,14 @@ extension Session {
         async let atx = fetch("getATXState") { try await self.getATXState() }
         async let factor = fetch("getStreamQualityFactor") { try await self.getStreamQualityFactor() }
         async let codec = fetch("getVideoCodecPreference") { try await self.getVideoCodecPreference() }
+        async let clipAgent = fetch("getClipboardAgentState") { try await self.getClipboardAgentState() }
 
         videoState = await video
         usbState = await usb
         atxState = await atx
         streamQualityFactor = await factor
         videoCodecPreference = await codec
+        if let c = await clipAgent { clipboardAgentState = c }
     }
 
     /// Optimistically update the cached factor and send the setter.
