@@ -676,9 +676,17 @@ public final class Session {
             // clipboard.go:125). Drop the notification on shape or value
             // mismatch rather than clobber state with .absent.
             struct Payload: Decodable { let state: String }
-            if let p = try? n.decodeParams(Payload.self),
-               let s = ClipboardAgentState(rawValue: p.state) {
-                clipboardAgentState = s
+            do {
+                let p = try n.decodeParams(Payload.self)
+                if let s = ClipboardAgentState(rawValue: p.state) {
+                    let before = clipboardAgentState
+                    clipboardAgentState = s
+                    log.info("[SESSION] clipboardAgentStateChanged: \(before.rawValue, privacy: .public) → \(s.rawValue, privacy: .public)")
+                } else {
+                    log.error("[SESSION] clipboardAgentStateChanged: unknown state '\(p.state, privacy: .public)'; ignoring")
+                }
+            } catch {
+                log.error("[SESSION] clipboardAgentStateChanged decode failed: \(String(describing: error), privacy: .public)")
             }
 
         default:

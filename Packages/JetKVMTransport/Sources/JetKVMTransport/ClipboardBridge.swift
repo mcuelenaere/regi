@@ -182,7 +182,11 @@ public final class ClipboardBridge {
     ///
     /// Idempotent. Calling `engage()` while already engaged is a no-op.
     public func engage() async {
-        guard !isEngaged else { return }
+        if isEngaged {
+            log.info("[BRIDGE] engage(): already engaged, no-op")
+            return
+        }
+        log.info("[BRIDGE] engage(): channelReady=\(self.channelReady, privacy: .public); will \(self.channelReady ? "ship Hello now" : "defer Hello until channel ready", privacy: .public)")
         isEngaged = true
         if channelReady {
             await sendHello()
@@ -194,6 +198,7 @@ public final class ClipboardBridge {
     /// so a quick toggle-off/on doesn't waste a round trip — only a
     /// channel close clears it.
     public func disengage() {
+        log.info("[BRIDGE] disengage(): was isEngaged=\(self.isEngaged, privacy: .public)")
         isEngaged = false
     }
 
@@ -206,14 +211,20 @@ public final class ClipboardBridge {
     public func handleChannelReadyChange(_ ready: Bool) async {
         let prevReady = channelReady
         channelReady = ready
+        log.info("[BRIDGE] handleChannelReadyChange: \(prevReady, privacy: .public) → \(ready, privacy: .public); isEngaged=\(self.isEngaged, privacy: .public)")
         if ready && !prevReady && isEngaged {
+            log.info("[BRIDGE] shipping Hello (channel just became ready while engaged)")
             // Fresh channel + we're engaged — re-do the Hello dance.
             await sendHello()
         }
         if !ready {
+            let hadPeerHello = peerHello != nil
+            let hadPendingInbound = pendingInbound != nil
+            let hadLastOutbound = lastOutboundOffer != nil
             peerHello = nil
             pendingInbound = nil
             lastOutboundOffer = nil
+            log.info("[BRIDGE] channel down — cleared peerHello=\(hadPeerHello, privacy: .public) pendingInbound=\(hadPendingInbound, privacy: .public) lastOutbound=\(hadLastOutbound, privacy: .public)")
             // Don't reset nextOutboundOfferId — fine to keep monotonic
             // across reconnects from our side; the peer treats each
             // fresh WS as its own offerId space anyway and we don't
@@ -223,26 +234,30 @@ public final class ClipboardBridge {
 
     /// Called by Session's pump for each binary frame on `host_bridge`.
     public func handleInboundFrame(_ data: Data) async {
+        log.debug("[BRIDGE] inbound frame: \(data.count, privacy: .public) bytes")
         let message: AgentMessage
         do {
             message = try ClipboardCodec.decode(data)
         } catch {
-            log.error("clipboard frame decode failed (\(data.count, privacy: .public) bytes): \(String(describing: error), privacy: .public)")
+            log.error("[BRIDGE] decode failed (\(data.count, privacy: .public) bytes): \(String(describing: error), privacy: .public)")
             return
         }
 
         switch message {
         case .hello(let h):
             peerHello = h
-            log.info("clipboard agent hello: protocolVersion=\(h.protocolVersion, privacy: .public), compressions=\(h.compressions.map(\.rawValue), privacy: .public), features=\(h.supportedFeatures.map(\.rawValue), privacy: .public)")
+            log.info("[BRIDGE] inbound: hello protocolVersion=\(h.protocolVersion, privacy: .public) compressions=\(h.compressions.map(\.rawValue), privacy: .public) features=\(h.supportedFeatures.map(\.rawValue), privacy: .public)")
 
         case .offer(let o):
+            log.debug("[BRIDGE] inbound: offer id=\(o.offerID, privacy: .public) formats=\(o.formats.count, privacy: .public)")
             await handleInboundOffer(o)
 
         case .request(let r):
+            log.debug("[BRIDGE] inbound: request offer_id=\(r.offerID, privacy: .public) mime='\(r.mime, privacy: .public)'")
             await handleInboundRequest(r)
 
         case .response(let r):
+            log.debug("[BRIDGE] inbound: response offer_id=\(r.offerID, privacy: .public) mime='\(r.mime, privacy: .public)' status=\(r.status.rawValue, privacy: .public) bytes=\(r.data.count, privacy: .public)")
             handleInboundResponse(r)
         }
     }
@@ -253,16 +268,20 @@ public final class ClipboardBridge {
     /// channel isn't ready (no peerHello yet) or no source is
     /// registered.
     public func sendOffer() async {
+        log.debug("[BRIDGE] sendOffer: entering (source=\(self.source == nil ? "nil" : "set", privacy: .public) peerHello=\(self.peerHello == nil ? "nil" : "set", privacy: .public))")
         guard let source else {
-            log.debug("sendOffer: no clipboard source registered")
+            log.debug("[BRIDGE] sendOffer: no clipboard source registered; bailing")
             return
         }
         guard peerHello != nil else {
-            log.debug("sendOffer: peer hello not received yet; skipping")
+            log.debug("[BRIDGE] sendOffer: peer hello not received yet; bailing")
             return
         }
 
         let snapshot = await source.snapshot()
+        let formatSummary = snapshot.formats.map { "\($0.mime)(\($0.size))" }.joined(separator: ", ")
+        log.debug("[BRIDGE] sendOffer: snapshot token=\(snapshot.token.value, privacy: .public) formats=[\(formatSummary, privacy: .public)]")
+
         var offer = ClipboardOfferV1()
         let offerId = nextOutboundOfferId
         nextOutboundOfferId &+= 1
@@ -270,13 +289,14 @@ public final class ClipboardBridge {
 
         for descriptor in snapshot.formats {
             guard Self.acceptedMimes.contains(canonicalMime(descriptor.mime)) else {
-                log.debug("sendOffer: dropping unaccepted MIME '\(descriptor.mime, privacy: .public)'")
+                log.debug("[BRIDGE] sendOffer[\(offerId, privacy: .public)]: drop unaccepted MIME '\(descriptor.mime, privacy: .public)'")
                 continue
             }
             let format = await buildOfferFormat(
                 descriptor: descriptor,
                 token: snapshot.token,
-                source: source
+                source: source,
+                offerId: offerId
             )
             if let format {
                 offer.formats.append(format)
@@ -284,19 +304,21 @@ public final class ClipboardBridge {
         }
 
         guard !offer.formats.isEmpty else {
-            log.debug("sendOffer: snapshot had no acceptable formats; not sending")
+            log.debug("[BRIDGE] sendOffer[\(offerId, privacy: .public)]: snapshot had no acceptable formats; not sending")
             return
         }
 
         do {
             let frame = try ClipboardCodec.encodeOffer(offer)
+            log.debug("[BRIDGE] outbound: offer id=\(offerId, privacy: .public) formats=\(offer.formats.count, privacy: .public) wire_bytes=\(frame.count, privacy: .public)")
             guard await sendFrame(frame) else {
-                log.error("sendOffer: send returned false; channel may be closed")
+                log.error("[BRIDGE] sendOffer[\(offerId, privacy: .public)]: sendFrame returned false; channel may be closed")
                 return
             }
             lastOutboundOffer = (offerId, snapshot.token)
+            log.debug("[BRIDGE] sendOffer[\(offerId, privacy: .public)]: stored lastOutboundOffer with token=\(snapshot.token.value, privacy: .public)")
         } catch {
-            log.error("sendOffer: encode failed: \(String(describing: error), privacy: .public)")
+            log.error("[BRIDGE] sendOffer[\(offerId, privacy: .public)]: encode failed: \(String(describing: error), privacy: .public)")
         }
     }
 
@@ -306,7 +328,8 @@ public final class ClipboardBridge {
     private func buildOfferFormat(
         descriptor: ClipboardFormatDescriptor,
         token: ClipboardSnapshotToken,
-        source: ClipboardSource
+        source: ClipboardSource,
+        offerId: UInt32
     ) async -> ClipboardOfferV1.Format? {
         var format = ClipboardOfferV1.Format()
         format.mime = descriptor.mime
@@ -314,15 +337,13 @@ public final class ClipboardBridge {
         if descriptor.size > UInt64(Self.inlineThreshold) {
             // Large: advertise size_hint, fetch on request.
             format.sizeHint = descriptor.size
+            log.debug("[BRIDGE] sendOffer[\(offerId, privacy: .public)]: '\(descriptor.mime, privacy: .public)' size=\(descriptor.size, privacy: .public) > inlineThreshold → size_hint")
             return format
         }
 
         // Small: read + inline.
         guard let raw = await source.fetchData(mime: descriptor.mime, token: token) else {
-            // Clipboard moved between snapshot and read; drop this
-            // representation. The whole offer might still be useful
-            // (other formats may have read successfully).
-            log.debug("buildOfferFormat: source raced; dropping '\(descriptor.mime, privacy: .public)'")
+            log.debug("[BRIDGE] sendOffer[\(offerId, privacy: .public)]: source raced on '\(descriptor.mime, privacy: .public)' at token=\(token.value, privacy: .public); dropping")
             return nil
         }
         var inline = ClipboardOfferV1.InlineData()
@@ -333,6 +354,7 @@ public final class ClipboardBridge {
         inline.compression = compression
         inline.data = payload
         format.inline = inline
+        log.debug("[BRIDGE] sendOffer[\(offerId, privacy: .public)]: '\(descriptor.mime, privacy: .public)' inline raw=\(raw.count, privacy: .public) payload=\(payload.count, privacy: .public) compression=\(compression.rawValue, privacy: .public)")
         return format
     }
 
@@ -380,7 +402,7 @@ public final class ClipboardBridge {
     private func handleInboundOffer(_ offer: ClipboardOfferV1) async {
         // Per spec: a new offer from the same peer invalidates prior.
         if let prior = pendingInbound {
-            log.info("clipboard offer \(offer.offerID, privacy: .public) supersedes pending \(prior.offerId, privacy: .public)")
+            log.debug("[BRIDGE] inbound offer \(offer.offerID, privacy: .public) supersedes pending \(prior.offerId, privacy: .public)")
         }
         var partial = PartialInboundOffer(
             offerId: offer.offerID,
@@ -391,28 +413,31 @@ public final class ClipboardBridge {
         for format in offer.formats {
             let canon = canonicalMime(format.mime)
             guard Self.acceptedMimes.contains(canon) else {
-                log.debug("inbound offer: dropping unaccepted MIME '\(format.mime, privacy: .public)'")
+                log.debug("[BRIDGE] inbound offer \(offer.offerID, privacy: .public): drop unaccepted MIME '\(format.mime, privacy: .public)'")
                 continue
             }
             switch format.body {
             case .inline(let inline):
                 if let decoded = decompress(data: inline.data, compression: inline.compression) {
                     partial.resolved.append(ResolvedFormat(mime: format.mime, data: decoded))
+                    log.debug("[BRIDGE] inbound offer \(offer.offerID, privacy: .public): inline '\(format.mime, privacy: .public)' compression=\(inline.compression.rawValue, privacy: .public) wire=\(inline.data.count, privacy: .public) decoded=\(decoded.count, privacy: .public)")
                 } else {
-                    log.error("inbound offer: failed to decompress inline '\(format.mime, privacy: .public)'")
+                    log.error("[BRIDGE] inbound offer \(offer.offerID, privacy: .public): failed to decompress inline '\(format.mime, privacy: .public)'")
                 }
-            case .sizeHint:
+            case .sizeHint(let n):
                 partial.pending.insert(format.mime)
+                log.debug("[BRIDGE] inbound offer \(offer.offerID, privacy: .public): size_hint=\(n, privacy: .public) for '\(format.mime, privacy: .public)' — issuing request")
                 await sendRequest(offerId: offer.offerID, mime: format.mime)
             case .none:
-                log.error("inbound offer format '\(format.mime, privacy: .public)' has no body; dropping")
+                log.error("[BRIDGE] inbound offer \(offer.offerID, privacy: .public) format '\(format.mime, privacy: .public)' has no body; dropping")
             }
         }
 
         if partial.pending.isEmpty {
-            // All inline; yield immediately.
+            log.debug("[BRIDGE] inbound offer \(offer.offerID, privacy: .public): all formats inline (resolved=\(partial.resolved.count, privacy: .public)); yielding")
             yield(partial)
         } else {
+            log.debug("[BRIDGE] inbound offer \(offer.offerID, privacy: .public): pending fetches for \(partial.pending.count, privacy: .public) format(s); buffering")
             pendingInbound = partial
         }
     }
@@ -420,11 +445,11 @@ public final class ClipboardBridge {
     private func handleInboundResponse(_ response: ClipboardResponseV1) {
         guard var partial = pendingInbound,
               partial.offerId == response.offerID else {
-            log.debug("inbound response: no pending offer matching id=\(response.offerID, privacy: .public)")
+            log.debug("[BRIDGE] inbound response: no pending offer matching id=\(response.offerID, privacy: .public); dropping")
             return
         }
         guard partial.pending.remove(response.mime) != nil else {
-            log.debug("inbound response: not awaiting mime '\(response.mime, privacy: .public)' for offer \(response.offerID, privacy: .public)")
+            log.debug("[BRIDGE] inbound response: not awaiting mime '\(response.mime, privacy: .public)' for offer \(response.offerID, privacy: .public); dropping")
             return
         }
 
@@ -432,19 +457,22 @@ public final class ClipboardBridge {
         case .ok:
             if let data = decompress(data: response.data, compression: response.compression) {
                 partial.resolved.append(ResolvedFormat(mime: response.mime, data: data))
+                log.debug("[BRIDGE] inbound response: offer=\(response.offerID, privacy: .public) '\(response.mime, privacy: .public)' OK compression=\(response.compression.rawValue, privacy: .public) wire=\(response.data.count, privacy: .public) decoded=\(data.count, privacy: .public)")
             } else {
-                log.error("inbound response OK but decompression failed for '\(response.mime, privacy: .public)'")
+                log.error("[BRIDGE] inbound response OK but decompression failed for '\(response.mime, privacy: .public)'")
             }
         case .unavailable, .tooLarge, .error, .unspecified:
-            log.info("inbound response status \(response.status.rawValue, privacy: .public) for '\(response.mime, privacy: .public)'; dropping representation")
+            log.debug("[BRIDGE] inbound response status=\(response.status.rawValue, privacy: .public) for '\(response.mime, privacy: .public)'; dropping representation")
         case .UNRECOGNIZED(let n):
-            log.error("inbound response unknown status \(n, privacy: .public); dropping representation")
+            log.error("[BRIDGE] inbound response unknown status=\(n, privacy: .public); dropping representation")
         }
 
         if partial.pending.isEmpty {
+            log.debug("[BRIDGE] inbound response: offer=\(response.offerID, privacy: .public) — all fetches done (resolved=\(partial.resolved.count, privacy: .public)); yielding")
             pendingInbound = nil
             yield(partial)
         } else {
+            log.debug("[BRIDGE] inbound response: offer=\(response.offerID, privacy: .public) — still pending \(partial.pending.count, privacy: .public) fetch(es)")
             pendingInbound = partial
         }
     }
@@ -452,15 +480,18 @@ public final class ClipboardBridge {
     private func handleInboundRequest(_ request: ClipboardRequestV1) async {
         // Validate against our last outbound offer.
         guard let last = lastOutboundOffer, last.offerId == request.offerID else {
+            let known = lastOutboundOffer?.offerId.description ?? "nil"
+            log.debug("[BRIDGE] inbound request: offer_id=\(request.offerID, privacy: .public) doesn't match our last outbound (=\(known, privacy: .public)); responding UNAVAILABLE")
             await respondUnavailable(offerId: request.offerID, mime: request.mime)
             return
         }
         guard let source else {
+            log.error("[BRIDGE] inbound request offer=\(request.offerID, privacy: .public): no clipboard source registered; responding ERROR")
             await respondError(offerId: request.offerID, mime: request.mime)
             return
         }
         guard let data = await source.fetchData(mime: request.mime, token: last.token) else {
-            // Clipboard moved since the offer.
+            log.debug("[BRIDGE] inbound request offer=\(request.offerID, privacy: .public): source raced (token=\(last.token.value, privacy: .public)); responding UNAVAILABLE")
             await respondUnavailable(offerId: request.offerID, mime: request.mime)
             return
         }
@@ -468,7 +499,7 @@ public final class ClipboardBridge {
         // Decide compression + cap on response size.
         let (payload, compression) = compressForInline(mime: request.mime, raw: data)
         if payload.count > Self.maxResponseDataSize {
-            log.info("inbound request: representation '\(request.mime, privacy: .public)' is \(payload.count, privacy: .public) bytes, exceeds frame cap; responding STATUS_TOO_LARGE")
+            log.debug("[BRIDGE] inbound request offer=\(request.offerID, privacy: .public): '\(request.mime, privacy: .public)' \(payload.count, privacy: .public) bytes exceeds frame cap; responding TOO_LARGE")
             await respondTooLarge(offerId: request.offerID, mime: request.mime)
             return
         }
@@ -479,6 +510,7 @@ public final class ClipboardBridge {
         response.status = .ok
         response.compression = compression
         response.data = payload
+        log.debug("[BRIDGE] inbound request offer=\(request.offerID, privacy: .public): serving '\(request.mime, privacy: .public)' raw=\(data.count, privacy: .public) payload=\(payload.count, privacy: .public) compression=\(compression.rawValue, privacy: .public)")
         await encodeAndSendResponse(response)
     }
 
@@ -511,18 +543,20 @@ public final class ClipboardBridge {
     private func encodeAndSendResponse(_ r: ClipboardResponseV1) async {
         do {
             let frame = try ClipboardCodec.encodeResponse(r)
+            log.debug("[BRIDGE] outbound: response offer_id=\(r.offerID, privacy: .public) mime='\(r.mime, privacy: .public)' status=\(r.status.rawValue, privacy: .public) data=\(r.data.count, privacy: .public) wire=\(frame.count, privacy: .public)")
             _ = await sendFrame(frame)
         } catch {
-            log.error("encodeAndSendResponse: encode failed: \(String(describing: error), privacy: .public)")
+            log.error("[BRIDGE] encodeAndSendResponse: encode failed: \(String(describing: error), privacy: .public)")
         }
     }
 
     private func sendRequest(offerId: UInt32, mime: String) async {
         do {
             let frame = try ClipboardCodec.encodeRequest(offerId: offerId, mime: mime)
+            log.debug("[BRIDGE] outbound: request offer_id=\(offerId, privacy: .public) mime='\(mime, privacy: .public)' wire=\(frame.count, privacy: .public)")
             _ = await sendFrame(frame)
         } catch {
-            log.error("sendRequest: encode failed: \(String(describing: error), privacy: .public)")
+            log.error("[BRIDGE] sendRequest: encode failed: \(String(describing: error), privacy: .public)")
         }
     }
 
@@ -532,9 +566,10 @@ public final class ClipboardBridge {
                 compressions: [.none, .deflate],
                 features: [.clipboardWriteV1]
             )
+            log.debug("[BRIDGE] outbound: hello compressions=[none, deflate] features=[clipboardWriteV1] wire=\(frame.count, privacy: .public)")
             _ = await sendFrame(frame)
         } catch {
-            log.error("sendHello: encode failed: \(String(describing: error), privacy: .public)")
+            log.error("[BRIDGE] sendHello: encode failed: \(String(describing: error), privacy: .public)")
         }
     }
 

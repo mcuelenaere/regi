@@ -60,6 +60,8 @@ final class ClipboardSyncManager {
         self.session = session
         self.enabled = initialEnabled
 
+        log.info("[MANAGER] init: initialEnabled=\(initialEnabled, privacy: .public) agentState=\(session.clipboardAgentState.rawValue, privacy: .public) bridge=\(session.clipboardBridge == nil ? "nil" : "set", privacy: .public) changeCount=\(NSPasteboard.general.changeCount, privacy: .public)")
+
         // Hot-path event taps. macOS gives us no NSPasteboard-changed
         // notification but we can opportunistically check at moments
         // the user is likely to have just copied something elsewhere.
@@ -93,13 +95,18 @@ final class ClipboardSyncManager {
 
     /// Called by the view when the user flips the toggle.
     func setEnabled(_ v: Bool) {
-        guard enabled != v else { return }
+        guard enabled != v else {
+            log.debug("[MANAGER] setEnabled(\(v, privacy: .public)): no change")
+            return
+        }
+        log.info("[MANAGER] setEnabled: \(self.enabled, privacy: .public) → \(v, privacy: .public)")
         enabled = v
     }
 
     /// Called by the view when `session.clipboardAgentState` or
     /// `session.clipboardBridge` changes (via SwiftUI `.onChange`).
     func sessionStateChanged() {
+        log.info("[MANAGER] sessionStateChanged: agentState=\(self.session.clipboardAgentState.rawValue, privacy: .public) bridge=\(self.session.clipboardBridge == nil ? "nil" : "set", privacy: .public)")
         reconcile()
     }
 
@@ -119,8 +126,8 @@ final class ClipboardSyncManager {
 
     private func reconcile() {
         let nowActive = isActive
+        log.debug("[MANAGER] reconcile: enabled=\(self.enabled, privacy: .public) agentState=\(self.session.clipboardAgentState.rawValue, privacy: .public) bridge=\(self.session.clipboardBridge == nil ? "nil" : "set", privacy: .public) → nowActive=\(nowActive, privacy: .public) wasActive=\(self.wasActive, privacy: .public)")
         if nowActive == wasActive {
-            // No-op transition; don't churn the log.
             return
         }
         wasActive = nowActive
@@ -132,7 +139,11 @@ final class ClipboardSyncManager {
     }
 
     private func start() {
-        guard let bridge = session.clipboardBridge else { return }
+        guard let bridge = session.clipboardBridge else {
+            log.error("[MANAGER] start: bridge is nil; can't start")
+            return
+        }
+        log.info("[MANAGER] start: wiring source, baseline changeCount=\(NSPasteboard.general.changeCount, privacy: .public)")
 
         // Wire our pasteboard source into the bridge so outbound +
         // outbound-request reads find it.
@@ -149,12 +160,16 @@ final class ClipboardSyncManager {
         ) { [weak self] _ in
             Task { @MainActor in self?.checkLocalClipboard() }
         }
+        log.debug("[MANAGER] start: poll timer started (\(Self.pollInterval, privacy: .public)s)")
 
         inboundTask = Task { @MainActor [weak self, weak bridge] in
             guard let bridge else { return }
+            log.info("[MANAGER] start: inboundOffers consumer task running")
             for await offer in bridge.inboundOffers {
+                log.debug("[MANAGER] inboundOffers received offer_id=\(offer.offerId, privacy: .public) formats=\(offer.formats.count, privacy: .public)")
                 self?.applyInboundOffer(offer)
             }
+            log.info("[MANAGER] inboundOffers consumer task ended")
         }
 
         // Initiate the Hello dance now. The bridge stays silent on
@@ -169,6 +184,7 @@ final class ClipboardSyncManager {
     }
 
     private func stop() {
+        log.debug("[MANAGER] stop: tearing down poll timer + inbound task")
         pollTimer?.invalidate()
         pollTimer = nil
         inboundTask?.cancel()
@@ -187,17 +203,23 @@ final class ClipboardSyncManager {
         let count = pb.changeCount
 
         guard count != lastObservedChangeCount else { return }
+        log.debug("[MANAGER] checkLocalClipboard: changeCount advanced \(self.lastObservedChangeCount, privacy: .public) → \(count, privacy: .public)")
         lastObservedChangeCount = count
 
         // Suppress the echo from our own inbound apply.
-        if count == lastAppliedInboundChangeCount { return }
-
-        // Respect the concealed-paste convention.
-        if let types = pb.types, types.contains(Self.concealedPasteboardType) {
-            log.debug("clipboard sync: outbound suppressed (concealed type present)")
+        if count == lastAppliedInboundChangeCount {
+            log.debug("[MANAGER] checkLocalClipboard: \(count, privacy: .public) matches lastAppliedInboundChangeCount; suppressing echo")
             return
         }
 
+        // Respect the concealed-paste convention.
+        if let types = pb.types, types.contains(Self.concealedPasteboardType) {
+            log.debug("[MANAGER] checkLocalClipboard: outbound suppressed (concealed type present)")
+            return
+        }
+
+        let types = (pb.types ?? []).map(\.rawValue).joined(separator: ",")
+        log.debug("[MANAGER] checkLocalClipboard: dispatching sendOffer (types=[\(types, privacy: .public)])")
         Task { @MainActor [weak self] in
             await self?.session.clipboardBridge?.sendOffer()
         }
@@ -206,24 +228,34 @@ final class ClipboardSyncManager {
     // MARK: - Inbound (host → local)
 
     private func applyInboundOffer(_ offer: ResolvedOffer) {
-        guard isActive else { return }
-        guard !offer.formats.isEmpty else { return }
+        guard isActive else {
+            log.debug("[MANAGER] applyInboundOffer offer=\(offer.offerId, privacy: .public): not active; dropping (toggle off?)")
+            return
+        }
+        guard !offer.formats.isEmpty else {
+            log.debug("[MANAGER] applyInboundOffer offer=\(offer.offerId, privacy: .public): no formats to apply")
+            return
+        }
 
         let pb = NSPasteboard.general
+        let beforeCount = pb.changeCount
         pb.clearContents()
+        var applied: [(mime: String, type: String, size: Int)] = []
+        var dropped: [String] = []
         for format in offer.formats {
             guard let type = NSPasteboardClipboardSource.macOSType(for: format.mime) else {
+                dropped.append(format.mime)
                 continue
             }
             pb.setData(format.data, forType: type)
+            applied.append((format.mime, type.rawValue, format.data.count))
         }
         let newCount = pb.changeCount
         lastAppliedInboundChangeCount = newCount
-        // Move the outbound baseline too so the very next poll skips
-        // the change we just made (defence in depth — the count-equals
-        // check above already handles it, but a redundant skip cant hurt).
         lastObservedChangeCount = newCount
 
-        log.debug("clipboard sync: applied inbound offer \(offer.offerId, privacy: .public) with \(offer.formats.count, privacy: .public) formats")
+        let appliedDesc = applied.map { "\($0.mime)→\($0.type)(\($0.size))" }.joined(separator: ", ")
+        let droppedDesc = dropped.joined(separator: ", ")
+        log.debug("[MANAGER] applyInboundOffer offer=\(offer.offerId, privacy: .public): changeCount \(beforeCount, privacy: .public) → \(newCount, privacy: .public) applied=[\(appliedDesc, privacy: .public)] dropped=[\(droppedDesc, privacy: .public)]")
     }
 }

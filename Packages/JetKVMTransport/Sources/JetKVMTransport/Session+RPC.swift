@@ -100,7 +100,9 @@ extension Session {
 
     public func getClipboardAgentState() async throws -> ClipboardAgentState {
         let raw: String = try await rpcCall(method: "getClipboardAgentState")
-        return ClipboardAgentState(rawValue: raw) ?? .absent
+        let parsed = ClipboardAgentState(rawValue: raw) ?? .absent
+        log.info("[SESSION] getClipboardAgentState RPC returned '\(raw, privacy: .public)' → \(parsed.rawValue, privacy: .public)")
+        return parsed
     }
 
     // MARK: - Convenience: initial state fetch + optimistic updates

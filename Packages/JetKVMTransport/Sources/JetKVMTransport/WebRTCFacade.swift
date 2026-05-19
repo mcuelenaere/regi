@@ -340,9 +340,14 @@ public actor WebRTCFacade {
     /// Returns `false` if the channel isn't open or the underlying
     /// SCTP send queue rejected the buffer.
     public func sendHostBridge(_ data: Data) -> Bool {
-        guard let channel = hostBridgeChannel else { return false }
+        guard let channel = hostBridgeChannel else {
+            log.debug("[WEBRTC] sendHostBridge: channel nil; dropping \(data.count, privacy: .public) bytes")
+            return false
+        }
         let buffer = RTCDataBuffer(data: data, isBinary: true)
-        return channel.sendData(buffer)
+        let ok = channel.sendData(buffer)
+        log.debug("[WEBRTC] sendHostBridge: \(data.count, privacy: .public) bytes → \(ok ? "queued" : "rejected", privacy: .public)")
+        return ok
     }
 
     public func close() async {
@@ -708,6 +713,7 @@ private final class HostBridgeDataChannelDelegate: NSObject, RTCDataChannelDeleg
             log.error("host_bridge channel got text frame; dropping")
             return
         }
+        log.debug("[WEBRTC] host_bridge inbound: \(buffer.data.count, privacy: .public) bytes")
         framesContinuation.yield(buffer.data)
     }
 }
