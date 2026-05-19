@@ -294,6 +294,27 @@ public final class Session {
     public func sendKeypress(virtualKeyCode keyCode: UInt16, pressed: Bool) {
         guard hidReady, let webrtc else { return }
         guard let usbHID = KeyMap.virtualKeyToHIDUsageID[keyCode] else { return }
+
+        // Cmd-shortcut path: AppKit doesn't deliver keyUp for keys
+        // pressed while Cmd is held — the menu-shortcut routing
+        // swallows it. If we treated this as a regular press and
+        // tracked it in `heldNonModifierKeys`, the host would see the
+        // key held until Cmd is released, which trips its own
+        // key-repeat (e.g. multiple Cmd+C invocations from one tap).
+        // Without CGEventTap-based capture this is unavoidable, so
+        // emit press+release atomically: the host sees a brief tap
+        // regardless of how long the user holds the key. Don't track
+        // in `heldNonModifierKeys` — there's no real "held" state.
+        if pressed, !ModifierBits.anyMeta.intersection(modifierTracker.currentState).isEmpty {
+            let down = HIDRPCMessage.keypressReport(key: usbHID, pressed: true)
+            let up = HIDRPCMessage.keypressReport(key: usbHID, pressed: false)
+            Task {
+                await webrtc.sendHID(down, on: .reliable)
+                await webrtc.sendHID(up, on: .reliable)
+            }
+            return
+        }
+
         if pressed {
             heldNonModifierKeys.insert(usbHID)
         } else {
@@ -342,6 +363,29 @@ public final class Session {
         guard let usbHID = transition.modifier.usbHIDUsageID else { return }
         let message = HIDRPCMessage.keypressReport(key: usbHID, pressed: transition.pressed)
         Task { await webrtc.sendHID(message, on: .reliable) }
+
+        // Without CGEventTap-based capture, AppKit swallows the keyUp
+        // for Cmd+<letter> shortcuts that match a menu item (Cmd+C,
+        // Cmd+V, Cmd+W, …), so `heldNonModifierKeys` accumulates a
+        // phantom hold for the letter. The keepalive heartbeat keeps
+        // the gadget driver from auto-releasing it on the host, so
+        // the host sees the letter pressed indefinitely and the OS
+        // key-repeat fires forever. Sweep those holds when Cmd is
+        // released — the user finishing the shortcut is our cue that
+        // any non-modifier we still think is down was almost certainly
+        // already up on the local side.
+        if !transition.pressed,
+           ModifierBits.anyMeta.contains(transition.modifier),
+           !heldNonModifierKeys.isEmpty {
+            let stuck = heldNonModifierKeys
+            heldNonModifierKeys.removeAll()
+            Task {
+                for key in stuck {
+                    let release = HIDRPCMessage.keypressReport(key: key, pressed: false)
+                    await webrtc.sendHID(release, on: .reliable)
+                }
+            }
+        }
     }
 
     /// Release every modifier the tracker thinks is held on the host
