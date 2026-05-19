@@ -36,7 +36,17 @@ final class ClipboardSyncManager {
     }
 
     private var pollTimer: Timer?
+    /// Long-lived inbound-offer consumer task. Spawned once per
+    /// `ClipboardBridge` instance (tracked via `inboundTaskBridgeID`),
+    /// not per start/stop cycle: `AsyncStream<T>` is single-iteration
+    /// in practice — creating a fresh iterator after the first one
+    /// gets dropped (e.g. by Task cancellation) yields `nil` on the
+    /// first `next()` and the loop exits immediately. So we let the
+    /// consumer run for the bridge's whole lifetime and rely on
+    /// `applyInboundOffer`'s isActive gate to drop offers while the
+    /// manager is inactive.
     private var inboundTask: Task<Void, Never>?
+    private var inboundTaskBridgeID: ObjectIdentifier?
     private var notificationTokens: [NSObjectProtocol] = []
 
     /// changeCount value we ourselves caused by applying an inbound
@@ -107,7 +117,36 @@ final class ClipboardSyncManager {
     /// `session.clipboardBridge` changes (via SwiftUI `.onChange`).
     func sessionStateChanged() {
         log.info("[MANAGER] sessionStateChanged: agentState=\(self.session.clipboardAgentState.rawValue, privacy: .public) bridge=\(self.session.clipboardBridge == nil ? "nil" : "set", privacy: .public)")
+        ensureInboundConsumer()
         reconcile()
+    }
+
+    /// Ensure we have a running inbound-offers consumer for whichever
+    /// `ClipboardBridge` the session currently exposes. Cheap to call
+    /// repeatedly — only spawns when the bridge identity changes
+    /// (typically session reconnect). The consumer outlives start/stop
+    /// cycles: `applyInboundOffer` drops anything that arrives while
+    /// the manager is inactive.
+    private func ensureInboundConsumer() {
+        let currentBridge = session.clipboardBridge
+        let currentID = currentBridge.map { ObjectIdentifier($0) }
+        if currentID == inboundTaskBridgeID, inboundTask != nil {
+            return
+        }
+        inboundTask?.cancel()
+        inboundTask = nil
+        inboundTaskBridgeID = nil
+        guard let bridge = currentBridge else { return }
+        inboundTaskBridgeID = ObjectIdentifier(bridge)
+        inboundTask = Task { @MainActor [weak self, weak bridge] in
+            guard let bridge else { return }
+            log.info("[MANAGER] inboundOffers consumer task starting (new bridge)")
+            for await offer in bridge.inboundOffers {
+                log.debug("[MANAGER] inboundOffers received offer_id=\(offer.offerId, privacy: .public) formats=\(offer.formats.count, privacy: .public)")
+                self?.applyInboundOffer(offer)
+            }
+            log.info("[MANAGER] inboundOffers consumer task ended (bridge gone)")
+        }
     }
 
     // MARK: - Internal
@@ -162,15 +201,12 @@ final class ClipboardSyncManager {
         }
         log.debug("[MANAGER] start: poll timer started (\(Self.pollInterval, privacy: .public)s)")
 
-        inboundTask = Task { @MainActor [weak self, weak bridge] in
-            guard let bridge else { return }
-            log.info("[MANAGER] start: inboundOffers consumer task running")
-            for await offer in bridge.inboundOffers {
-                log.debug("[MANAGER] inboundOffers received offer_id=\(offer.offerId, privacy: .public) formats=\(offer.formats.count, privacy: .public)")
-                self?.applyInboundOffer(offer)
-            }
-            log.info("[MANAGER] inboundOffers consumer task ended")
-        }
+        // The inbound-offers consumer task is owned by
+        // `ensureInboundConsumer()` (per-bridge lifetime). Don't
+        // (re)spawn here — re-iterating an AsyncStream after task
+        // cancellation yields nil on the first .next() and the loop
+        // exits, which would silently break inbound apply on toggle
+        // off/on cycles.
 
         // Initiate the Hello dance now. The bridge stays silent on
         // the wire until this — Regi is the one that decides when a
@@ -184,11 +220,12 @@ final class ClipboardSyncManager {
     }
 
     private func stop() {
-        log.debug("[MANAGER] stop: tearing down poll timer + inbound task")
+        log.debug("[MANAGER] stop: tearing down poll timer")
         pollTimer?.invalidate()
         pollTimer = nil
-        inboundTask?.cancel()
-        inboundTask = nil
+        // Don't cancel inboundTask — see ensureInboundConsumer().
+        // applyInboundOffer's isActive guard drops anything that
+        // arrives while we're inactive.
         session.clipboardBridge?.source = nil
         session.clipboardBridge?.disengage()
         log.info("clipboard sync inactive")
