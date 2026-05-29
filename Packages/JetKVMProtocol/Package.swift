@@ -12,7 +12,7 @@ let package = Package(
         // subdirectory to ship swift-protobuf-generated bindings for the
         // shared agent.proto. 1.27.0+ keeps us on a Swift 5.9-compatible
         // toolchain.
-        .package(url: "https://github.com/apple/swift-protobuf.git", from: "1.27.0"),
+        .package(url: "https://github.com/apple/swift-protobuf.git", from: "1.38.0"),
     ],
     targets: [
         .target(
