@@ -1,18 +1,20 @@
 import Foundation
+import JetKVMTransport
 import OSLog
 import Observation
 
 private let log = Logger(subsystem: "app.regi.mac", category: "discovery")
 
-/// Bonjour browser for JetKVM devices on the local network. Lives
-/// for the app's lifetime; a single shared instance is injected via
+/// Bonjour browser for KVM devices on the local network. Lives for the
+/// app's lifetime; a single shared instance is injected via
 /// `.environment(...)` from RegiApp.
 ///
-/// Discovery is the modern client-side counterpart of the
-/// `_jetkvm._tcp` service the JetKVM device advertises (see
-/// `internal/mdns/mdns.go` upstream). On `start()` we browse for
-/// service instances; each instance is then resolved with NetService
-/// (since NWBrowser doesn't expose hostname/port/TXT in one shot).
+/// Browses two service types in parallel — `_jetkvm._tcp` (JetKVM, see
+/// `internal/mdns/mdns.go` upstream) and `_pikvm._tcp` (PiKVM's Avahi
+/// advertisement, see `scripts/kvmd-bootconfig`). Each found instance is
+/// resolved with NetService (NWBrowser doesn't expose hostname/port/TXT
+/// in one shot); the resolved service's `type` tells us which family it
+/// is.
 ///
 /// Implementation notes:
 /// - Uses NetServiceBrowser + NetService rather than NWBrowser
@@ -28,29 +30,33 @@ private let log = Logger(subsystem: "app.regi.mac", category: "discovery")
 final class DeviceDiscovery: NSObject {
     private(set) var hosts: [DiscoveredHost] = []
 
-    private let browser = NetServiceBrowser()
+    private let jetBrowser = NetServiceBrowser()
+    private let piBrowser = NetServiceBrowser()
     /// In-flight resolves keyed by service instance name. We hold
     /// strong references so NetService doesn't dealloc mid-resolve.
     private var pendingResolves: [String: NetService] = [:]
 
     override init() {
         super.init()
-        browser.delegate = self
+        jetBrowser.delegate = self
+        piBrowser.delegate = self
     }
 
-    /// Starts browsing for `_jetkvm._tcp` services. Idempotent —
-    /// calling while already running is a no-op (NetServiceBrowser
-    /// handles that itself).
+    /// Starts browsing for `_jetkvm._tcp` and `_pikvm._tcp` services.
+    /// Idempotent — calling while already running is a no-op
+    /// (NetServiceBrowser handles that itself).
     func start() {
-        log.info("starting Bonjour browser for _jetkvm._tcp")
-        browser.searchForServices(ofType: "_jetkvm._tcp", inDomain: "")
+        log.info("starting Bonjour browsers for _jetkvm._tcp + _pikvm._tcp")
+        jetBrowser.searchForServices(ofType: "_jetkvm._tcp", inDomain: "")
+        piBrowser.searchForServices(ofType: "_pikvm._tcp", inDomain: "")
     }
 
     /// Stops browsing and clears all results. Useful for tests; in
     /// regular runtime we leave discovery active app-wide.
     func stop() {
-        log.info("stopping Bonjour browser")
-        browser.stop()
+        log.info("stopping Bonjour browsers")
+        jetBrowser.stop()
+        piBrowser.stop()
         for (_, service) in pendingResolves {
             service.stop()
         }
@@ -123,12 +129,14 @@ extension DeviceDiscovery: NetServiceBrowserDelegate {
 extension DeviceDiscovery: NetServiceDelegate {
     nonisolated func netServiceDidResolveAddress(_ sender: NetService) {
         let name = sender.name
+        let type = sender.type
         let hostName = sender.hostName
         let port = sender.port
         let txtData = sender.txtRecordData()
         Task { @MainActor [weak self] in
             self?.resolved(
                 name: name,
+                serviceType: type,
                 hostName: hostName,
                 port: port,
                 txtData: txtData
@@ -150,6 +158,7 @@ extension DeviceDiscovery: NetServiceDelegate {
     @MainActor
     private func resolved(
         name: String,
+        serviceType: String,
         hostName: String?,
         port: Int,
         txtData: Data?
@@ -159,15 +168,35 @@ extension DeviceDiscovery: NetServiceDelegate {
         // Bonjour gives us "jetkvm-abc.local." with a trailing dot.
         let cleanHost = hostName.hasSuffix(".") ? String(hostName.dropLast()) : hostName
         let txt = parseTXT(txtData)
-        let useTLS = port == 443
-        let isSetup = (txt["setup"] ?? "true") != "false"
+        // `sender.type` is the registration type with a trailing dot,
+        // e.g. "_pikvm._tcp.".
+        let kind: DeviceKind = serviceType.contains("_pikvm._tcp") ? .piKVM : .jetKVM
+        let useTLS = port == 443 || txt["protocol"]?.lowercased() == "https"
+
+        let deviceID: String?
+        let version: String?
+        let isSetup: Bool
+        switch kind {
+        case .jetKVM:
+            deviceID = txt["id"]
+            version = txt["version"]
+            isSetup = (txt["setup"] ?? "true") != "false"
+        case .piKVM:
+            // PiKVM advertises serial/model/board but no version or
+            // setup flag; treat it as always reachable.
+            deviceID = txt["serial"]
+            version = nil
+            isSetup = true
+        }
+
         let entry = DiscoveredHost(
             instanceName: name,
             host: cleanHost,
             port: port,
             useTLS: useTLS,
-            deviceID: txt["id"],
-            version: txt["version"],
+            kind: kind,
+            deviceID: deviceID,
+            version: version,
             isSetup: isSetup
         )
         // Replace any existing entry for the same instance name so
@@ -175,6 +204,6 @@ extension DeviceDiscovery: NetServiceDelegate {
         hosts.removeAll { $0.instanceName == name }
         hosts.append(entry)
         hosts.sort { $0.instanceName < $1.instanceName }
-        log.info("resolved \(name, privacy: .public) -> \(cleanHost, privacy: .public):\(port, privacy: .public)")
+        log.info("resolved \(kind.rawValue, privacy: .public) \(name, privacy: .public) -> \(cleanHost, privacy: .public):\(port, privacy: .public)")
     }
 }

@@ -37,8 +37,9 @@ struct KVMSessionWindowID: Hashable, Codable {
         self.host = discovered.host
         self.port = discovered.port
         self.useTLS = discovered.useTLS
-        // mDNS discovery is JetKVM-only (`_jetkvm._tcp`).
-        self.kind = .jetKVM
+        self.kind = discovered.kind
+        // PiKVM needs a username; discovery doesn't carry one, so use
+        // its stock default. JetKVM ignores this field.
         self.username = "admin"
     }
 

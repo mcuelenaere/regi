@@ -144,8 +144,7 @@ struct HostsView: View {
                 displayName: host.displayName,
                 urlString: discoveredURLString(host),
                 kind: .discovered,
-                // mDNS discovery is JetKVM-only (`_jetkvm._tcp`).
-                deviceKind: .jetKVM,
+                deviceKind: host.kind,
                 isSelected: isSelected,
                 onConnect: { connect(entry) },
                 onEdit: nil,
@@ -158,7 +157,8 @@ struct HostsView: View {
                         name: host.instanceName,
                         host: host.host,
                         port: host.port,
-                        useTLS: host.useTLS
+                        useTLS: host.useTLS,
+                        kind: host.kind
                     )
                     store.add(saved)
                     // Future merges will dedupe the discovered entry
