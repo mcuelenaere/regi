@@ -78,8 +78,9 @@ struct HostFormSheet: View {
 
             Form {
                 Picker("Type", selection: $kind) {
-                    Text("JetKVM").tag(DeviceKind.jetKVM)
-                    Text("PiKVM").tag(DeviceKind.piKVM)
+                    // Brand names — not localizable.
+                    Text(verbatim: "JetKVM").tag(DeviceKind.jetKVM)
+                    Text(verbatim: "PiKVM").tag(DeviceKind.piKVM)
                 }
                 .pickerStyle(.segmented)
                 TextField("Name (optional)", text: $name, prompt: Text("My desktop"))
@@ -93,7 +94,7 @@ struct HostFormSheet: View {
                 .autocorrectionDisabled()
                 .textContentType(.URL)
                 if kind == .piKVM {
-                    TextField("Username", text: $username, prompt: Text("admin"))
+                    TextField("Username", text: $username, prompt: Text(verbatim: "admin"))
                         .textFieldStyle(.roundedBorder)
                         .autocorrectionDisabled()
                 }

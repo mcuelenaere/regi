@@ -19,9 +19,6 @@
     "Address" : {
 
     },
-    "admin" : {
-
-    },
     "Agent connected" : {
 
     },
@@ -139,9 +136,6 @@
     "Issues with the source device's HDMI output" : {
 
     },
-    "JetKVM" : {
-
-    },
     "JetKVM ships with a self-signed certificate by default. Trusting it lets the connection proceed; the choice is remembered for this host." : {
 
     },
@@ -179,9 +173,6 @@
 
     },
     "Password" : {
-
-    },
-    "PiKVM" : {
 
     },
     "Pointer lock" : {
