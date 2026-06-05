@@ -257,6 +257,7 @@ struct KVMWindowView: View {
         // the session down via .onDisappear, so no explicit
         // Disconnect entry is needed.
         .focusedSceneValue(\.sessionActions, SessionActions(
+            canShowControls: hasControlCapabilities && session.rpcReady,
             toggleControls: { showControls.toggle() },
             toggleStats: { showStats.toggle() }
         ))

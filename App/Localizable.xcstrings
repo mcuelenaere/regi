@@ -7,10 +7,7 @@
     "A loose or faulty HDMI connection" : {
 
     },
-    "Add a new host." : {
-
-    },
-    "Add Host" : {
+    "Add a host" : {
 
     },
     "Add Host…" : {
@@ -40,7 +37,7 @@
     "Capture system keyboard shortcuts and/or lock the pointer for relative mouse mode. Optionally hide your local cursor over the video area when you'd rather see only the host's cursor. Keyboard capture requires Accessibility permission." : {
 
     },
-    "Click + in the toolbar to add a JetKVM device, or wait for one to appear on your local network." : {
+    "Click + at the bottom to add a JetKVM device, or wait for one to appear on your local network." : {
 
     },
     "Clipboard sync" : {
@@ -52,7 +49,7 @@
     "Codec preference" : {
 
     },
-    "Connect to %@" : {
+    "Connect" : {
 
     },
     "Connection lost — reconnecting (attempt %lld)…" : {
@@ -64,10 +61,10 @@
     "Delete" : {
 
     },
-    "Delete %@" : {
+    "Delete %@?" : {
 
     },
-    "Delete %@?" : {
+    "Delete Host" : {
 
     },
     "Device is in failsafe mode: %@" : {
@@ -79,7 +76,7 @@
     "Don't show this again" : {
 
     },
-    "Edit %@" : {
+    "Edit Host…" : {
 
     },
     "Edit…" : {

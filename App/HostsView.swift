@@ -2,16 +2,26 @@ import SwiftUI
 import JetKVMTransport
 
 extension Notification.Name {
-    /// Posted by the `File > Add Host…` command (and its ⌘N
-    /// shortcut). HostsView listens via .onReceive and presents the
-    /// add-host sheet — the same one the toolbar's `+` button opens.
+    /// Posted by the File-menu "Add Host…" (⌘N) command. HostsView
+    /// listens via .onReceive and presents the add-host sheet — the same
+    /// one the bottom bar's + button opens.
     static let regiAddHost = Notification.Name("RegiAddHost")
+    /// Posted by the File-menu "Connect", "Edit Host…" and "Delete Host"
+    /// (⌘⌫) commands. HostsView acts on the currently-selected host; a
+    /// no-op when nothing's selected or a sheet is already open. (Menu
+    /// commands route through notifications rather than a focused value
+    /// because the single-`Window` Hosts scene doesn't surface
+    /// `.focusedSceneValue` to `Commands` — see RegiCommands.)
+    static let regiConnectHost = Notification.Name("RegiConnectHost")
+    static let regiEditHost = Notification.Name("RegiEditHost")
+    static let regiDeleteHost = Notification.Name("RegiDeleteHost")
 }
 
 /// Root window: list of saved hosts plus mDNS-discovered devices on
-/// the local network. Plus button to add. Single-click selects;
-/// Return on a selection or click the per-row play button to open a
-/// connection in a new window.
+/// the local network. Single-click selects; double-click (or Return on
+/// a selection) opens a connection in a new window. The toolbar's `+`
+/// adds a host; when a row is selected it gains Edit/Delete (saved) or
+/// Save (discovered) alongside the `+`.
 ///
 /// Discovered devices are auto-added when a `_jetkvm._tcp` record
 /// shows up on the LAN and disappear when the device leaves. Saved
@@ -20,6 +30,7 @@ extension Notification.Name {
 struct HostsView: View {
     @Environment(HostStore.self) private var store
     @Environment(DeviceDiscovery.self) private var discovery
+    @Environment(HostMenuModel.self) private var hostMenuModel
     @Environment(\.openWindow) private var openWindow
 
     @State private var selection: HostListEntry.ID?
@@ -27,7 +38,7 @@ struct HostsView: View {
     @State private var editing: SavedHost?
     /// Set non-nil when the user has requested a delete; the alert
     /// binds to this and fires on confirmation. Routes both the
-    /// context-menu Delete and the per-row trash button through one
+    /// context-menu Delete and the toolbar Delete button through one
     /// confirmation flow. Discovered hosts can't be deleted (they're
     /// ephemeral by definition).
     @State private var hostPendingDelete: SavedHost?
@@ -47,6 +58,20 @@ struct HostsView: View {
         return result
     }
 
+    /// The currently-selected entry (saved or discovered), or nil.
+    private var selectedEntry: HostListEntry? {
+        guard let selection else { return nil }
+        return entries.first { $0.id == selection }
+    }
+
+    /// The selected entry if it's a saved host — gates the gutter bar's
+    /// Delete/Edit buttons (and the ⌫ shortcut). Discovered hosts can't be
+    /// edited or deleted, so this is nil for them.
+    private var selectedSavedHost: SavedHost? {
+        guard case .saved(let host) = selectedEntry else { return nil }
+        return host
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             if entries.isEmpty {
@@ -56,26 +81,40 @@ struct HostsView: View {
                     row(for: entry)
                 }
                 .listStyle(.inset)
-                .onKeyPress(.return) {
-                    guard let id = selection,
-                          let entry = entries.first(where: { $0.id == id })
-                    else { return .ignored }
-                    connect(entry)
+                // Selection + double-click-to-connect + per-row context
+                // menu, all via the native List API. Custom tap gestures
+                // on macOS List rows break the built-in single-click
+                // selection (a long-standing SwiftUI bug), so primaryAction
+                // is the correct mechanism for the double-click "open" —
+                // and it drives Return-to-connect for free.
+                .contextMenu(forSelectionType: HostListEntry.ID.self) { ids in
+                    if let entry = entry(forSelection: ids) {
+                        contextMenuItems(for: entry)
+                    }
+                } primaryAction: { ids in
+                    if let entry = entry(forSelection: ids) {
+                        connect(entry)
+                    }
+                }
+                // ⌫ removes the selected saved host — the native list
+                // convention — routed through the same confirmation alert.
+                .onKeyPress(.delete) {
+                    guard let host = selectedSavedHost else { return .ignored }
+                    hostPendingDelete = host
                     return .handled
                 }
             }
+            Divider()
+            gutterBar
         }
         .frame(minWidth: 480, minHeight: 360)
         .navigationTitle("Hosts")
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    showingAdd = true
-                } label: {
-                    Label("Add Host", systemImage: "plus")
-                }
-                .help("Add a new host.")
-            }
+        // Mirror the selection into the shared model so the File menu can
+        // enable/disable Connect (any host) and Edit/Delete (saved only).
+        // See HostMenuModel.
+        .onChange(of: selectedEntry?.id, initial: true) {
+            hostMenuModel.hasSelection = selectedEntry != nil
+            hostMenuModel.hasSavedHostSelected = selectedSavedHost != nil
         }
         .sheet(isPresented: $showingAdd) {
             HostFormSheet(mode: .add) { host in
@@ -85,6 +124,21 @@ struct HostsView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .regiAddHost)) { _ in
             showingAdd = true
+        }
+        // File-menu Connect/Edit/Delete act on the selection. Guarded so
+        // they no-op with nothing selected or while a sheet/alert is up.
+        .onReceive(NotificationCenter.default.publisher(for: .regiConnectHost)) { _ in
+            guard editing == nil, !showingAdd, let entry = selectedEntry else { return }
+            connect(entry)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .regiEditHost)) { _ in
+            guard editing == nil, !showingAdd, let host = selectedSavedHost else { return }
+            editing = host
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .regiDeleteHost)) { _ in
+            guard editing == nil, !showingAdd, hostPendingDelete == nil,
+                  let host = selectedSavedHost else { return }
+            hostPendingDelete = host
         }
         .sheet(item: $editing) { host in
             HostFormSheet(
@@ -116,57 +170,52 @@ struct HostsView: View {
 
     @ViewBuilder
     private func row(for entry: HostListEntry) -> some View {
-        let isSelected = selection == entry.id
         switch entry {
         case .saved(let host):
             HostRow(
                 displayName: host.displayName,
                 urlString: host.urlString,
                 kind: .saved,
-                deviceKind: host.kind,
-                isSelected: isSelected,
-                onConnect: { connect(entry) },
-                onEdit: { editing = host },
-                onDelete: { hostPendingDelete = host }
+                deviceKind: host.kind
             )
             .tag(entry.id)
-            .contextMenu {
-                Button("Edit…") { editing = host }
-                Button(role: .destructive) {
-                    hostPendingDelete = host
-                } label: {
-                    Text("Delete")
-                        .foregroundStyle(.red)
-                }
-            }
         case .discovered(let host):
             HostRow(
                 displayName: host.displayName,
                 urlString: discoveredURLString(host),
                 kind: .discovered,
-                deviceKind: host.kind,
-                isSelected: isSelected,
-                onConnect: { connect(entry) },
-                onEdit: nil,
-                onDelete: nil
+                deviceKind: host.kind
             )
             .tag(entry.id)
-            .contextMenu {
-                Button("Save Host") {
-                    let saved = SavedHost(
-                        name: host.instanceName,
-                        host: host.host,
-                        port: host.port,
-                        useTLS: host.useTLS,
-                        kind: host.kind
-                    )
-                    store.add(saved)
-                    // Future merges will dedupe the discovered entry
-                    // by hostname; the saved one wins (keeps the
-                    // user's now-editable nickname). Move selection
-                    // so the user sees their saved entry now picked.
-                    selection = HostListEntry.saved(saved).id
-                }
+        }
+    }
+
+    /// Resolve the (single) entry a List context-menu / primary-action
+    /// targets from the set of ids the native modifier hands back.
+    private func entry(forSelection ids: Set<HostListEntry.ID>) -> HostListEntry? {
+        guard let id = ids.first else { return nil }
+        return entries.first { $0.id == id }
+    }
+
+    /// Right-click menu for a row: Connect plus the kind-appropriate
+    /// management actions.
+    @ViewBuilder
+    private func contextMenuItems(for entry: HostListEntry) -> some View {
+        Button { connect(entry) } label: {
+            Label("Connect", systemImage: "play.fill")
+        }
+        Divider()
+        switch entry {
+        case .saved(let host):
+            Button { editing = host } label: {
+                Label("Edit…", systemImage: "pencil")
+            }
+            Button(role: .destructive) { hostPendingDelete = host } label: {
+                Label("Delete", systemImage: "trash")
+            }
+        case .discovered(let host):
+            Button { save(host) } label: {
+                Label("Save Host", systemImage: "square.and.arrow.down")
             }
         }
     }
@@ -184,13 +233,29 @@ struct HostsView: View {
                 .foregroundStyle(.tertiary)
             Text("No saved hosts")
                 .font(.title3)
-            Text("Click + in the toolbar to add a JetKVM device, or wait for one to appear on your local network.")
+            Text("Click + at the bottom to add a JetKVM device, or wait for one to appear on your local network.")
                 .font(.callout)
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 32)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// Bottom bar: just Add (on the right). Host management lives in the
+    /// row's right-click menu — Edit…/Delete for saved hosts, Save for
+    /// discovered — and ⌫ deletes the selected saved host.
+    private var gutterBar: some View {
+        HStack(spacing: 2) {
+            Spacer()
+            Button { showingAdd = true } label: {
+                Image(systemName: "plus")
+            }
+            .buttonStyle(GutterButtonStyle())
+            .help("Add a host")
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
     }
 
     private func connect(_ entry: HostListEntry) {
@@ -202,6 +267,22 @@ struct HostsView: View {
             id = KVMSessionWindowID(discovered: host)
         }
         openWindow(value: id)
+    }
+
+    /// Promote a discovered (mDNS) host to a saved one. Future merges
+    /// dedupe the discovered entry by hostname — the saved one wins and
+    /// keeps the user's now-editable nickname — so move the selection to
+    /// it so the user sees their saved entry picked.
+    private func save(_ host: DiscoveredHost) {
+        let saved = SavedHost(
+            name: host.instanceName,
+            host: host.host,
+            port: host.port,
+            useTLS: host.useTLS,
+            kind: host.kind
+        )
+        store.add(saved)
+        selection = HostListEntry.saved(saved).id
     }
 }
 
@@ -232,11 +313,6 @@ private struct HostRow: View {
     let urlString: String
     let kind: HostRowKind
     let deviceKind: DeviceKind
-    let isSelected: Bool
-    let onConnect: () -> Void
-    let onEdit: (() -> Void)?
-    let onDelete: (() -> Void)?
-    @State private var isHovering = false
 
     var body: some View {
         HStack(spacing: 12) {
@@ -253,51 +329,11 @@ private struct HostRow: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            // Edit + Delete reveal next to the play button only on
-            // the selected row, and only when the row supports those
-            // actions (saved hosts do; discovered ones don't —
-            // they're ephemeral).
-            if isSelected, let onEdit, let onDelete {
-                Button(action: onEdit) {
-                    Image(systemName: "pencil")
-                        .font(.title3)
-                        .foregroundStyle(.white)
-                }
-                .buttonStyle(.plain)
-                .help("Edit \(displayName)")
-                .transition(.opacity.combined(with: .scale(scale: 0.7)))
-
-                Button(role: .destructive, action: onDelete) {
-                    Image(systemName: "trash")
-                        .font(.title3)
-                        .foregroundStyle(.white)
-                }
-                .buttonStyle(.plain)
-                .help("Delete \(displayName)")
-                .transition(.opacity.combined(with: .scale(scale: 0.7)))
-            }
-            // Play button only appears on hover or while the row is
-            // selected — keeps the resting list visually quieter.
-            if isHovering || isSelected {
-                Button(action: onConnect) {
-                    // White on the selection blue, accent otherwise. The
-                    // button still fades in/out via the .transition below.
-                    SelectionTintedIcon(systemName: "play.circle.fill", unselected: Color.accentColor)
-                }
-                .buttonStyle(.plain)
-                .help("Connect to \(displayName)")
-                .transition(.opacity)
-            }
         }
         .padding(.vertical, 4)
+        // Whole-row hit area so selection and the double-click-to-connect
+        // gesture register anywhere in the row, not just on the text.
         .contentShape(Rectangle())
-        .onHover { isHovering = $0 }
-        // Animate the action-button reveals (edit/trash on selection, play
-        // on hover). The icon and play-button COLOURS aren't affected by
-        // this — they're driven by backgroundProminence, not isSelected, so
-        // they snap with the selection background — see SelectionTintedIcon.
-        .animation(.easeInOut(duration: 0.15), value: isSelected)
-        .animation(.easeInOut(duration: 0.12), value: isHovering)
     }
 }
 
@@ -355,5 +391,41 @@ private struct SelectionTintedIcon: View {
         Image(systemName: systemName)
             .font(font)
             .foregroundStyle(backgroundProminence == .increased ? Color.white : unselected)
+    }
+}
+
+/// Borderless icon button for the bottom gutter bar (+/−/edit). Neutral
+/// label-coloured glyph with a subtle rounded hover/press highlight, dimmed
+/// when disabled — the small "source list" control look, not an accent-
+/// tinted `.borderless` button.
+private struct GutterButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        GutterButton(configuration: configuration)
+    }
+
+    private struct GutterButton: View {
+        let configuration: Configuration
+        @Environment(\.isEnabled) private var isEnabled
+        @State private var isHovering = false
+
+        private var fillOpacity: Double {
+            guard isEnabled else { return 0 }
+            if configuration.isPressed { return 0.18 }
+            if isHovering { return 0.10 }
+            return 0
+        }
+
+        var body: some View {
+            configuration.label
+                .font(.system(size: 13, weight: .medium))
+                .frame(width: 24, height: 22)
+                .background(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(Color.primary.opacity(fillOpacity))
+                )
+                .contentShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                .opacity(isEnabled ? 1 : 0.35)
+                .onHover { isHovering = $0 }
+        }
     }
 }

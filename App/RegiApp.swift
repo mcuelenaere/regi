@@ -135,6 +135,11 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 /// session-specific commands (KVM window focused). Closures capture
 /// each window's local SwiftUI state — the menu just invokes them.
 struct SessionActions {
+    /// Whether the device's controls are available right now — a control-
+    /// capable device with its RPC channel ready. Drives the File-menu
+    /// "Show Controls" enabled state, mirroring the toolbar button (which
+    /// is hidden for non-control devices and disabled until rpcReady).
+    let canShowControls: Bool
     let toggleControls: () -> Void
     let toggleStats: () -> Void
 }
@@ -152,44 +157,102 @@ extension FocusedValues {
     }
 }
 
+/// Shared bridge that lets the File menu (RegiCommands) reflect whether
+/// the Hosts list currently has a saved host selected, so Edit/Delete can
+/// enable/disable correctly.
+///
+/// `.focusedSceneValue` would be the idiomatic channel, but it doesn't
+/// reach `Commands` from the single-instance `Window` Hosts scene the way
+/// it does from the session `WindowGroup`. A plain `@Observable` reference
+/// shared by the App, HostsView, and the menu sidesteps that: HostsView
+/// writes the flag on selection changes; RegiCommands reads it (Commands
+/// bodies participate in Observation, so the menu re-evaluates).
+@MainActor
+@Observable
+final class HostMenuModel {
+    /// Any host selected (saved or discovered) — gates Connect.
+    var hasSelection = false
+    /// A saved host selected — gates Edit/Delete (discovered hosts can't
+    /// be edited or deleted).
+    var hasSavedHostSelected = false
+}
+
 /// File-menu command set. Replaces the entire SwiftUI-auto-generated
 /// `.newItem` group (which would otherwise add "New Regi Window" and
 /// "New KVM Session Window" entries — both wrong: hosts is single-
 /// instance, session windows are opened by selecting a host).
 ///
-/// Top entry is always "Show Hosts" (⇧⌘H) so the launcher is one
-/// keystroke away regardless of focus — matches the dock right-click
-/// item and lets the user reopen Hosts from a session window or from
-/// the menu bar when no window is frontmost. Below that, menu
-/// contents switch based on which window is frontmost:
-///   - hosts window focused   → "Add Host…"
-///   - KVM session focused    → "Show Controls" / "Show Connection
-///                              Stats" (no "Disconnect" — ⌘W close-
-///                              window already tears the session
-///                              down via KVMSessionWindow.onDisappear)
+/// Menu contents switch on whether a session window is frontmost (keyed
+/// off `sessionActions`, the reliably-propagated focused value — gating on
+/// the hosts side instead can fall through to an empty menu):
+///   - KVM session focused      → "Show Controls" / "Show Connection
+///                                Stats" (no "Disconnect" — ⌘W close-window
+///                                already tears the session down)
+///   - otherwise (hosts or none) → "Add Host…", "Edit Host…", "Delete
+///                                Host" (host management — in File, not
+///                                Edit)
+/// Reopening the Hosts list is intentionally NOT a File command: the
+/// Window menu's auto-injected "Hosts" entry (from the `Window("Hosts", …)`
+/// scene) and the dock menu already do that from everywhere.
+///
+/// Host actions post notifications rather than reading a focused value:
+/// the Hosts scene is a single `Window` (not a `WindowGroup`), and its
+/// `.focusedSceneValue` doesn't reach `Commands` reliably, so the items
+/// stay enabled and HostsView no-ops them when nothing's selected.
 struct RegiCommands: Commands {
     @FocusedValue(\.sessionActions) private var sessionActions
-    @Environment(\.openWindow) private var openWindow
+    let hostMenuModel: HostMenuModel
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
-            Button("Show Hosts") {
-                openWindow(id: "hosts")
-            }
-            .keyboardShortcut("h", modifiers: [.command, .shift])
-
-            Divider()
-
             if let sessionActions {
+                // A session window is frontmost: its view commands. (No
+                // "Show Hosts" — the Window menu's auto "Hosts" entry and
+                // the dock menu already reopen the list.)
                 Button("Show Controls", action: sessionActions.toggleControls)
                     .keyboardShortcut("k", modifiers: .command)
+                    .disabled(!sessionActions.canShowControls)
                 Button("Show Connection Stats", action: sessionActions.toggleStats)
                     .keyboardShortcut("i", modifiers: .command)
             } else {
-                Button("Add Host…") {
+                // Hosts window (or no window) is frontmost — host
+                // management. (These belong in File, not Edit.) Add (create)
+                // sits on its own; below the divider are the commands that
+                // act on the selected host — Connect (any selection), Edit
+                // and Delete (saved only). Each posts a notification
+                // HostsView handles. Delete also gets ⌘⌫ — plain ⌫ is
+                // handled inside the list so it doesn't shadow Backspace in
+                // text fields.
+                Button {
                     NotificationCenter.default.post(name: .regiAddHost, object: nil)
+                } label: {
+                    Label("Add Host…", systemImage: "plus")
                 }
                 .keyboardShortcut("n", modifiers: .command)
+
+                Divider()
+
+                Button {
+                    NotificationCenter.default.post(name: .regiConnectHost, object: nil)
+                } label: {
+                    Label("Connect", systemImage: "play.fill")
+                }
+                .disabled(!hostMenuModel.hasSelection)
+
+                Button {
+                    NotificationCenter.default.post(name: .regiEditHost, object: nil)
+                } label: {
+                    Label("Edit Host…", systemImage: "pencil")
+                }
+                .disabled(!hostMenuModel.hasSavedHostSelected)
+
+                Button {
+                    NotificationCenter.default.post(name: .regiDeleteHost, object: nil)
+                } label: {
+                    Label("Delete Host", systemImage: "trash")
+                }
+                .keyboardShortcut(.delete, modifiers: .command)
+                .disabled(!hostMenuModel.hasSavedHostSelected)
             }
         }
         // No custom `Window > Hosts` command: SwiftUI auto-injects
@@ -207,6 +270,7 @@ struct RegiApp: App {
     @State private var hostStore = HostStore()
     @State private var trustStore = TrustedHostStore()
     @State private var discovery = DeviceDiscovery()
+    @State private var hostMenuModel = HostMenuModel()
 
     var body: some Scene {
         // Root window: the saved-hosts list. `Window` (singular) —
@@ -221,10 +285,11 @@ struct RegiApp: App {
                 .environment(hostStore)
                 .environment(trustStore)
                 .environment(discovery)
+                .environment(hostMenuModel)
                 .onAppear { discovery.start() }
         }
         .defaultSize(width: 520, height: 420)
-        .commands { RegiCommands() }
+        .commands { RegiCommands(hostMenuModel: hostMenuModel) }
 
         // One window per connected host. Spawned by openWindow(value:)
         // from HostsView with a KVMSessionWindowID. Each window owns
