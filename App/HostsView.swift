@@ -240,7 +240,7 @@ private struct HostRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            HostRowIcon(kind: kind, isSelected: isSelected)
+            HostRowIcon(kind: kind)
                 .frame(width: 32)
             VStack(alignment: .leading, spacing: 2) {
                 Text(displayName)
@@ -280,13 +280,9 @@ private struct HostRow: View {
             // selected — keeps the resting list visually quieter.
             if isHovering || isSelected {
                 Button(action: onConnect) {
-                    Image(systemName: "play.circle.fill")
-                        .font(.title2)
-                        // White on selection blue, .tint on regular
-                        // rows — matches the Finder / Mail "icons
-                        // invert with the selection background"
-                        // convention.
-                        .foregroundStyle(isSelected ? Color.white : Color.accentColor)
+                    // White on the selection blue, accent otherwise. The
+                    // button still fades in/out via the .transition below.
+                    SelectionTintedIcon(systemName: "play.circle.fill", unselected: Color.accentColor)
                 }
                 .buttonStyle(.plain)
                 .help("Connect to \(displayName)")
@@ -296,6 +292,10 @@ private struct HostRow: View {
         .padding(.vertical, 4)
         .contentShape(Rectangle())
         .onHover { isHovering = $0 }
+        // Animate the action-button reveals (edit/trash on selection, play
+        // on hover). The icon and play-button COLOURS aren't affected by
+        // this — they're driven by backgroundProminence, not isSelected, so
+        // they snap with the selection background — see SelectionTintedIcon.
         .animation(.easeInOut(duration: 0.15), value: isSelected)
         .animation(.easeInOut(duration: 0.12), value: isHovering)
     }
@@ -306,23 +306,54 @@ private struct HostRow: View {
 /// the row subtitle, not here. Discovered hosts (always JetKVM, via
 /// `_jetkvm._tcp`) get the same glyph with a small
 /// `dot.radiowaves.left.and.right` "broadcasting" badge in the
-/// bottom-right. On selection both the glyph and badge flip to white to
-/// match the row text.
+/// bottom-right. Both flip to white on selection — see SelectionTintedIcon.
 private struct HostRowIcon: View {
     let kind: HostRowKind
-    let isSelected: Bool
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
-            Image(systemName: "display")
-                .font(.title2)
-                .foregroundStyle(isSelected ? Color.white : Color.secondary)
+            SelectionTintedIcon(systemName: "display", unselected: Color.secondary)
             if kind == .discovered {
-                Image(systemName: "dot.radiowaves.left.and.right")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(isSelected ? Color.white : Color.green)
-                    .offset(x: 12, y: 12)
+                SelectionTintedIcon(
+                    systemName: "dot.radiowaves.left.and.right",
+                    font: .system(size: 10, weight: .bold),
+                    unselected: Color.green
+                )
+                .offset(x: 12, y: 12)
             }
         }
+    }
+}
+
+/// An SF Symbol that renders white when its row is the prominent (active-
+/// window) selection and `unselected` otherwise, with the colour change
+/// snapped in lockstep with the List's selection background — no fade.
+///
+/// The colour is driven by `\.backgroundProminence`, NOT a `selection == id`
+/// flag. The List is backed by NSTableView, which paints the selection
+/// background immediately on click; the SwiftUI `selection` binding is
+/// updated by the AppKit→SwiftUI bridge one frame LATER, so a colour
+/// derived from it re-renders a frame behind the background — the glyph
+/// lingers white-on-white on deselect / low-contrast on blue on select
+/// (a visible "flash"). `backgroundProminence` is instead set by the List
+/// in the same pass it paints the background (the same mechanism that
+/// tints the subtitle text), so the colour change lands in lockstep — and,
+/// like that text tint, it does not fade. It also correctly stays
+/// `unselected` when the window is inactive (the selection is grey then,
+/// not blue).
+///
+/// Reading `\.backgroundProminence` only works in a descendant of the row
+/// (which this always is) — the List publishes it to the row's contents,
+/// not to the HostRow root, so reading it there would always be `.standard`.
+private struct SelectionTintedIcon: View {
+    let systemName: String
+    var font: Font = .title2
+    let unselected: Color
+    @Environment(\.backgroundProminence) private var backgroundProminence
+
+    var body: some View {
+        Image(systemName: systemName)
+            .font(font)
+            .foregroundStyle(backgroundProminence == .increased ? Color.white : unselected)
     }
 }
