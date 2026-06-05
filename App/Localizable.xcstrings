@@ -124,6 +124,9 @@
     "https://kvm.local or kvm.local" : {
 
     },
+    "https://pikvm.local or pikvm.local" : {
+
+    },
     "Incompatible resolution or refresh rate settings" : {
 
     },
@@ -155,6 +158,9 @@
 
     },
     "Name (optional)" : {
+
+    },
+    "No additional controls for this device." : {
 
     },
     "No saved hosts" : {
@@ -245,6 +251,12 @@
 
     },
     "Trust certificate" : {
+
+    },
+    "Type" : {
+
+    },
+    "Username" : {
 
     },
     "v" : {

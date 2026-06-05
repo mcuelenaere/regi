@@ -9,6 +9,7 @@ public enum WebRTCFacadeError: Error, Sendable {
     case peerConnectionCreationFailed
     case dataChannelCreationFailed(label: String)
     case offerCreationFailed(String)
+    case answerCreationFailed(String)
     case sessionDescriptionCodecFailure(String)
     case setLocalDescriptionFailed(String)
     case setRemoteDescriptionFailed(String)
@@ -283,6 +284,70 @@ public actor WebRTCFacade {
         return try Self.encodeSessionDescription(offer)
     }
 
+    /// Create the peer connection as the *answering* side: apply a
+    /// remote offer (PiKVM's Janus `janus.plugin.ustreamer` sends the
+    /// offer), produce an answer, and return its raw SDP. Video-only —
+    /// no data channels are created, since PiKVM carries input on a
+    /// separate `/api/ws` socket. The `videoTracks`,
+    /// `localIceCandidates`, `connectionState`, and `stats` streams
+    /// behave exactly as in the offerer (`start()`) path, so the
+    /// Session pumps and the App-layer renderer are unchanged.
+    ///
+    /// `offerSDP` is the raw SDP string from the Janus JSEP offer (not
+    /// the base64-wrapped JetKVM wire form). The return value is the raw
+    /// answer SDP to hand back to Janus as `jsep.sdp`.
+    public func startAnswerer(offerSDP: String, iceServers: [String] = []) async throws -> String {
+        guard peerConnection == nil else { throw WebRTCFacadeError.alreadyStarted }
+
+        let config = RTCConfiguration()
+        config.iceServers = iceServers.isEmpty ? [] : [RTCIceServer(urlStrings: iceServers)]
+        config.sdpSemantics = .unifiedPlan
+        config.bundlePolicy = .maxBundle
+        config.rtcpMuxPolicy = .require
+        config.continualGatheringPolicy = .gatherContinually
+
+        let constraints = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
+
+        let delegate = PeerDelegate(
+            iceContinuation: localIceCandidatesContinuation,
+            trackContinuation: videoTracksContinuation,
+            stateContinuation: connectionStateContinuation
+        )
+        self.delegate = delegate
+
+        guard let pc = factory.peerConnection(
+            with: config,
+            constraints: constraints,
+            delegate: delegate
+        ) else {
+            throw WebRTCFacadeError.peerConnectionCreationFailed
+        }
+        self.peerConnection = pc
+
+        // Apply the remote offer first. In unified-plan this creates the
+        // recvonly video transceiver from the offer's m-line, so unlike
+        // the offerer path we don't add a transceiver or any data
+        // channels.
+        let offer = RTCSessionDescription(type: .offer, sdp: offerSDP)
+        try await Self.setRemoteDescription(pc: pc, sdp: offer)
+
+        // Same connection-quality poller as the offerer path.
+        statsTask = Task { [weak self] in
+            await Self.runStatsPoller(
+                peerConnection: pc,
+                continuation: self?.statsContinuation
+            )
+        }
+
+        let answerConstraints = RTCMediaConstraints(
+            mandatoryConstraints: ["OfferToReceiveVideo": "true"],
+            optionalConstraints: nil
+        )
+        let answer = try await Self.createAnswer(pc: pc, constraints: answerConstraints)
+        try await Self.setLocalDescription(pc: pc, sdp: answer)
+        return answer.sdp
+    }
+
     /// Apply the answer received from the server. The wire format is
     /// `base64(JSON({type:"answer", sdp:...}))`, same shape the offer uses.
     public func setRemoteAnswer(sdpBase64: String) async throws {
@@ -430,6 +495,23 @@ public actor WebRTCFacade {
                     cont.resume(returning: sdp)
                 } else {
                     cont.resume(throwing: WebRTCFacadeError.offerCreationFailed("no sdp and no error"))
+                }
+            }
+        }
+    }
+
+    private static func createAnswer(
+        pc: RTCPeerConnection,
+        constraints: RTCMediaConstraints
+    ) async throws -> RTCSessionDescription {
+        try await withCheckedThrowingContinuation { cont in
+            pc.answer(for: constraints) { sdp, error in
+                if let error {
+                    cont.resume(throwing: WebRTCFacadeError.answerCreationFailed(String(describing: error)))
+                } else if let sdp {
+                    cont.resume(returning: sdp)
+                } else {
+                    cont.resume(throwing: WebRTCFacadeError.answerCreationFailed("no sdp and no error"))
                 }
             }
         }

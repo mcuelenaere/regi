@@ -10,19 +10,46 @@ struct SavedHost: Codable, Identifiable, Hashable {
     var host: String
     var port: Int
     var useTLS: Bool
+    /// Device family. JetKVM is the default so entries saved before
+    /// PiKVM support decode unchanged.
+    var kind: DeviceKind
+    /// PiKVM login user (ignored for JetKVM). Defaults to PiKVM's
+    /// stock `admin`.
+    var username: String
 
     init(
         id: UUID = UUID(),
         name: String = "",
         host: String,
         port: Int = 80,
-        useTLS: Bool = false
+        useTLS: Bool = false,
+        kind: DeviceKind = .jetKVM,
+        username: String = "admin"
     ) {
         self.id = id
         self.name = name
         self.host = host
         self.port = port
         self.useTLS = useTLS
+        self.kind = kind
+        self.username = username
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, host, port, useTLS, kind, username
+    }
+
+    // Custom decode so entries persisted before PiKVM support (no
+    // `kind`/`username` keys) still load, defaulting to JetKVM.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        host = try c.decode(String.self, forKey: .host)
+        port = try c.decode(Int.self, forKey: .port)
+        useTLS = try c.decode(Bool.self, forKey: .useTLS)
+        kind = try c.decodeIfPresent(DeviceKind.self, forKey: .kind) ?? .jetKVM
+        username = try c.decodeIfPresent(String.self, forKey: .username) ?? "admin"
     }
 
     /// What to show in the list. Falls back to the host string when
@@ -36,7 +63,13 @@ struct SavedHost: Codable, Identifiable, Hashable {
     /// `TrustedHostStore` so the trust state is keyed by host string,
     /// not by SavedHost id.
     var endpoint: DeviceEndpoint {
-        DeviceEndpoint(host: host, port: port, useTLS: useTLS)
+        DeviceEndpoint(
+            host: host,
+            port: port,
+            useTLS: useTLS,
+            kind: kind,
+            username: kind == .piKVM ? username : nil
+        )
     }
 
     /// Round-trippable URL string for the form's URL field. Drops the
@@ -51,14 +84,15 @@ struct SavedHost: Codable, Identifiable, Hashable {
 
     /// Parse user input that's either a URL ("https://kvm.local",
     /// "http://kvm.local:8080") or a bare hostname ("kvm.local",
-    /// "kvm.local:8080"). Bare hostnames default to http/80.
+    /// "kvm.local:8080"). Bare hostnames default to `defaultScheme`
+    /// (http for JetKVM, https for PiKVM since KVMD is TLS by default).
     /// Returns nil for unparseable / non-http(s) input.
-    static func parse(_ raw: String) -> (host: String, port: Int, useTLS: Bool)? {
+    static func parse(_ raw: String, defaultScheme: String = "http") -> (host: String, port: Int, useTLS: Bool)? {
         let trimmed = raw.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return nil }
-        // URL needs a scheme to parse host/port reliably; prepend
-        // http:// when the user didn't include one.
-        let withScheme = trimmed.contains("://") ? trimmed : "http://\(trimmed)"
+        // URL needs a scheme to parse host/port reliably; prepend the
+        // default scheme when the user didn't include one.
+        let withScheme = trimmed.contains("://") ? trimmed : "\(defaultScheme)://\(trimmed)"
         guard
             let url = URL(string: withScheme),
             let host = url.host(percentEncoded: false),

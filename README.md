@@ -6,7 +6,7 @@
 
 [![Build](https://github.com/mcuelenaere/regi/actions/workflows/build.yml/badge.svg)](https://github.com/mcuelenaere/regi/actions/workflows/build.yml)
 
-A native macOS client for [JetKVM](https://jetkvm.com) hardware.
+A native macOS client for [JetKVM](https://jetkvm.com) and [PiKVM](https://pikvm.org) hardware.
 
 <p align="center">
   <img src="docs/screenshots/hero.jpg" alt="Regi hosts list and a connected session" width="820">
@@ -14,38 +14,44 @@ A native macOS client for [JetKVM](https://jetkvm.com) hardware.
 
 ## What it is
 
-JetKVM ships a web-based control panel that runs in a browser tab and
-works fine for casual remote-control. But a browser can't capture
-macOS system shortcuts — ⌘Tab, ⌘Space, ⌘Q — so they get eaten by your
-Mac instead of reaching the host. Regi is a native macOS app that
-fixes this and a handful of other rough edges along the way.
+JetKVM and PiKVM both ship web-based control panels that run in a
+browser tab and work fine for casual remote-control. But a browser
+can't capture macOS system shortcuts — ⌘Tab, ⌘Space, ⌘Q — so they get
+eaten by your Mac instead of reaching the host. Regi is a native macOS
+app that fixes this and a handful of other rough edges along the way.
 
-It speaks the same WebRTC + JSON-RPC + HID-RPC protocol as the
-official frontend; the difference is in the macOS integration around
-it.
+It talks each device's native protocol — JetKVM's WebRTC + JSON-RPC +
+HID-RPC, or PiKVM's Janus WebRTC video + `/api/ws` input — behind one
+unified UI; the difference is in the macOS integration around it.
 
 ## Features
 
+- **JetKVM and PiKVM in one app.** Core remote control — video, keyboard,
+  mouse, and scroll — works on either family. JetKVM additionally exposes
+  ATX power, codec/quality, and clipboard sync; those device-specific
+  controls are hidden when they don't apply (PiKVM parity is on the
+  roadmap).
 - **Real keyboard capture.** System shortcuts — ⌘Tab, ⌘Space (Spotlight),
   ⌘Q, ⌘H, Mission Control, function keys — route to the remote host via
   `CGEventTap`. Engages automatically when the session window is
   frontmost; suspends the moment you switch apps so your Mac isn't
   fighting you.
-- **mDNS / Bonjour discovery.** JetKVM devices on your LAN appear in
-  the host list automatically — no URL typing, no scanning.
-- **Multi-window, multi-device.** Connect to several JetKVMs at once,
+- **mDNS / Bonjour discovery.** JetKVM (`_jetkvm._tcp`) and PiKVM
+  (`_pikvm._tcp`) devices on your LAN appear in the host list
+  automatically — no URL typing, no scanning.
+- **Multi-window, multi-device.** Connect to several devices at once,
   each in its own window with its own video stream, signaling channel,
   and session state.
 - **Pointer lock for FPS / CAD work.** Optional mode that pins the
   cursor and delivers raw relative motion, so the host cursor doesn't
   walk away from yours on multi-monitor host setups.
-- **In-app TLS trust prompt.** Default JetKVM certs are self-signed.
-  Regi surfaces a one-time "Trust certificate" prompt with the actual
-  failure reason instead of a generic browser warning, and remembers
-  your choice per host.
+- **In-app TLS trust prompt.** JetKVM and PiKVM both ship self-signed
+  certs by default. Regi surfaces a one-time "Trust certificate" prompt
+  with the actual failure reason instead of a generic browser warning,
+  and remembers your choice per host.
 - **Keychain-backed passwords.** Per-host, scoped to the app.
-- **Bandwidth gate.** When the session window is minimised or fully
-  covered, Regi tells the device to pause its encoder (after a 5 s
+- **Bandwidth gate** *(JetKVM)*. When the session window is minimised or
+  fully covered, Regi tells the device to pause its encoder (after a 5 s
   debounce). Saves device CPU and LAN bandwidth while the window's
   hidden; resumes instantly when you bring it back.
 - **First-class native UI.** SwiftUI, Mission Control thumbnails,
@@ -66,19 +72,27 @@ it.
 | Pointer lock | HTML5 Pointer Lock API | Native CG APIs |
 | Updates | Browser cache | Standalone `.app` |
 
+The same comparison holds for PiKVM's web UI — a browser can't forward
+macOS shortcuts there either.
+
 What Regi *doesn't* replace: anything that's not part of an active
 remote-control session. The device's setup flow, advanced settings,
-firmware updates, and so on are still done through the web UI. Regi
-assumes you've configured the device there at least once.
+firmware updates, and (for PiKVM) ATX power and mass-storage controls
+are still done through the web UI. Regi assumes you've configured the
+device there at least once.
 
 ## Requirements
 
 - macOS 14 (Sonoma) or later
-- A JetKVM device reachable on the network
-- For HTTPS to default-config devices: JetKVM firmware that produces
-  RFC 5280-compliant certificate serial numbers (recent firmware does;
-  older firmware still works over plain HTTP, and the in-app trust
-  prompt handles the self-signed CA either way)
+- A JetKVM or PiKVM device reachable on the network
+- **JetKVM**: for HTTPS to default-config devices, firmware that
+  produces RFC 5280-compliant certificate serial numbers (recent
+  firmware does; older firmware still works over plain HTTP, and the
+  in-app trust prompt handles the self-signed CA either way)
+- **PiKVM**: H.264 / WebRTC streaming via `kvmd-janus` enabled (the
+  default on current PiKVM OS images); the in-app trust prompt handles
+  its self-signed certificate. mDNS auto-discovery needs `avahi-daemon`
+  running on the device — otherwise add it by host/IP manually.
 
 ## Installation
 
@@ -116,5 +130,7 @@ Apache 2.0 — see [LICENSE](LICENSE).
 
 - The [JetKVM project](https://github.com/jetkvm/kvm) for the hardware
   and the open firmware Regi talks to.
+- The [PiKVM project](https://github.com/pikvm/kvmd) for KVMD and its
+  documented HTTP / WebSocket / Janus interfaces.
 - [`stasel/WebRTC`](https://github.com/stasel/WebRTC) for the
   WebRTC.framework SwiftPM distribution.

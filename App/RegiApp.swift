@@ -20,12 +20,16 @@ struct KVMSessionWindowID: Hashable, Codable {
     let host: String
     let port: Int
     let useTLS: Bool
+    let kind: DeviceKind
+    let username: String
 
     init(saved: SavedHost) {
         self.displayName = saved.displayName
         self.host = saved.host
         self.port = saved.port
         self.useTLS = saved.useTLS
+        self.kind = saved.kind
+        self.username = saved.username
     }
 
     init(discovered: DiscoveredHost) {
@@ -33,6 +37,10 @@ struct KVMSessionWindowID: Hashable, Codable {
         self.host = discovered.host
         self.port = discovered.port
         self.useTLS = discovered.useTLS
+        self.kind = discovered.kind
+        // PiKVM needs a username; discovery doesn't carry one, so use
+        // its stock default. JetKVM ignores this field.
+        self.username = "admin"
     }
 
     init(from decoder: Decoder) throws {

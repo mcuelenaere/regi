@@ -19,15 +19,36 @@ struct ControlPanel: View {
 
     private var rpcDisabled: Bool { !session.rpcReady }
 
+    private var caps: KVMCapabilities { session.capabilities }
+    private var hasAnyControls: Bool {
+        caps.atxPower || caps.videoCodecPreference || caps.streamQuality || caps.clipboardSync
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            powerSection
-            Divider()
-            codecSection
-            Divider()
-            qualitySection
-            Divider()
-            clipboardSection
+            // Sections are gated on device capabilities so a PiKVM
+            // session (no control plane in v1) doesn't show JetKVM-only
+            // controls. Each owns a trailing Divider except the last.
+            if caps.atxPower {
+                powerSection
+                Divider()
+            }
+            if caps.videoCodecPreference {
+                codecSection
+                Divider()
+            }
+            if caps.streamQuality {
+                qualitySection
+                Divider()
+            }
+            if caps.clipboardSync {
+                clipboardSection
+            }
+            if !hasAnyControls {
+                Text("No additional controls for this device.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
             if let err = pendingError {
                 Text(err)
                     .font(.caption)

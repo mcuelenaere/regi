@@ -9,7 +9,7 @@ private let log = Logger(subsystem: "app.regi.mac", category: "session")
 /// All methods are gated on `rpcReady` — calling before the channel
 /// has fully opened throws `SessionError.rpcNotReady` rather than
 /// hanging waiting for a response that can't ride the channel.
-extension Session {
+extension JetKVMBackend {
 
     // MARK: - Identity
 

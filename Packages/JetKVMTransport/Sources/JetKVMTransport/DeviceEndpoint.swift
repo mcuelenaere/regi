@@ -22,17 +22,29 @@ public struct DeviceEndpoint: Sendable, Hashable {
     /// (e.g. shipping the JetKVM CA in a custom trust store) would re-use
     /// this code path.
     public let allowSelfSignedCertificate: Bool
+    /// Which device family this endpoint targets. Selects the transport
+    /// backend in `Session`. Defaults to `.jetKVM` so existing call
+    /// sites are unaffected.
+    public let kind: DeviceKind
+    /// Login username. JetKVM authenticates with a password only and
+    /// ignores this; PiKVM requires it (defaults to `admin` at the
+    /// App layer). `nil` for the JetKVM path.
+    public let username: String?
 
     public init(
         host: String,
         port: Int = 80,
         useTLS: Bool = false,
-        allowSelfSignedCertificate: Bool = false
+        allowSelfSignedCertificate: Bool = false,
+        kind: DeviceKind = .jetKVM,
+        username: String? = nil
     ) {
         self.host = host
         self.port = port
         self.useTLS = useTLS
         self.allowSelfSignedCertificate = allowSelfSignedCertificate
+        self.kind = kind
+        self.username = username
     }
 
     public func httpURL(path: String, queryItems: [URLQueryItem]? = nil) -> URL {

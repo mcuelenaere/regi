@@ -42,16 +42,18 @@
     </dict>
     <!--
         Local-network access for mDNS / Bonjour discovery of JetKVM
-        devices on the LAN. macOS prompts the user the first time
-        the app browses for these services. Without these keys,
-        NetServiceBrowser never returns results on macOS 14+ even
-        if the device is broadcasting correctly.
+        (_jetkvm._tcp) and PiKVM (_pikvm._tcp) devices on the LAN.
+        macOS prompts the user the first time the app browses for these
+        services. Without these keys, NetServiceBrowser never returns
+        results on macOS 14+ even if the device is broadcasting
+        correctly — each browsed service type must be listed here.
     -->
     <key>NSLocalNetworkUsageDescription</key>
-    <string>Used to discover JetKVM devices on your local network.</string>
+    <string>Used to discover JetKVM and PiKVM devices on your local network.</string>
     <key>NSBonjourServices</key>
     <array>
         <string>_jetkvm._tcp</string>
+        <string>_pikvm._tcp</string>
     </array>
     <!--
         Don't save window state on quit. macOS's "Reopen windows on
