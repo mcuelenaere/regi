@@ -19,6 +19,9 @@
     "Address" : {
 
     },
+    "admin" : {
+
+    },
     "Agent connected" : {
 
     },
@@ -124,6 +127,9 @@
     "https://kvm.local or kvm.local" : {
 
     },
+    "https://pikvm.local or pikvm.local" : {
+
+    },
     "Incompatible resolution or refresh rate settings" : {
 
     },
@@ -131,6 +137,9 @@
 
     },
     "Issues with the source device's HDMI output" : {
+
+    },
+    "JetKVM" : {
 
     },
     "JetKVM ships with a self-signed certificate by default. Trusting it lets the connection proceed; the choice is remembered for this host." : {
@@ -157,6 +166,9 @@
     "Name (optional)" : {
 
     },
+    "No additional controls for this device." : {
+
+    },
     "No saved hosts" : {
 
     },
@@ -167,6 +179,9 @@
 
     },
     "Password" : {
+
+    },
+    "PiKVM" : {
 
     },
     "Pointer lock" : {
@@ -245,6 +260,12 @@
 
     },
     "Trust certificate" : {
+
+    },
+    "Type" : {
+
+    },
+    "Username" : {
 
     },
     "v" : {

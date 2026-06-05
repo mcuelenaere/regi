@@ -190,7 +190,9 @@ struct KVMSessionWindow: View {
             host: sessionID.host,
             port: sessionID.port,
             useTLS: sessionID.useTLS,
-            allowSelfSignedCertificate: trustStore.isTrusted(sessionID.host)
+            allowSelfSignedCertificate: trustStore.isTrusted(sessionID.host),
+            kind: sessionID.kind,
+            username: sessionID.kind == .piKVM ? sessionID.username : nil
         )
     }
 

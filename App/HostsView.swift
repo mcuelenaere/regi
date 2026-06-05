@@ -1,4 +1,5 @@
 import SwiftUI
+import JetKVMTransport
 
 extension Notification.Name {
     /// Posted by the `File > Add Host…` command (and its ⌘N
@@ -122,6 +123,7 @@ struct HostsView: View {
                 displayName: host.displayName,
                 urlString: host.urlString,
                 kind: .saved,
+                deviceKind: host.kind,
                 isSelected: isSelected,
                 onConnect: { connect(entry) },
                 onEdit: { editing = host },
@@ -142,6 +144,8 @@ struct HostsView: View {
                 displayName: host.displayName,
                 urlString: discoveredURLString(host),
                 kind: .discovered,
+                // mDNS discovery is JetKVM-only (`_jetkvm._tcp`).
+                deviceKind: .jetKVM,
                 isSelected: isSelected,
                 onConnect: { connect(entry) },
                 onEdit: nil,
@@ -227,6 +231,7 @@ private struct HostRow: View {
     let displayName: String
     let urlString: String
     let kind: HostRowKind
+    let deviceKind: DeviceKind
     let isSelected: Bool
     let onConnect: () -> Void
     let onEdit: (() -> Void)?
@@ -240,7 +245,10 @@ private struct HostRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(displayName)
                     .font(.body)
-                Text(verbatim: urlString)
+                // Device family + address share the subtitle line, e.g.
+                // "JetKVM  •  http://jetkvm.local". Kept in the secondary
+                // style so it stays quiet.
+                Text(verbatim: "\(deviceKind.displayName)  •  \(urlString)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -293,12 +301,13 @@ private struct HostRow: View {
     }
 }
 
-/// Composite icon for a host row. Saved hosts get the plain
-/// `display` glyph; discovered ones get the same glyph with a small
+/// Icon for a host row. The `display` glyph represents the screen-over-
+/// IP device (both families); the device family is conveyed as text in
+/// the row subtitle, not here. Discovered hosts (always JetKVM, via
+/// `_jetkvm._tcp`) get the same glyph with a small
 /// `dot.radiowaves.left.and.right` "broadcasting" badge in the
-/// bottom-right, so the user reads it as "this is a screen, and
-/// it's announcing itself on the network." On selection both the
-/// main glyph and the badge flip to white to match the row text.
+/// bottom-right. On selection both the glyph and badge flip to white to
+/// match the row text.
 private struct HostRowIcon: View {
     let kind: HostRowKind
     let isSelected: Bool

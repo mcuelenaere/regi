@@ -1,4 +1,5 @@
 import SwiftUI
+import JetKVMTransport
 
 /// Add/edit dialog for a SavedHost. Same form for both — the
 /// `mode` switches between Save (new entry) and Update + Delete
@@ -9,7 +10,8 @@ import SwiftUI
 /// One URL field stands in for host/port/TLS — the user types
 /// either a URL ("https://kvm.local:8443") or a bare hostname
 /// ("kvm.local") and we parse it on save. The bare-hostname path
-/// defaults to http/80 since that's the JetKVM LAN case.
+/// defaults to http/80 for JetKVM and https/443 for PiKVM (KVMD is
+/// TLS by default). PiKVM also needs a login username.
 struct HostFormSheet: View {
     enum Mode {
         case add
@@ -24,6 +26,8 @@ struct HostFormSheet: View {
 
     @State private var name: String
     @State private var urlText: String
+    @State private var kind: DeviceKind
+    @State private var username: String
     @State private var showDeleteConfirmation = false
 
     init(
@@ -38,9 +42,13 @@ struct HostFormSheet: View {
         case .add:
             _name = State(initialValue: "")
             _urlText = State(initialValue: "")
+            _kind = State(initialValue: .jetKVM)
+            _username = State(initialValue: "admin")
         case .edit(let existing):
             _name = State(initialValue: existing.name)
             _urlText = State(initialValue: existing.urlString)
+            _kind = State(initialValue: existing.kind)
+            _username = State(initialValue: existing.username)
         }
     }
 
@@ -59,7 +67,7 @@ struct HostFormSheet: View {
     }
 
     private var parsed: (host: String, port: Int, useTLS: Bool)? {
-        SavedHost.parse(urlText)
+        SavedHost.parse(urlText, defaultScheme: kind == .piKVM ? "https" : "http")
     }
 
     private var canSave: Bool { parsed != nil }
@@ -69,16 +77,26 @@ struct HostFormSheet: View {
             Text(title).font(.title2)
 
             Form {
+                Picker("Type", selection: $kind) {
+                    Text("JetKVM").tag(DeviceKind.jetKVM)
+                    Text("PiKVM").tag(DeviceKind.piKVM)
+                }
+                .pickerStyle(.segmented)
                 TextField("Name (optional)", text: $name, prompt: Text("My desktop"))
                     .textFieldStyle(.roundedBorder)
                 TextField(
                     "Address",
                     text: $urlText,
-                    prompt: Text("https://kvm.local or kvm.local")
+                    prompt: Text(kind == .piKVM ? "https://pikvm.local or pikvm.local" : "https://kvm.local or kvm.local")
                 )
                 .textFieldStyle(.roundedBorder)
                 .autocorrectionDisabled()
                 .textContentType(.URL)
+                if kind == .piKVM {
+                    TextField("Username", text: $username, prompt: Text("admin"))
+                        .textFieldStyle(.roundedBorder)
+                        .autocorrectionDisabled()
+                }
             }
 
             if !urlText.isEmpty, parsed == nil {
@@ -137,6 +155,8 @@ struct HostFormSheet: View {
     private func save() {
         guard let parsed else { return }
         let trimmedName = name.trimmingCharacters(in: .whitespaces)
+        let trimmedUser = username.trimmingCharacters(in: .whitespaces)
+        let resolvedUser = trimmedUser.isEmpty ? "admin" : trimmedUser
         let saved: SavedHost
         switch mode {
         case .add:
@@ -144,7 +164,9 @@ struct HostFormSheet: View {
                 name: trimmedName,
                 host: parsed.host,
                 port: parsed.port,
-                useTLS: parsed.useTLS
+                useTLS: parsed.useTLS,
+                kind: kind,
+                username: resolvedUser
             )
         case .edit(let existing):
             saved = SavedHost(
@@ -152,7 +174,9 @@ struct HostFormSheet: View {
                 name: trimmedName,
                 host: parsed.host,
                 port: parsed.port,
-                useTLS: parsed.useTLS
+                useTLS: parsed.useTLS,
+                kind: kind,
+                username: resolvedUser
             )
         }
         onSave(saved)

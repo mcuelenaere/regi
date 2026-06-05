@@ -22,6 +22,14 @@ struct KVMWindowView: View {
     /// applies to all session windows.
     @AppStorage("RegiHideCursorOverVideo") private var hideCursorOverVideo: Bool = false
 
+    /// Whether the connected device exposes any control-plane feature
+    /// (ATX / codec / quality / clipboard). False for PiKVM v1, which
+    /// hides the Controls toolbar item entirely.
+    private var hasControlCapabilities: Bool {
+        let c = session.capabilities
+        return c.atxPower || c.videoCodecPreference || c.streamQuality || c.clipboardSync
+    }
+
     private var keyboardCaptureBinding: Binding<Bool> {
         Binding(
             // Only show as checked when capture is actually doing
@@ -213,18 +221,20 @@ struct KVMWindowView: View {
                 }
                 .help("Capture system keyboard shortcuts and/or lock the pointer for relative mouse mode. Optionally hide your local cursor over the video area when you'd rather see only the host's cursor. Keyboard capture requires Accessibility permission.")
             }
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    showControls.toggle()
-                } label: {
-                    Label("Controls", systemImage: "slider.horizontal.3")
+            if hasControlCapabilities {
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        showControls.toggle()
+                    } label: {
+                        Label("Controls", systemImage: "slider.horizontal.3")
+                    }
+                    .popover(isPresented: $showControls, arrowEdge: .top) {
+                        ControlPanel()
+                            .environment(session)
+                    }
+                    .disabled(!session.rpcReady)
+                    .help("Power, codec, and quality controls.")
                 }
-                .popover(isPresented: $showControls, arrowEdge: .top) {
-                    ControlPanel()
-                        .environment(session)
-                }
-                .disabled(!session.rpcReady)
-                .help("Power, codec, and quality controls.")
             }
             ToolbarItem(placement: .primaryAction) {
                 Button {
