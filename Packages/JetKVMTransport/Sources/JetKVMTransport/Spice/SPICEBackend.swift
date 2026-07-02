@@ -77,7 +77,7 @@ public final class SPICEBackend: KVMBackend {
                                       channel: .main, channelID: 0, connectionID: 0)
         self.mainConn = mainConn
         do {
-            _ = try await mainConn.connect(password: password)
+            try await Self.withTimeout(12) { _ = try await mainConn.connect(password: password) }
         } catch SpiceConnectionError.authFailed {
             // SPICE tickets come from the .vv and can't be re-entered, so a
             // rejection is terminal (usually an expired ticket).
@@ -130,8 +130,10 @@ public final class SPICEBackend: KVMBackend {
         let displayConn = makeConnection(endpoint: endpoint, tls: tls, proxy: proxy,
                                          channel: .display, channelID: 0, connectionID: sessionID)
         do {
-            _ = try await inputsConn.connect(password: password)
-            _ = try await displayConn.connect(password: password)
+            try await Self.withTimeout(12) {
+                _ = try await inputsConn.connect(password: password)
+                _ = try await displayConn.connect(password: password)
+            }
         } catch {
             state = .failed(Self.describe(error))
             await teardown()
@@ -258,14 +260,14 @@ public final class SPICEBackend: KVMBackend {
             // Drop OS auto-repeat: a single held make code is enough — the
             // guest generates typematic repeat itself.
             if heldKeys.contains(keyCode) {
-                log.info("SPICE key vk=\(keyCode) down: dropped (auto-repeat)")
+                log.notice("SPICE key vk=\(keyCode) down: dropped (auto-repeat)")
                 return
             }
             heldKeys.insert(keyCode)
         } else {
             heldKeys.remove(keyCode)
         }
-        log.info("SPICE key vk=\(keyCode) \(pressed ? "DOWN" : "up") sc=0x\(String(sc.wireCode, radix: 16))")
+        log.notice("SPICE key vk=\(keyCode) \(pressed ? "DOWN" : "up") sc=0x\(String(sc.wireCode, radix: 16))")
         inputContinuation?.yield(.key(sc, down: pressed))
     }
 
@@ -327,6 +329,22 @@ public final class SPICEBackend: KVMBackend {
         if buttons.contains(.middle) { m |= SpiceMsg.ButtonMask.middle }
         if buttons.contains(.right) { m |= SpiceMsg.ButtonMask.right }
         return m
+    }
+
+    /// Run `op` but fail if it doesn't finish in `seconds` — bounds the link
+    /// handshake reads, which otherwise hang forever if the server accepts
+    /// the socket but never replies (e.g. a rejected/expired ticket).
+    private static func withTimeout(_ seconds: Double,
+                                    _ op: @escaping @Sendable () async throws -> Void) async throws {
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask { try await op() }
+            group.addTask {
+                try await Task.sleep(for: .seconds(seconds))
+                throw SpiceConnectionError.connectionFailed("timed out after \(Int(seconds))s")
+            }
+            try await group.next()
+            group.cancelAll()
+        }
     }
 
     private static func describe(_ error: Error) -> String {
