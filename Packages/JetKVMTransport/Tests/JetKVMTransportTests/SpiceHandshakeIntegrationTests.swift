@@ -40,15 +40,15 @@ final class SpiceHandshakeIntegrationTests: XCTestCase {
         try XCTSkipUnless(vvPath != nil, "set SPICE_TEST_VV to a fresh Proxmox .vv path")
         let text = try String(contentsOfFile: vvPath!, encoding: .utf8)
         let cfg = SpiceVVConfig.parse(text)
-        if cfg.proxy != nil {
-            print("note: .vv has a proxy=\(cfg.proxy!); direct connection assumed (proxy tunnel not implemented)")
-        }
         let ep = try cfg.resolvedEndpoint()
+        let proxy = cfg.proxy.flatMap { SpiceProxy(url: $0) }
+        if let proxy { print("using CONNECT proxy \(proxy.host):\(proxy.port) → \(ep.host):\(ep.port)") }
 
         let conn = SpiceChannelConnection(
             host: ep.host, port: ep.port, useTLS: ep.useTLS, allowSelfSigned: false,
             channelType: .main, channelID: 0,
-            tlsConfig: SpiceTLSConfig(caPEM: cfg.caPEM, hostSubject: cfg.hostSubject)
+            tlsConfig: SpiceTLSConfig(caPEM: cfg.caPEM, hostSubject: cfg.hostSubject),
+            proxy: proxy
         )
         let reply = try await conn.connect(password: cfg.password)
         XCTAssertEqual(reply.error, SpiceProtocol.LinkErr.ok.rawValue, "link + ticket auth")

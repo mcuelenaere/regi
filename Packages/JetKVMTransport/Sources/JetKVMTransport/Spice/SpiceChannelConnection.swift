@@ -13,6 +13,25 @@ struct SpiceTLSConfig: Sendable {
     var hostSubject: String?
 }
 
+/// An HTTP CONNECT proxy (Proxmox `spiceproxy`), parsed from the `.vv`
+/// `proxy=http://host:port` field.
+struct SpiceProxy: Sendable, Equatable {
+    var host: String
+    var port: UInt16
+
+    init(host: String, port: UInt16) { self.host = host; self.port = port }
+
+    /// Parse `http://host:port` (scheme optional; default port 3128).
+    init?(url: String) {
+        var s = url
+        if let r = s.range(of: "://") { s = String(s[r.upperBound...]) }
+        let parts = s.split(separator: ":", maxSplits: 1)
+        guard let h = parts.first, !h.isEmpty else { return nil }
+        self.host = String(h)
+        self.port = parts.count > 1 ? (UInt16(parts[1]) ?? 3128) : 3128
+    }
+}
+
 /// Errors surfaced by a SPICE channel connection. `.authFailed` maps to the
 /// App layer's password prompt; `.untrustedCertificate` to the trust-override
 /// prompt (mirroring the JetKVM/PiKVM flows).
@@ -41,6 +60,7 @@ actor SpiceChannelConnection {
     private let useTLS: Bool
     private let allowSelfSigned: Bool
     private let tlsConfig: SpiceTLSConfig?
+    private let proxy: SpiceProxy?
 
     private var connection: NWConnection?
     private var sendSerial: UInt64 = 1
@@ -51,12 +71,14 @@ actor SpiceChannelConnection {
 
     init(host: String, port: UInt16, useTLS: Bool, allowSelfSigned: Bool,
          channelType: SpiceProtocol.ChannelType, channelID: UInt8,
-         connectionID: UInt32 = 0, tlsConfig: SpiceTLSConfig? = nil) {
+         connectionID: UInt32 = 0, tlsConfig: SpiceTLSConfig? = nil,
+         proxy: SpiceProxy? = nil) {
         self.host = host
         self.port = port
         self.useTLS = useTLS
         self.allowSelfSigned = allowSelfSigned
         self.tlsConfig = tlsConfig
+        self.proxy = proxy
         self.channelType = channelType
         self.channelID = channelID
         self.connectionID = connectionID
@@ -161,49 +183,74 @@ actor SpiceChannelConnection {
 
     // MARK: - Socket
 
+    /// TLS options with a verify block that anchors trust to the `.vv` CA
+    /// (when present) and does a soft host-subject check; falls back to
+    /// accepting self-signed when the user opted in. SNI is set to the
+    /// expected cert CN since the SPICE `host` may be an opaque proxy token.
+    private func makeTLSOptions() -> NWProtocolTLS.Options {
+        let tls = NWProtocolTLS.Options()
+        let sec = tls.securityProtocolOptions
+        if let cn = Self.commonName(fromSubject: tlsConfig?.hostSubject) {
+            sec_protocol_options_set_tls_server_name(sec, cn)
+        }
+        let anchors = tlsConfig?.caPEM.flatMap { Self.certificates(fromPEM: $0) }
+        let expectedSubject = tlsConfig?.hostSubject
+        let allow = allowSelfSigned
+        guard anchors != nil || allow else { return tls }
+        sec_protocol_options_set_verify_block(
+            sec,
+            { _, secTrust, complete in
+                let trust = sec_trust_copy_ref(secTrust).takeRetainedValue()
+                if let anchors, !anchors.isEmpty {
+                    SecTrustSetAnchorCertificates(trust, anchors as CFArray)
+                    SecTrustSetAnchorCertificatesOnly(trust, true)
+                }
+                var evalError: CFError?
+                if SecTrustEvaluateWithError(trust, &evalError) {
+                    if let expectedSubject { Self.warnIfSubjectMismatch(trust, expected: expectedSubject) }
+                    complete(true)
+                } else if allow {
+                    complete(true)   // user opted into trusting self-signed
+                } else {
+                    log.notice("SPICE TLS trust evaluation failed: \(String(describing: evalError), privacy: .public)")
+                    complete(false)
+                }
+            },
+            DispatchQueue.global()
+        )
+        return tls
+    }
+
     private func openSocket() async throws {
         let params: NWParameters
-        if useTLS {
-            let tls = NWProtocolTLS.Options()
-            let anchors = tlsConfig?.caPEM.flatMap { Self.certificates(fromPEM: $0) }
-            let expectedSubject = tlsConfig?.hostSubject
-            let allow = allowSelfSigned
-            if anchors != nil || allow {
-                sec_protocol_options_set_verify_block(
-                    tls.securityProtocolOptions,
-                    { _, secTrust, complete in
-                        let trust = sec_trust_copy_ref(secTrust).takeRetainedValue()
-                        // Anchor to the cluster CA from the .vv, if provided.
-                        if let anchors, !anchors.isEmpty {
-                            SecTrustSetAnchorCertificates(trust, anchors as CFArray)
-                            SecTrustSetAnchorCertificatesOnly(trust, true)
-                        }
-                        var evalError: CFError?
-                        let trusted = SecTrustEvaluateWithError(trust, &evalError)
-                        if trusted {
-                            if let expectedSubject {
-                                Self.warnIfSubjectMismatch(trust, expected: expectedSubject)
-                            }
-                            complete(true)
-                        } else if allow {
-                            complete(true)   // user opted into trusting self-signed
-                        } else {
-                            log.notice("SPICE TLS trust evaluation failed: \(String(describing: evalError), privacy: .public)")
-                            complete(false)
-                        }
-                    },
-                    DispatchQueue.global()
-                )
-            }
-            params = NWParameters(tls: tls)
+        let endpointHost: String
+        let endpointPort: UInt16
+
+        if let proxy {
+            // TCP to the proxy; the framer CONNECTs to host:port; TLS (if any)
+            // runs over the tunnel. Framer goes *below* TLS in the stack.
+            params = useTLS
+                ? NWParameters(tls: makeTLSOptions(), tcp: NWProtocolTCP.Options())
+                : NWParameters(tls: nil, tcp: NWProtocolTCP.Options())
+            let framer = NWProtocolFramer.Options(definition: SpiceProxyTunnel.definition)
+            params.defaultProtocolStack.applicationProtocols.append(framer)
+            SpiceProxyTunnel.enqueueTarget("\(host):\(port)")
+            endpointHost = proxy.host
+            endpointPort = proxy.port
+        } else if useTLS {
+            params = NWParameters(tls: makeTLSOptions())
+            endpointHost = host
+            endpointPort = port
         } else {
             params = NWParameters.tcp
+            endpointHost = host
+            endpointPort = port
         }
 
-        guard let nwPort = NWEndpoint.Port(rawValue: port) else {
-            throw SpiceConnectionError.connectionFailed("invalid port \(port)")
+        guard let nwPort = NWEndpoint.Port(rawValue: endpointPort) else {
+            throw SpiceConnectionError.connectionFailed("invalid port \(endpointPort)")
         }
-        let conn = NWConnection(host: NWEndpoint.Host(host), port: nwPort, using: params)
+        let conn = NWConnection(host: NWEndpoint.Host(endpointHost), port: nwPort, using: params)
         connection = conn
 
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
@@ -211,19 +258,25 @@ actor SpiceChannelConnection {
             let resumeOnce: (Result<Void, Error>) -> Void = { result in
                 if !resumed { resumed = true; cont.resume(with: result) }
             }
+            // Fail the connect if it neither succeeds nor errors in time
+            // (e.g. a proxy that accepts the socket but never answers CONNECT).
+            let timeout = DispatchWorkItem { conn.cancel() }
+            DispatchQueue.global().asyncAfter(deadline: .now() + 15, execute: timeout)
             conn.stateUpdateHandler = { state in
                 switch state {
                 case .ready:
+                    timeout.cancel()
                     resumeOnce(.success(()))
                 case .waiting(let error):
                     // Network.framework parks unreachable/refused connections
-                    // in `.waiting` and retries indefinitely. For a console
-                    // connecting to a specific host we want to fail fast.
+                    // in `.waiting` and retries indefinitely. Fail fast.
+                    timeout.cancel()
                     resumeOnce(.failure(SpiceConnectionError.connectionFailed("\(error)")))
                 case .failed(let error):
+                    timeout.cancel()
                     resumeOnce(.failure(SpiceConnectionError.connectionFailed("\(error)")))
                 case .cancelled:
-                    resumeOnce(.failure(SpiceConnectionError.connectionClosed))
+                    resumeOnce(.failure(SpiceConnectionError.connectionFailed("connect timed out or closed")))
                 default:
                     break
                 }
@@ -281,6 +334,17 @@ actor SpiceChannelConnection {
             search = search[e.upperBound...]
         }
         return certs.isEmpty ? nil : certs
+    }
+
+    /// Extract the CN value from a subject string like
+    /// "OU=...,O=...,CN=node.fqdn".
+    static func commonName(fromSubject subject: String?) -> String? {
+        guard let subject else { return nil }
+        for field in subject.components(separatedBy: ",") {
+            let f = field.trimmingCharacters(in: .whitespaces)
+            if f.uppercased().hasPrefix("CN=") { return String(f.dropFirst(3)) }
+        }
+        return nil
     }
 
     /// Soft check that the leaf certificate's common name matches the CN in

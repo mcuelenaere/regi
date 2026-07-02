@@ -67,13 +67,20 @@ final class FakeSpiceServer {
     private let listener: NWListener
     private let privateKey: SecKey
     let spki: [UInt8]
+    /// When true, the server first consumes an HTTP CONNECT request and
+    /// replies 200 (acting as a plaintext CONNECT proxy) before the SPICE
+    /// handshake — used to exercise the client's proxy-tunnel framer.
+    private let expectConnect: Bool
+    /// The CONNECT target the client requested (when `expectConnect`).
+    private(set) var capturedTarget: String?
 
     private let lock = DispatchQueue(label: "fake-spice-server")
     private var captured: Result<String, Error>?
     private var waiter: CheckedContinuation<String, Error>?
 
-    init() throws {
+    init(expectConnect: Bool = false) throws {
         (self.privateKey, self.spki) = try SpiceTestCrypto.spkiPublicKey(bits: 1024)
+        self.expectConnect = expectConnect
         self.listener = try NWListener(using: .tcp, on: .any)
     }
 
@@ -115,6 +122,16 @@ final class FakeSpiceServer {
 
     private func handle(_ conn: NWConnection) async {
         do {
+            // 0. If acting as a CONNECT proxy, consume the request + reply 200.
+            if expectConnect {
+                let request = try await recvUntilHeaderEnd(conn)
+                if let firstLine = request.split(whereSeparator: { $0 == "\r" || $0 == "\n" }).first {
+                    let parts = firstLine.split(separator: " ")
+                    if parts.count >= 2 { capturedTarget = String(parts[1]) }
+                }
+                try await sendRaw(conn, Data("HTTP/1.0 200 Connection established\r\n\r\n".utf8))
+            }
+
             // 1. Read client link header + body.
             let header = try SpiceLinkHeader.parse(try await recv(conn, 16))
             _ = try await recv(conn, Int(header.size))   // client mess (ignored)
@@ -191,5 +208,23 @@ final class FakeSpiceServer {
                 else { cont.resume(throwing: NSError(domain: "FakeSpiceServer", code: 30)) }
             }
         }
+    }
+
+    /// Read bytes until the "\r\n\r\n" header terminator; returns the header
+    /// as a string.
+    private func recvUntilHeaderEnd(_ conn: NWConnection) async throws -> String {
+        var buffer = Data()
+        while buffer.range(of: Data([0x0d, 0x0a, 0x0d, 0x0a])) == nil {
+            let chunk: Data = try await withCheckedThrowingContinuation { cont in
+                conn.receive(minimumIncompleteLength: 1, maximumLength: 4096) { content, _, isComplete, error in
+                    if let error { cont.resume(throwing: error) }
+                    else if let content, !content.isEmpty { cont.resume(returning: content) }
+                    else { cont.resume(throwing: NSError(domain: "FakeSpiceServer", code: 31)) }
+                }
+            }
+            buffer.append(chunk)
+            if buffer.count > 8192 { break }
+        }
+        return String(decoding: buffer, as: UTF8.self)
     }
 }
