@@ -15,14 +15,14 @@ struct SpiceTLSConfig: Sendable {
 
 /// An HTTP CONNECT proxy (Proxmox `spiceproxy`), parsed from the `.vv`
 /// `proxy=http://host:port` field.
-struct SpiceProxy: Sendable, Equatable {
-    var host: String
-    var port: UInt16
+public struct SpiceProxy: Sendable, Equatable, Hashable {
+    public var host: String
+    public var port: UInt16
 
-    init(host: String, port: UInt16) { self.host = host; self.port = port }
+    public init(host: String, port: UInt16) { self.host = host; self.port = port }
 
     /// Parse `http://host:port` (scheme optional; default port 3128).
-    init?(url: String) {
+    public init?(url: String) {
         var s = url
         if let r = s.range(of: "://") { s = String(s[r.upperBound...]) }
         let parts = s.split(separator: ":", maxSplits: 1)

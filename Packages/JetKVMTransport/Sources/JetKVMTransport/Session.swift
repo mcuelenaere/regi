@@ -89,6 +89,10 @@ public final class Session {
             let b = (backend as? PiKVMBackend) ?? PiKVMBackend()
             backend = b
             return b
+        case .spice:
+            let b = (backend as? SPICEBackend) ?? SPICEBackend()
+            backend = b
+            return b
         }
     }
 

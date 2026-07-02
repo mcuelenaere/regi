@@ -10,6 +10,7 @@ import WebRTC
 public enum DeviceKind: String, Sendable, Codable, Hashable, CaseIterable {
     case jetKVM
     case piKVM
+    case spice
 
     /// Human-facing label for the device family (used in the host list
     /// and the add-host form).
@@ -17,6 +18,7 @@ public enum DeviceKind: String, Sendable, Codable, Hashable, CaseIterable {
         switch self {
         case .jetKVM: return "JetKVM"
         case .piKVM: return "PiKVM"
+        case .spice: return "SPICE"
         }
     }
 }
