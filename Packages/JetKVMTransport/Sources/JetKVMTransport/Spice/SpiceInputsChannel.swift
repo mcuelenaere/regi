@@ -8,12 +8,12 @@ final class SpiceInputsChannel: SpiceChannel {
 
     func sendKeyDown(_ scancode: SpiceScancode) async {
         try? await send(type: SpiceMsg.InputsClient.keyDown.rawValue,
-                        payload: SpiceByteWriter.keyCode(scancode))
+                        payload: SpiceByteWriter.keyCode(scancode, down: true))
     }
 
     func sendKeyUp(_ scancode: SpiceScancode) async {
         try? await send(type: SpiceMsg.InputsClient.keyUp.rawValue,
-                        payload: SpiceByteWriter.keyCode(scancode))
+                        payload: SpiceByteWriter.keyCode(scancode, down: false))
     }
 
     /// Absolute pointer position (client mouse mode), in guest display pixels.

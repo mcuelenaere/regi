@@ -27,6 +27,27 @@ final class SpiceKeyMapTests: XCTestCase {
         XCTAssertEqual(a.wireCode, 0x1E)
     }
 
+    func testBreakCodeSetsBit7() {
+        // Key release must send the break code (make | 0x80), else the SPICE
+        // server reads it as a second press and the guest auto-repeats.
+        let a = SpiceScancode(code: 0x1E, extended: false)
+        XCTAssertEqual(a.wireCode, 0x1E)
+        XCTAssertEqual(a.breakWireCode, 0x9E)
+
+        // Extended: 0xe0 prefix, break bit on the code byte.
+        let left = SpiceScancode(code: 0x4B, extended: true)
+        XCTAssertEqual(left.wireCode, 0x4be0)
+        XCTAssertEqual(left.breakWireCode, 0xcbe0)   // 0xe0 | ((0x4b|0x80)<<8)
+    }
+
+    func testKeyCodePayloadDownVsUp() {
+        let a = SpiceScancode(code: 0x1E, extended: false)
+        let down = SpiceByteWriter.keyCode(a, down: true)
+        let up = SpiceByteWriter.keyCode(a, down: false)
+        XCTAssertEqual(Array(down), [0x1E, 0, 0, 0])   // little-endian u32 make
+        XCTAssertEqual(Array(up), [0x9E, 0, 0, 0])     // break
+    }
+
     func testUnknownKeyReturnsNil() {
         XCTAssertNil(SpiceKeyMap.scancode(forVirtualKeyCode: 0xFFFF))
     }

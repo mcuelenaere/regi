@@ -149,11 +149,12 @@ struct SpiceMsgChannelsList: Equatable {
 // MARK: - Client message body encoders
 
 extension SpiceByteWriter {
-    /// key_down / key_up body: uint32 code. Extended (0xE0-prefixed) scancodes
-    /// are encoded as `0xe0 | (code << 8)`, matching spice-gtk.
-    static func keyCode(_ scancode: SpiceScancode) -> Data {
+    /// key_down / key_up body: uint32 code. Down sends the make code, up the
+    /// break code (bit 7 set) — the server pushes these to the PS/2 keyboard
+    /// verbatim, so the release must differ from the press.
+    static func keyCode(_ scancode: SpiceScancode, down: Bool) -> Data {
         var w = SpiceByteWriter()
-        w.writeU32(scancode.wireCode)
+        w.writeU32(down ? scancode.wireCode : scancode.breakWireCode)
         return w.data
     }
 

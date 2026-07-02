@@ -186,7 +186,7 @@ public final class SPICEBackend: KVMBackend {
         state = .connected
     }
 
-    public func disconnect() async { await teardown() }
+    public func disconnect() async { await teardown(); state = .idle }
 
     public func markFirstFrameReceived() { hasReceivedFirstFrame = true }
 
@@ -201,6 +201,10 @@ public final class SPICEBackend: KVMBackend {
         )
     }
 
+    /// Tear down channels/video/input. Does NOT touch `state` — the caller
+    /// owns it (a failed connect sets `.failed` then calls this; a clean
+    /// disconnect sets `.idle` afterwards). Previously this reset `.failed`
+    /// back to `.idle`, so connect errors never reached the UI.
     private func teardown() async {
         inputContinuation?.finish(); inputContinuation = nil
         inputTask?.cancel(); inputTask = nil
@@ -212,7 +216,6 @@ public final class SPICEBackend: KVMBackend {
         heldModifiers.removeAll()
         heldKeys.removeAll()
         pendingAbsolute = nil; pendingRelative = nil; motionTickQueued = false
-        if case .connecting = state {} else if state != .idle { state = .idle }
     }
 
     // MARK: - Video

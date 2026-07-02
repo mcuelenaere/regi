@@ -7,8 +7,18 @@ struct SpiceScancode: Equatable {
     let code: UInt8
     let extended: Bool
 
+    /// Make code (key press). Extended (0xE0-prefixed) scancodes pack as
+    /// `0xe0 | (code << 8)`, matching spice-gtk.
     var wireCode: UInt32 {
         extended ? (0xe0 | (UInt32(code) << 8)) : UInt32(code)
+    }
+
+    /// Break code (key release). PC Set-1 sets bit 7 of the scancode byte.
+    /// The SPICE server pushes these bytes straight to the emulated PS/2
+    /// keyboard, so a release MUST send the break code — sending the make
+    /// code again reads as a second press and makes the guest auto-repeat.
+    var breakWireCode: UInt32 {
+        extended ? (0xe0 | (UInt32(code | 0x80) << 8)) : UInt32(code | 0x80)
     }
 }
 
