@@ -96,6 +96,16 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         false
     }
 
+    /// Handle `.vv` files opened from Finder or a browser download (including
+    /// cold launch). Registers each and asks the app to open a console; the
+    /// pending id is drained by HostsView on appear if a window isn't ready
+    /// to receive the notification yet.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls where url.pathExtension.lowercased() == "vv" {
+            openSpiceConsoleFile(url)
+        }
+    }
+
     /// Dock left-click reopen handler. When no windows are visible,
     /// open Hosts; otherwise let macOS perform its standard behaviour
     /// (bring app forward, no extra window).
@@ -303,14 +313,8 @@ struct RegiCommands: Commands {
             panel.allowedContentTypes = [vv]
             panel.allowsOtherFileTypes = true
         }
-        guard panel.runModal() == .OK, let url = panel.url,
-              let text = try? String(contentsOf: url, encoding: .utf8) else { return }
-        let name = url.deletingPathExtension().lastPathComponent
-        guard let (id, _) = SpiceConsoleStore.shared.register(vvContents: text, name: name) else {
-            log.error("not a usable SPICE .vv: \(url.lastPathComponent, privacy: .public)")
-            return
-        }
-        NotificationCenter.default.post(name: .regiOpenSpiceConsole, object: id)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        openSpiceConsoleFile(url)
     }
 }
 
@@ -420,6 +424,10 @@ final class SpiceConsoleStore {
 
     private var entries: [UUID: Entry] = [:]
 
+    /// A console registered before a window could open it (e.g. opening a
+    /// `.vv` on cold launch). HostsView drains this on appear.
+    private var pendingOpenID: UUID?
+
     /// Parse a `.vv` file and register it. Returns the id + a window-friendly
     /// entry, or nil if the file isn't a usable SPICE console.
     func register(vvContents text: String, name: String) -> (id: UUID, entry: Entry)? {
@@ -433,4 +441,30 @@ final class SpiceConsoleStore {
 
     func entry(for id: UUID) -> Entry? { entries[id] }
     func config(for id: UUID) -> SpiceVVConfig? { entries[id]?.config }
+
+    func markPendingOpen(_ id: UUID) { pendingOpenID = id }
+    func clearPendingOpen() { pendingOpenID = nil }
+    /// Returns and clears any console queued before a window could open it.
+    func consumePendingOpen() -> UUID? {
+        defer { pendingOpenID = nil }
+        return pendingOpenID
+    }
+}
+
+/// Parse + register a `.vv` file and route it to a session window. Used by
+/// both the File-menu picker and the Finder/browser file-open path.
+@MainActor
+func openSpiceConsoleFile(_ url: URL) {
+    guard let text = try? String(contentsOf: url, encoding: .utf8) else {
+        log.error("could not read .vv file: \(url.lastPathComponent, privacy: .public)")
+        return
+    }
+    let name = url.deletingPathExtension().lastPathComponent
+    guard let (id, _) = SpiceConsoleStore.shared.register(vvContents: text, name: name) else {
+        log.error("not a usable SPICE .vv: \(url.lastPathComponent, privacy: .public)")
+        return
+    }
+    // Queue for cold-launch drain, and notify any live Hosts window.
+    SpiceConsoleStore.shared.markPendingOpen(id)
+    NotificationCenter.default.post(name: .regiOpenSpiceConsole, object: id)
 }

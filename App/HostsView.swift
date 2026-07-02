@@ -131,7 +131,16 @@ struct HostsView: View {
         .onReceive(NotificationCenter.default.publisher(for: .regiOpenSpiceConsole)) { note in
             guard let id = note.object as? UUID,
                   let entry = SpiceConsoleStore.shared.entry(for: id) else { return }
+            SpiceConsoleStore.shared.clearPendingOpen()
             openWindow(value: KVMSessionWindowID(spiceConsoleID: id, entry: entry))
+        }
+        .onAppear {
+            // Cold launch via a .vv (opened before this window could receive
+            // the notification): open it now.
+            if let id = SpiceConsoleStore.shared.consumePendingOpen(),
+               let entry = SpiceConsoleStore.shared.entry(for: id) {
+                openWindow(value: KVMSessionWindowID(spiceConsoleID: id, entry: entry))
+            }
         }
         // File-menu Connect/Edit/Delete act on the selection. Guarded so
         // they no-op with nothing selected or while a sheet/alert is up.
