@@ -51,15 +51,25 @@ public final class SPICEBackend: KVMBackend {
     /// single consumer guarantees key/mouse events reach the server in the
     /// exact order they occurred (spawning a Task per event does not, which
     /// caused a key-up to overtake its key-down → stuck keys).
+    /// Discrete, order-sensitive events. Pointer *motion* is NOT queued here
+    /// — it's coalesced (below) so a flood of positions can't back up the
+    /// queue and delay a key-up (which made the guest auto-repeat → "aaa").
     private enum InputEvent {
         case key(SpiceScancode, down: Bool)
-        case mouseAbsolute(x: UInt32, y: UInt32, buttons: UInt16)
-        case mouseRelative(dx: Int32, dy: Int32, buttons: UInt16)
-        case mousePress(SpiceMsg.MouseButton, buttons: UInt16)
-        case mouseRelease(SpiceMsg.MouseButton, buttons: UInt16)
+        case position(x: UInt32, y: UInt32, buttons: UInt16)   // reliable (clicks)
+        case press(SpiceMsg.MouseButton, buttons: UInt16)
+        case release(SpiceMsg.MouseButton, buttons: UInt16)
+        case motionTick                                        // flush coalesced motion
     }
     private var inputContinuation: AsyncStream<InputEvent>.Continuation?
     private var inputTask: Task<Void, Never>?
+
+    // Coalesced pointer motion: absolute keeps the latest position, relative
+    // accumulates deltas. A single `.motionTick` is queued while either is
+    // pending, so motion can never grow the queue unbounded.
+    private var pendingAbsolute: (x: UInt32, y: UInt32, buttons: UInt16)?
+    private var pendingRelative: (dx: Int32, dy: Int32, buttons: UInt16)?
+    private var motionTickQueued = false
 
     public init() {}
 
@@ -180,6 +190,7 @@ public final class SPICEBackend: KVMBackend {
         hasReceivedFirstFrame = false
         heldModifiers.removeAll()
         heldKeys.removeAll()
+        pendingAbsolute = nil; pendingRelative = nil; motionTickQueued = false
         if case .connecting = state {} else if state != .idle { state = .idle }
     }
 
@@ -243,15 +254,29 @@ public final class SPICEBackend: KVMBackend {
         switch event {
         case .key(let sc, let down):
             down ? await inputs.sendKeyDown(sc) : await inputs.sendKeyUp(sc)
-        case .mouseAbsolute(let x, let y, let b):
+        case .position(let x, let y, let b):
             await inputs.sendMousePosition(x: x, y: y, buttons: b)
-        case .mouseRelative(let dx, let dy, let b):
-            await inputs.sendMouseMotion(dx: dx, dy: dy, buttons: b)
-        case .mousePress(let btn, let b):
+        case .press(let btn, let b):
             await inputs.sendMousePress(btn, buttons: b)
-        case .mouseRelease(let btn, let b):
+        case .release(let btn, let b):
             await inputs.sendMouseRelease(btn, buttons: b)
+        case .motionTick:
+            motionTickQueued = false
+            if let a = pendingAbsolute {
+                pendingAbsolute = nil
+                await inputs.sendMousePosition(x: a.x, y: a.y, buttons: a.buttons)
+            }
+            if let r = pendingRelative {
+                pendingRelative = nil
+                await inputs.sendMouseMotion(dx: r.dx, dy: r.dy, buttons: r.buttons)
+            }
         }
+    }
+
+    private func queueMotionTick() {
+        guard !motionTickQueued else { return }
+        motionTickQueued = true
+        inputContinuation?.yield(.motionTick)
     }
 
     public func sendKeypress(virtualKeyCode keyCode: UInt16, pressed: Bool) {
@@ -291,30 +316,43 @@ public final class SPICEBackend: KVMBackend {
     }
 
     public func sendPointerMotion(normalizedX: Int32, normalizedY: Int32, buttons: MouseButtons) {
-        enqueueAbsolute(x: normalizedX, y: normalizedY, buttons: buttons)
+        // Pure motion: coalesce to the latest position.
+        guard let p = absolutePixels(normalizedX, normalizedY) else { return }
+        pendingAbsolute = (p.x, p.y, Self.buttonMask(buttons))
+        queueMotionTick()
     }
 
     public func sendPointerButtonChange(normalizedX: Int32, normalizedY: Int32, buttons: MouseButtons) {
-        enqueueAbsolute(x: normalizedX, y: normalizedY, buttons: buttons)
+        // Button transitions must be reliable + ordered, so send the position
+        // (with the new button mask) through the FIFO, not the coalesced slot.
+        guard let p = absolutePixels(normalizedX, normalizedY) else { return }
+        pendingAbsolute = nil   // the click position supersedes any pending motion
+        inputContinuation?.yield(.position(x: p.x, y: p.y, buttons: Self.buttonMask(buttons)))
     }
 
-    private func enqueueAbsolute(x: Int32, y: Int32, buttons: MouseButtons) {
-        guard lastFrameSize.width > 0, lastFrameSize.height > 0 else { return }
-        let px = UInt32(max(0, Double(x) / 32767.0 * (lastFrameSize.width - 1)))
-        let py = UInt32(max(0, Double(y) / 32767.0 * (lastFrameSize.height - 1)))
-        inputContinuation?.yield(.mouseAbsolute(x: px, y: py, buttons: Self.buttonMask(buttons)))
+    private func absolutePixels(_ x: Int32, _ y: Int32) -> (x: UInt32, y: UInt32)? {
+        guard lastFrameSize.width > 0, lastFrameSize.height > 0 else { return nil }
+        return (UInt32(max(0, Double(x) / 32767.0 * (lastFrameSize.width - 1))),
+                UInt32(max(0, Double(y) / 32767.0 * (lastFrameSize.height - 1))))
     }
 
     public func sendMouseRelative(dx: Int8, dy: Int8, buttons: MouseButtons) {
-        inputContinuation?.yield(.mouseRelative(dx: Int32(dx), dy: Int32(dy), buttons: Self.buttonMask(buttons)))
+        // Coalesce by accumulating deltas so none are lost.
+        let mask = Self.buttonMask(buttons)
+        if let r = pendingRelative {
+            pendingRelative = (r.dx + Int32(dx), r.dy + Int32(dy), mask)
+        } else {
+            pendingRelative = (Int32(dx), Int32(dy), mask)
+        }
+        queueMotionTick()
     }
 
     public func sendWheelReport(wheelY: Int8, wheelX: Int8) {
         guard wheelY != 0 else { return }
         // SPICE encodes wheel as a button up/down press+release.
         let button: SpiceMsg.MouseButton = wheelY > 0 ? .up : .down
-        inputContinuation?.yield(.mousePress(button, buttons: 0))
-        inputContinuation?.yield(.mouseRelease(button, buttons: 0))
+        inputContinuation?.yield(.press(button, buttons: 0))
+        inputContinuation?.yield(.release(button, buttons: 0))
     }
 
     public func pauseVideo() {}
