@@ -62,6 +62,30 @@ enum SpiceMsg {
         case keyModifiers = 102
         case mouseMotionAck = 111
     }
+    /// Display channel server → client.
+    enum Display: UInt16 {
+        case mode = 101, mark = 102, reset = 103, copyBits = 104
+        case invalList = 105, invalAllPixmaps = 106, invalPalette = 107, invalAllPalettes = 108
+        case streamCreate = 122, streamData = 123, streamClip = 124
+        case streamDestroy = 125, streamDestroyAll = 126
+        case drawFill = 302, drawOpaque = 303, drawCopy = 304, drawBlend = 305
+        case drawBlackness = 306, drawWhiteness = 307, drawInvers = 308, drawRop3 = 309
+        case drawStroke = 310, drawText = 311, drawTransparent = 312, drawAlphaBlend = 313
+        case surfaceCreate = 314, surfaceDestroy = 315, streamDataSized = 316
+        case monitorsConfig = 317, drawComposite = 318, streamActivateReport = 319
+    }
+    /// Display channel client → server.
+    enum DisplayClient: UInt16 {
+        case initMsg = 101
+        case streamReport = 102
+    }
+
+    /// SPICE image compression / encoding types (`enum8 image_type`).
+    enum ImageType: UInt8 {
+        case bitmap = 0, quic = 1
+        case lzPlt = 100, lzRgb = 101, glzRgb = 102, fromCache = 103, surface = 104
+        case jpeg = 105, fromCacheLossless = 106, zlibGlzRgb = 107, jpegAlpha = 108, lz4 = 109
+    }
 
     /// SPICE mouse button ids (`enum8 mouse_button`).
     enum MouseButton: UInt8 {

@@ -79,6 +79,15 @@ struct SpiceByteReader {
         try require(n)
         offset += n
     }
+
+    /// Seek to an absolute offset (used to follow SPICE pointer fields, which
+    /// are byte offsets from the start of the message body).
+    mutating func seek(to absolute: Int) throws {
+        guard absolute >= 0, absolute <= bytes.count else {
+            throw Error.outOfBounds(needed: absolute, remaining: bytes.count)
+        }
+        offset = absolute
+    }
 }
 
 /// Sequential little-endian writer.
