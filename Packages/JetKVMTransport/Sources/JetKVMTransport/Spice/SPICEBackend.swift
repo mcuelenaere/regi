@@ -40,6 +40,11 @@ public final class SPICEBackend: KVMBackend {
     // Input state.
     private var lastFrameSize = CGSize(width: 0, height: 0)
     private var heldModifiers: Set<UInt16> = []
+    /// Non-modifier keys currently held down, so we can drop OS auto-repeat
+    /// key-downs (the guest does its own typematic repeat from one held make
+    /// code — resending makes would double it) and release everything on
+    /// focus loss.
+    private var heldKeys: Set<UInt16> = []
 
     /// Ordered input pipeline. The App's input callbacks are synchronous but
     /// the channel sends are async; enqueueing here and draining from a
@@ -162,6 +167,7 @@ public final class SPICEBackend: KVMBackend {
         videoTrack = nil; videoSource = nil; capturer = nil
         hasReceivedFirstFrame = false
         heldModifiers.removeAll()
+        heldKeys.removeAll()
         if case .connecting = state {} else if state != .idle { state = .idle }
     }
 
@@ -238,6 +244,14 @@ public final class SPICEBackend: KVMBackend {
 
     public func sendKeypress(virtualKeyCode keyCode: UInt16, pressed: Bool) {
         guard let sc = SpiceKeyMap.scancode(forVirtualKeyCode: keyCode) else { return }
+        if pressed {
+            // Drop OS auto-repeat: a single held make code is enough — the
+            // guest generates typematic repeat itself.
+            guard !heldKeys.contains(keyCode) else { return }
+            heldKeys.insert(keyCode)
+        } else {
+            heldKeys.remove(keyCode)
+        }
         inputContinuation?.yield(.key(sc, down: pressed))
     }
 
@@ -249,8 +263,11 @@ public final class SPICEBackend: KVMBackend {
     }
 
     public func releaseAllHeldModifiers() {
-        let held = heldModifiers
+        // Release both held modifiers and held keys — this fires on focus
+        // loss, where leaving anything down would strand it on the guest.
+        let held = heldModifiers.union(heldKeys)
         heldModifiers.removeAll()
+        heldKeys.removeAll()
         for keyCode in held {
             guard let sc = SpiceKeyMap.scancode(forVirtualKeyCode: keyCode) else { continue }
             inputContinuation?.yield(.key(sc, down: false))
