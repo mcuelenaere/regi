@@ -41,6 +41,21 @@ public final class SPICEBackend: KVMBackend {
     private var lastFrameSize = CGSize(width: 0, height: 0)
     private var heldModifiers: Set<UInt16> = []
 
+    /// Ordered input pipeline. The App's input callbacks are synchronous but
+    /// the channel sends are async; enqueueing here and draining from a
+    /// single consumer guarantees key/mouse events reach the server in the
+    /// exact order they occurred (spawning a Task per event does not, which
+    /// caused a key-up to overtake its key-down → stuck keys).
+    private enum InputEvent {
+        case key(SpiceScancode, down: Bool)
+        case mouseAbsolute(x: UInt32, y: UInt32, buttons: UInt16)
+        case mouseRelative(dx: Int32, dy: Int32, buttons: UInt16)
+        case mousePress(SpiceMsg.MouseButton, buttons: UInt16)
+        case mouseRelease(SpiceMsg.MouseButton, buttons: UInt16)
+    }
+    private var inputContinuation: AsyncStream<InputEvent>.Continuation?
+    private var inputTask: Task<Void, Never>?
+
     public init() {}
 
     // MARK: - Lifecycle
@@ -78,9 +93,14 @@ public final class SPICEBackend: KVMBackend {
         // Await MAIN_INIT to learn the session id secondary channels use.
         let main = SpiceMainChannel(connection: mainConn)
         self.main = main
+        main.onMouseMode = { mode in
+            log.notice("SPICE server mouse mode now: \(mode == .client ? "client/absolute" : "server/relative")")
+        }
         let sessionID: UInt32 = await withCheckedContinuation { cont in
             let resumed = OneShot()
             main.onInit = { info in
+                let supportsClient = info.supportedMouseModes & UInt32(SpiceProtocol.MouseMode.client.rawValue) != 0
+                log.notice("SPICE MAIN_INIT: mouse supported=\(info.supportedMouseModes) current=\(info.currentMouseMode) clientCapable=\(supportsClient)")
                 if resumed.fire() { cont.resume(returning: info.sessionID) }
             }
             main.onClosed = { _ in
@@ -106,6 +126,7 @@ public final class SPICEBackend: KVMBackend {
         let inputs = SpiceInputsChannel(connection: inputsConn)
         self.inputs = inputs
         inputs.start()
+        startInputPump()
 
         let display = SpiceDisplayChannel(connection: displayConn)
         self.display = display
@@ -133,6 +154,8 @@ public final class SPICEBackend: KVMBackend {
     }
 
     private func teardown() async {
+        inputContinuation?.finish(); inputContinuation = nil
+        inputTask?.cancel(); inputTask = nil
         display?.stop(); inputs?.stop(); main?.stop()
         await mainConn?.close()
         display = nil; inputs = nil; main = nil; mainConn = nil
@@ -186,58 +209,79 @@ public final class SPICEBackend: KVMBackend {
 
     // MARK: - Input
 
+    /// Drain the input queue in order, sending each event before the next.
+    private func startInputPump() {
+        let (stream, cont) = AsyncStream.makeStream(of: InputEvent.self)
+        inputContinuation = cont
+        inputTask = Task { [weak self] in
+            for await event in stream {
+                await self?.deliver(event)
+            }
+        }
+    }
+
+    private func deliver(_ event: InputEvent) async {
+        guard let inputs else { return }
+        switch event {
+        case .key(let sc, let down):
+            down ? await inputs.sendKeyDown(sc) : await inputs.sendKeyUp(sc)
+        case .mouseAbsolute(let x, let y, let b):
+            await inputs.sendMousePosition(x: x, y: y, buttons: b)
+        case .mouseRelative(let dx, let dy, let b):
+            await inputs.sendMouseMotion(dx: dx, dy: dy, buttons: b)
+        case .mousePress(let btn, let b):
+            await inputs.sendMousePress(btn, buttons: b)
+        case .mouseRelease(let btn, let b):
+            await inputs.sendMouseRelease(btn, buttons: b)
+        }
+    }
+
     public func sendKeypress(virtualKeyCode keyCode: UInt16, pressed: Bool) {
-        guard let sc = SpiceKeyMap.scancode(forVirtualKeyCode: keyCode), let inputs else { return }
-        Task { pressed ? await inputs.sendKeyDown(sc) : await inputs.sendKeyUp(sc) }
+        guard let sc = SpiceKeyMap.scancode(forVirtualKeyCode: keyCode) else { return }
+        inputContinuation?.yield(.key(sc, down: pressed))
     }
 
     public func handleFlagsChanged(virtualKeyCode keyCode: UInt16) {
-        guard let sc = SpiceKeyMap.scancode(forVirtualKeyCode: keyCode), let inputs else { return }
+        guard let sc = SpiceKeyMap.scancode(forVirtualKeyCode: keyCode) else { return }
         let pressed = !heldModifiers.contains(keyCode)
         if pressed { heldModifiers.insert(keyCode) } else { heldModifiers.remove(keyCode) }
-        Task { pressed ? await inputs.sendKeyDown(sc) : await inputs.sendKeyUp(sc) }
+        inputContinuation?.yield(.key(sc, down: pressed))
     }
 
     public func releaseAllHeldModifiers() {
-        guard let inputs else { return }
         let held = heldModifiers
         heldModifiers.removeAll()
         for keyCode in held {
             guard let sc = SpiceKeyMap.scancode(forVirtualKeyCode: keyCode) else { continue }
-            Task { await inputs.sendKeyUp(sc) }
+            inputContinuation?.yield(.key(sc, down: false))
         }
     }
 
     public func sendPointerMotion(normalizedX: Int32, normalizedY: Int32, buttons: MouseButtons) {
-        sendAbsolute(x: normalizedX, y: normalizedY, buttons: buttons)
+        enqueueAbsolute(x: normalizedX, y: normalizedY, buttons: buttons)
     }
 
     public func sendPointerButtonChange(normalizedX: Int32, normalizedY: Int32, buttons: MouseButtons) {
-        sendAbsolute(x: normalizedX, y: normalizedY, buttons: buttons)
+        enqueueAbsolute(x: normalizedX, y: normalizedY, buttons: buttons)
     }
 
-    private func sendAbsolute(x: Int32, y: Int32, buttons: MouseButtons) {
-        guard let inputs, lastFrameSize.width > 0, lastFrameSize.height > 0 else { return }
-        let px = UInt32(Double(x) / 32767.0 * (lastFrameSize.width - 1))
-        let py = UInt32(Double(y) / 32767.0 * (lastFrameSize.height - 1))
-        let mask = Self.buttonMask(buttons)
-        Task { await inputs.sendMousePosition(x: px, y: py, buttons: mask) }
+    private func enqueueAbsolute(x: Int32, y: Int32, buttons: MouseButtons) {
+        guard lastFrameSize.width > 0, lastFrameSize.height > 0 else { return }
+        let px = UInt32(max(0, Double(x) / 32767.0 * (lastFrameSize.width - 1)))
+        let py = UInt32(max(0, Double(y) / 32767.0 * (lastFrameSize.height - 1)))
+        inputContinuation?.yield(.mouseAbsolute(x: px, y: py, buttons: Self.buttonMask(buttons)))
     }
 
     public func sendMouseRelative(dx: Int8, dy: Int8, buttons: MouseButtons) {
-        guard let inputs else { return }
-        let mask = Self.buttonMask(buttons)
-        Task { await inputs.sendMouseMotion(dx: Int32(dx), dy: Int32(dy), buttons: mask) }
+        inputContinuation?.yield(.mouseRelative(dx: Int32(dx), dy: Int32(dy), buttons: Self.buttonMask(buttons)))
     }
 
     public func sendWheelReport(wheelY: Int8, wheelX: Int8) {
-        guard let inputs, wheelY != 0 else { return }
-        // SPICE encodes wheel as button up/down press+release.
+        guard wheelY != 0 else { return }
+        // SPICE encodes wheel as a button up/down press+release.
         let button: SpiceMsg.MouseButton = wheelY > 0 ? .up : .down
-        Task {
-            await inputs.sendMousePress(button, buttons: 0)
-            await inputs.sendMouseRelease(button, buttons: 0)
-        }
+        inputContinuation?.yield(.mousePress(button, buttons: 0))
+        inputContinuation?.yield(.mouseRelease(button, buttons: 0))
     }
 
     public func pauseVideo() {}
