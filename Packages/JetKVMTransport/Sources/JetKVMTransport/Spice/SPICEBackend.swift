@@ -19,6 +19,17 @@ private let log = Logger(subsystem: "app.regi.mac", category: "spice")
 @MainActor
 @Observable
 public final class SPICEBackend: KVMBackend {
+    /// Bumped on every build during debugging so the logs prove which build
+    /// is actually running.
+    static let buildMarker = "spice-dbg-9"
+    private let clock = ContinuousClock()
+    private var connectStart = ContinuousClock().now
+    /// Milliseconds elapsed since the current connect() began (for log timing).
+    private func ms() -> Int {
+        let c = connectStart.duration(to: clock.now).components
+        return Int(c.seconds) * 1000 + Int(c.attoseconds / 1_000_000_000_000_000)
+    }
+
     public private(set) var state: KVMState = .idle
     public private(set) var videoTrack: RTCVideoTrack?
     public private(set) var hasReceivedFirstFrame: Bool = false
@@ -78,27 +89,34 @@ public final class SPICEBackend: KVMBackend {
     public func connect(endpoint: DeviceEndpoint, password: String?) async {
         if case .connecting = state { return }
         await teardown()
+        connectStart = clock.now
 
         let tls = SpiceTLSConfig(caPEM: endpoint.spiceCAPEM, hostSubject: endpoint.spiceHostSubject)
         let proxy = endpoint.spiceProxy
+        log.notice("=== SPICE connect ENTER [\(Self.buildMarker, privacy: .public)] host=\(endpoint.host, privacy: .public):\(endpoint.port) tls=\(endpoint.useTLS) proxy=\(proxy?.host ?? "none", privacy: .public) pwLen=\(password?.count ?? 0) ===")
 
         state = .connecting(.authenticating)
         let mainConn = makeConnection(endpoint: endpoint, tls: tls, proxy: proxy,
                                       channel: .main, channelID: 0, connectionID: 0)
         self.mainConn = mainConn
         do {
+            log.notice("SPICE [+\(self.ms())ms] main channel connect…")
             try await Self.withTimeout(12) { _ = try await mainConn.connect(password: password) }
+            log.notice("SPICE [+\(self.ms())ms] main channel connected")
         } catch SpiceConnectionError.authFailed {
             // SPICE tickets come from the .vv and can't be re-entered, so a
             // rejection is terminal (usually an expired ticket).
+            log.error("SPICE [+\(self.ms())ms] main connect FAILED: authFailed → .failed")
             state = .failed("SPICE ticket rejected — it may have expired. Download a fresh console (.vv) file and reconnect.")
             await teardown()
             return
         } catch SpiceConnectionError.untrustedCertificate(let reason) {
+            log.error("SPICE [+\(self.ms())ms] main connect FAILED: untrusted cert")
             state = .awaitingTrustOverride(host: endpoint.host, reason: reason)
             await teardown()
             return
         } catch {
+            log.error("SPICE [+\(self.ms())ms] main connect FAILED: \(Self.describe(error), privacy: .public) → .failed")
             state = .failed(Self.describe(error))
             await teardown()
             return
@@ -145,10 +163,12 @@ public final class SPICEBackend: KVMBackend {
                 _ = try await displayConn.connect(password: password)
             }
         } catch {
+            log.error("SPICE [+\(self.ms())ms] secondary channels FAILED: \(Self.describe(error), privacy: .public)")
             state = .failed(Self.describe(error))
             await teardown()
             return
         }
+        log.notice("SPICE [+\(self.ms())ms] inputs+display connected")
 
         let inputs = SpiceInputsChannel(connection: inputsConn)
         self.inputs = inputs
@@ -162,6 +182,7 @@ public final class SPICEBackend: KVMBackend {
         }
         display.start()
 
+        log.notice("SPICE [+\(self.ms())ms] === CONNECTED ===")
         state = .connected
     }
 
@@ -253,6 +274,7 @@ public final class SPICEBackend: KVMBackend {
         guard let inputs else { return }
         switch event {
         case .key(let sc, let down):
+            log.notice("SPICE [+\(self.ms())ms] SEND key sc=0x\(String(sc.wireCode, radix: 16), privacy: .public) \(down ? "DOWN" : "up", privacy: .public)")
             down ? await inputs.sendKeyDown(sc) : await inputs.sendKeyUp(sc)
         case .position(let x, let y, let b):
             await inputs.sendMousePosition(x: x, y: y, buttons: b)

@@ -253,35 +253,39 @@ actor SpiceChannelConnection {
         let conn = NWConnection(host: NWEndpoint.Host(endpointHost), port: nwPort, using: params)
         connection = conn
 
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-            var resumed = false
-            let resumeOnce: (Result<Void, Error>) -> Void = { result in
-                if !resumed { resumed = true; cont.resume(with: result) }
-            }
-            // Fail the connect if it neither succeeds nor errors in time
-            // (e.g. a proxy that accepts the socket but never answers CONNECT).
-            let timeout = DispatchWorkItem { conn.cancel() }
-            DispatchQueue.global().asyncAfter(deadline: .now() + 15, execute: timeout)
-            conn.stateUpdateHandler = { state in
-                switch state {
-                case .ready:
-                    timeout.cancel()
-                    resumeOnce(.success(()))
-                case .waiting(let error):
-                    // Network.framework parks unreachable/refused connections
-                    // in `.waiting` and retries indefinitely. Fail fast.
-                    timeout.cancel()
-                    resumeOnce(.failure(SpiceConnectionError.connectionFailed("\(error)")))
-                case .failed(let error):
-                    timeout.cancel()
-                    resumeOnce(.failure(SpiceConnectionError.connectionFailed("\(error)")))
-                case .cancelled:
-                    resumeOnce(.failure(SpiceConnectionError.connectionFailed("connect timed out or closed")))
-                default:
-                    break
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+                var resumed = false
+                let resumeOnce: (Result<Void, Error>) -> Void = { result in
+                    if !resumed { resumed = true; cont.resume(with: result) }
                 }
+                // Fail the connect if it neither succeeds nor errors in time
+                // (e.g. a proxy that accepts the socket but never answers CONNECT).
+                let timeout = DispatchWorkItem { conn.cancel() }
+                DispatchQueue.global().asyncAfter(deadline: .now() + 8, execute: timeout)
+                conn.stateUpdateHandler = { state in
+                    switch state {
+                    case .ready:
+                        timeout.cancel()
+                        resumeOnce(.success(()))
+                    case .waiting(let error):
+                        // Network.framework parks unreachable/refused
+                        // connections in `.waiting` and retries. Fail fast.
+                        timeout.cancel()
+                        resumeOnce(.failure(SpiceConnectionError.connectionFailed("\(error)")))
+                    case .failed(let error):
+                        timeout.cancel()
+                        resumeOnce(.failure(SpiceConnectionError.connectionFailed("\(error)")))
+                    case .cancelled:
+                        resumeOnce(.failure(SpiceConnectionError.connectionFailed("connect timed out or closed")))
+                    default:
+                        break
+                    }
+                }
+                conn.start(queue: DispatchQueue.global(qos: .userInitiated))
             }
-            conn.start(queue: DispatchQueue.global(qos: .userInitiated))
+        } onCancel: {
+            conn.cancel()   // unblock the wait if the enclosing task is cancelled
         }
     }
 
@@ -296,23 +300,31 @@ actor SpiceChannelConnection {
     }
 
     /// Receive exactly `n` bytes or throw. `n == 0` returns empty.
+    /// Cancellation-aware: if the enclosing task is cancelled (e.g. a connect
+    /// timeout), the connection is cancelled so a stalled read unblocks —
+    /// otherwise a server that accepts the socket but never replies would hang
+    /// the handshake forever.
     private func receiveExactly(_ n: Int) async throws -> Data {
         guard n > 0 else { return Data() }
         guard let conn = connection else { throw SpiceConnectionError.connectionClosed }
-        return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Data, Error>) in
-            conn.receive(minimumIncompleteLength: n, maximumLength: n) { content, _, isComplete, error in
-                if let error {
-                    cont.resume(throwing: SpiceConnectionError.connectionFailed("\(error)"))
-                    return
-                }
-                if let content, content.count == n {
-                    cont.resume(returning: content)
-                } else if isComplete {
-                    cont.resume(throwing: SpiceConnectionError.connectionClosed)
-                } else {
-                    cont.resume(throwing: SpiceConnectionError.protocolError("short read: got \(content?.count ?? 0)/\(n)"))
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Data, Error>) in
+                conn.receive(minimumIncompleteLength: n, maximumLength: n) { content, _, isComplete, error in
+                    if let error {
+                        cont.resume(throwing: SpiceConnectionError.connectionFailed("\(error)"))
+                        return
+                    }
+                    if let content, content.count == n {
+                        cont.resume(returning: content)
+                    } else if isComplete {
+                        cont.resume(throwing: SpiceConnectionError.connectionClosed)
+                    } else {
+                        cont.resume(throwing: SpiceConnectionError.protocolError("short read: got \(content?.count ?? 0)/\(n)"))
+                    }
                 }
             }
+        } onCancel: {
+            conn.cancel()
         }
     }
 
