@@ -1,8 +1,17 @@
 import Foundation
 import Network
 import OSLog
+import Security
 
 private let log = Logger(subsystem: "app.regi.mac", category: "spice-conn")
+
+/// TLS trust configuration for a SPICE connection. For Proxmox this comes
+/// from the `.vv` file: `caPEM` is the cluster CA to anchor trust to, and
+/// `hostSubject` the expected certificate subject.
+struct SpiceTLSConfig: Sendable {
+    var caPEM: String?
+    var hostSubject: String?
+}
 
 /// Errors surfaced by a SPICE channel connection. `.authFailed` maps to the
 /// App layer's password prompt; `.untrustedCertificate` to the trust-override
@@ -31,6 +40,7 @@ actor SpiceChannelConnection {
     private let port: UInt16
     private let useTLS: Bool
     private let allowSelfSigned: Bool
+    private let tlsConfig: SpiceTLSConfig?
 
     private var connection: NWConnection?
     private var sendSerial: UInt64 = 1
@@ -41,11 +51,12 @@ actor SpiceChannelConnection {
 
     init(host: String, port: UInt16, useTLS: Bool, allowSelfSigned: Bool,
          channelType: SpiceProtocol.ChannelType, channelID: UInt8,
-         connectionID: UInt32 = 0) {
+         connectionID: UInt32 = 0, tlsConfig: SpiceTLSConfig? = nil) {
         self.host = host
         self.port = port
         self.useTLS = useTLS
         self.allowSelfSigned = allowSelfSigned
+        self.tlsConfig = tlsConfig
         self.channelType = channelType
         self.channelID = channelID
         self.connectionID = connectionID
@@ -154,10 +165,33 @@ actor SpiceChannelConnection {
         let params: NWParameters
         if useTLS {
             let tls = NWProtocolTLS.Options()
-            if allowSelfSigned {
+            let anchors = tlsConfig?.caPEM.flatMap { Self.certificates(fromPEM: $0) }
+            let expectedSubject = tlsConfig?.hostSubject
+            let allow = allowSelfSigned
+            if anchors != nil || allow {
                 sec_protocol_options_set_verify_block(
                     tls.securityProtocolOptions,
-                    { _, _, complete in complete(true) },   // accept self-signed
+                    { _, secTrust, complete in
+                        let trust = sec_trust_copy_ref(secTrust).takeRetainedValue()
+                        // Anchor to the cluster CA from the .vv, if provided.
+                        if let anchors, !anchors.isEmpty {
+                            SecTrustSetAnchorCertificates(trust, anchors as CFArray)
+                            SecTrustSetAnchorCertificatesOnly(trust, true)
+                        }
+                        var evalError: CFError?
+                        let trusted = SecTrustEvaluateWithError(trust, &evalError)
+                        if trusted {
+                            if let expectedSubject {
+                                Self.warnIfSubjectMismatch(trust, expected: expectedSubject)
+                            }
+                            complete(true)
+                        } else if allow {
+                            complete(true)   // user opted into trusting self-signed
+                        } else {
+                            log.notice("SPICE TLS trust evaluation failed: \(String(describing: evalError), privacy: .public)")
+                            complete(false)
+                        }
+                    },
                     DispatchQueue.global()
                 )
             }
@@ -226,6 +260,42 @@ actor SpiceChannelConnection {
                     cont.resume(throwing: SpiceConnectionError.protocolError("short read: got \(content?.count ?? 0)/\(n)"))
                 }
             }
+        }
+    }
+
+    // MARK: - TLS helpers
+
+    /// Parse a PEM bundle into `SecCertificate`s (one per CERTIFICATE block).
+    static func certificates(fromPEM pem: String) -> [SecCertificate]? {
+        let begin = "-----BEGIN CERTIFICATE-----"
+        let end = "-----END CERTIFICATE-----"
+        var certs: [SecCertificate] = []
+        var search = pem[...]
+        while let b = search.range(of: begin), let e = search.range(of: end) {
+            let base64 = search[b.upperBound..<e.lowerBound]
+                .components(separatedBy: .whitespacesAndNewlines).joined()
+            if let der = Data(base64Encoded: base64),
+               let cert = SecCertificateCreateWithData(nil, der as CFData) {
+                certs.append(cert)
+            }
+            search = search[e.upperBound...]
+        }
+        return certs.isEmpty ? nil : certs
+    }
+
+    /// Soft check that the leaf certificate's common name matches the CN in
+    /// the expected `host-subject`. Logged, not enforced, in v1 — CA
+    /// anchoring is the hard trust boundary; strict DN matching is a TODO.
+    private static func warnIfSubjectMismatch(_ trust: SecTrust, expected: String) {
+        guard let cn = expected
+            .components(separatedBy: ",")
+            .first(where: { $0.trimmingCharacters(in: .whitespaces).uppercased().hasPrefix("CN=") })?
+            .trimmingCharacters(in: .whitespaces).dropFirst(3) else { return }
+        guard let chain = SecTrustCopyCertificateChain(trust) as? [SecCertificate],
+              let leaf = chain.first else { return }
+        let summary = SecCertificateCopySubjectSummary(leaf) as String? ?? ""
+        if summary != String(cn) {
+            log.notice("SPICE TLS host-subject CN mismatch: cert=\(summary, privacy: .public) expected=\(String(cn), privacy: .public)")
         }
     }
 }
