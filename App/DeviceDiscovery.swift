@@ -187,6 +187,12 @@ extension DeviceDiscovery: NetServiceDelegate {
             deviceID = txt["serial"]
             version = nil
             isSetup = true
+        case .spice:
+            // SPICE consoles aren't mDNS-discovered (opened from a .vv);
+            // this branch exists only for switch exhaustiveness.
+            deviceID = nil
+            version = nil
+            isSetup = true
         }
 
         let entry = DiscoveredHost(

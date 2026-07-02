@@ -1,6 +1,8 @@
 import SwiftUI
 import JetKVMTransport
 import OSLog
+import AppKit
+import UniformTypeIdentifiers
 
 private let log = Logger(subsystem: "app.regi.mac", category: "app")
 
@@ -22,6 +24,9 @@ struct KVMSessionWindowID: Hashable, Codable {
     let useTLS: Bool
     let kind: DeviceKind
     let username: String
+    /// For `.spice` windows: the key into `SpiceConsoleStore` holding the
+    /// parsed `.vv` (proxy / CA / one-time ticket). nil for JetKVM/PiKVM.
+    let spiceConsoleID: UUID?
 
     init(saved: SavedHost) {
         self.displayName = saved.displayName
@@ -30,6 +35,7 @@ struct KVMSessionWindowID: Hashable, Codable {
         self.useTLS = saved.useTLS
         self.kind = saved.kind
         self.username = saved.username
+        self.spiceConsoleID = nil
     }
 
     init(discovered: DiscoveredHost) {
@@ -41,6 +47,19 @@ struct KVMSessionWindowID: Hashable, Codable {
         // PiKVM needs a username; discovery doesn't carry one, so use
         // its stock default. JetKVM ignores this field.
         self.username = "admin"
+        self.spiceConsoleID = nil
+    }
+
+    /// A SPICE console opened from a `.vv` file. The connection details live
+    /// in `SpiceConsoleStore` under `spiceConsoleID`.
+    init(spiceConsoleID: UUID, entry: SpiceConsoleStore.Entry) {
+        self.displayName = entry.name
+        self.host = entry.host
+        self.port = entry.port
+        self.useTLS = entry.useTLS
+        self.kind = .spice
+        self.username = ""
+        self.spiceConsoleID = spiceConsoleID
     }
 
     init(from decoder: Decoder) throws {
@@ -230,6 +249,13 @@ struct RegiCommands: Commands {
                 }
                 .keyboardShortcut("n", modifiers: .command)
 
+                Button {
+                    Self.openSpiceConsole()
+                } label: {
+                    Label("Open SPICE Console…", systemImage: "display")
+                }
+                .keyboardShortcut("o", modifiers: .command)
+
                 Divider()
 
                 Button {
@@ -261,6 +287,30 @@ struct RegiCommands: Commands {
         // invokes that auto-entry via NSApp.sendAction for the dock
         // left-click reopen + right-click "Show Hosts" paths, so all
         // three reopen surfaces share one underlying mechanism.
+    }
+
+    /// Prompt for a Proxmox `.vv` file, register it, and ask HostsView to
+    /// open a session window for it. `.vv` tickets are one-time and expire
+    /// quickly, so the user should pick a freshly-downloaded file.
+    @MainActor
+    private static func openSpiceConsole() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.prompt = "Connect"
+        panel.message = "Choose a Proxmox SPICE console file (.vv)"
+        if let vv = UTType(filenameExtension: "vv") {
+            panel.allowedContentTypes = [vv]
+            panel.allowsOtherFileTypes = true
+        }
+        guard panel.runModal() == .OK, let url = panel.url,
+              let text = try? String(contentsOf: url, encoding: .utf8) else { return }
+        let name = url.deletingPathExtension().lastPathComponent
+        guard let (id, _) = SpiceConsoleStore.shared.register(vvContents: text, name: name) else {
+            log.error("not a usable SPICE .vv: \(url.lastPathComponent, privacy: .public)")
+            return
+        }
+        NotificationCenter.default.post(name: .regiOpenSpiceConsole, object: id)
     }
 }
 
@@ -347,4 +397,40 @@ extension Session.State.Phase {
         case .iceGathering: return "Establishing connection…"
         }
     }
+}
+
+/// In-memory registry for parsed Proxmox `.vv` console files.
+///
+/// A `.vv` carries a large CA bundle and a one-time, short-lived ticket that
+/// don't belong in the small Codable `KVMSessionWindowID` (also used for
+/// window-restoration serialization). We register the parsed config here and
+/// carry only a UUID in the window id; the session window looks the config
+/// back up when it connects.
+@MainActor
+final class SpiceConsoleStore {
+    static let shared = SpiceConsoleStore()
+
+    struct Entry {
+        let name: String
+        let host: String
+        let port: Int
+        let useTLS: Bool
+        let config: SpiceVVConfig
+    }
+
+    private var entries: [UUID: Entry] = [:]
+
+    /// Parse a `.vv` file and register it. Returns the id + a window-friendly
+    /// entry, or nil if the file isn't a usable SPICE console.
+    func register(vvContents text: String, name: String) -> (id: UUID, entry: Entry)? {
+        let config = SpiceVVConfig.parse(text)
+        guard config.type == "spice", let ep = try? config.resolvedEndpoint() else { return nil }
+        let entry = Entry(name: name, host: ep.host, port: Int(ep.port), useTLS: ep.useTLS, config: config)
+        let id = UUID()
+        entries[id] = entry
+        return (id, entry)
+    }
+
+    func entry(for id: UUID) -> Entry? { entries[id] }
+    func config(for id: UUID) -> SpiceVVConfig? { entries[id]?.config }
 }

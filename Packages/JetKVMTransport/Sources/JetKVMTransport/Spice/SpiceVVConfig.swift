@@ -15,21 +15,23 @@ import Foundation
 /// host-subject=OU=PVE Cluster Node,O=Proxmox Virtual Environment,CN=pve.example.com
 /// ca=-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----\n
 /// ```
-struct SpiceVVConfig: Equatable {
-    var type: String?
-    var host: String?
-    var port: UInt16?
-    var tlsPort: UInt16?
+public struct SpiceVVConfig: Equatable {
+    public var type: String?
+    public var host: String?
+    public var port: UInt16?
+    public var tlsPort: UInt16?
     /// One-time SPICE ticket, used as the ticket-auth password. Short-lived.
-    var password: String?
+    public var password: String?
     /// `http://host:port` proxy, when the node isn't directly reachable.
-    var proxy: String?
+    public var proxy: String?
     /// Expected certificate subject, e.g. "OU=...,O=...,CN=node.fqdn".
-    var hostSubject: String?
+    public var hostSubject: String?
     /// PEM CA bundle (newlines already unescaped).
-    var caPEM: String?
+    public var caPEM: String?
 
-    enum Error: Swift.Error, Equatable {
+    public init() {}
+
+    public enum Error: Swift.Error, Equatable {
         case missingHost
         case missingPort
     }
@@ -37,7 +39,7 @@ struct SpiceVVConfig: Equatable {
     /// Parse a `.vv` INI. Keys are matched case-insensitively; only the
     /// `[virt-viewer]` section is read. The `ca` value's literal `\n`
     /// escapes are turned into real newlines.
-    static func parse(_ text: String) -> SpiceVVConfig {
+    public static func parse(_ text: String) -> SpiceVVConfig {
         var config = SpiceVVConfig()
         var inSection = false
 
@@ -68,7 +70,7 @@ struct SpiceVVConfig: Equatable {
     }
 
     /// The port to connect to and whether it is TLS. Prefers the TLS port.
-    func resolvedEndpoint() throws -> (host: String, port: UInt16, useTLS: Bool) {
+    public func resolvedEndpoint() throws -> (host: String, port: UInt16, useTLS: Bool) {
         guard let host, !host.isEmpty else { throw Error.missingHost }
         if let tlsPort, tlsPort != 0 { return (host, tlsPort, true) }
         if let port, port != 0 { return (host, port, false) }
