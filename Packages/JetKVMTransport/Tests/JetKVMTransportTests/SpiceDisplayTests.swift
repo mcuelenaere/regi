@@ -130,6 +130,8 @@ final class SpiceDisplayTests: XCTestCase {
         f.writeU32(0x00112233)
         await channel.handle(type: SpiceMsg.Display.drawFill.rawValue, payload: f.data)
 
+        // Emission is coalesced onto a timer; drive it directly here.
+        channel.emitIfDirty()
         let frame = try XCTUnwrap(box.get(), "primary surface should emit a frame")
         XCTAssertEqual(frame.width, 2)
         XCTAssertEqual(frame.height, 2)
