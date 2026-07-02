@@ -79,7 +79,9 @@ public final class SPICEBackend: KVMBackend {
         do {
             _ = try await mainConn.connect(password: password)
         } catch SpiceConnectionError.authFailed {
-            state = .awaitingPassword(nil)
+            // SPICE tickets come from the .vv and can't be re-entered, so a
+            // rejection is terminal (usually an expired ticket).
+            state = .failed("SPICE ticket rejected — it may have expired. Download a fresh console (.vv) file and reconnect.")
             await teardown()
             return
         } catch SpiceConnectionError.untrustedCertificate(let reason) {
@@ -101,18 +103,26 @@ public final class SPICEBackend: KVMBackend {
         main.onMouseMode = { mode in
             log.notice("SPICE server mouse mode now: \(mode == .client ? "client/absolute" : "server/relative")")
         }
-        let sessionID: UInt32 = await withCheckedContinuation { cont in
+        // Await MAIN_INIT, but never hang: fail if it doesn't arrive (server
+        // linked but sent no INIT) or the channel closes first.
+        let initInfo: SpiceMsgMainInit? = await withCheckedContinuation { cont in
             let resumed = OneShot()
-            main.onInit = { info in
-                let supportsClient = info.supportedMouseModes & UInt32(SpiceProtocol.MouseMode.client.rawValue) != 0
-                log.notice("SPICE MAIN_INIT: mouse supported=\(info.supportedMouseModes) current=\(info.currentMouseMode) clientCapable=\(supportsClient)")
-                if resumed.fire() { cont.resume(returning: info.sessionID) }
-            }
-            main.onClosed = { _ in
-                if resumed.fire() { cont.resume(returning: 0) }
-            }
+            main.onInit = { info in if resumed.fire() { cont.resume(returning: info) } }
+            main.onClosed = { _ in if resumed.fire() { cont.resume(returning: nil) } }
             main.start()
+            Task {
+                try? await Task.sleep(for: .seconds(10))
+                if resumed.fire() { cont.resume(returning: nil) }
+            }
         }
+        guard let initInfo else {
+            state = .failed("Timed out establishing the SPICE session. The console ticket may have expired — download a fresh .vv and reconnect.")
+            await teardown()
+            return
+        }
+        let supportsClient = initInfo.supportedMouseModes & UInt32(SpiceProtocol.MouseMode.client.rawValue) != 0
+        log.notice("SPICE MAIN_INIT: mouse supported=\(initInfo.supportedMouseModes) current=\(initInfo.currentMouseMode) clientCapable=\(supportsClient)")
+        let sessionID = initInfo.sessionID
 
         // Open inputs + display on the same target, tagged with the session id.
         let inputsConn = makeConnection(endpoint: endpoint, tls: tls, proxy: proxy,
@@ -247,11 +257,15 @@ public final class SPICEBackend: KVMBackend {
         if pressed {
             // Drop OS auto-repeat: a single held make code is enough — the
             // guest generates typematic repeat itself.
-            guard !heldKeys.contains(keyCode) else { return }
+            if heldKeys.contains(keyCode) {
+                log.info("SPICE key vk=\(keyCode) down: dropped (auto-repeat)")
+                return
+            }
             heldKeys.insert(keyCode)
         } else {
             heldKeys.remove(keyCode)
         }
+        log.info("SPICE key vk=\(keyCode) \(pressed ? "DOWN" : "up") sc=0x\(String(sc.wireCode, radix: 16))")
         inputContinuation?.yield(.key(sc, down: pressed))
     }
 
