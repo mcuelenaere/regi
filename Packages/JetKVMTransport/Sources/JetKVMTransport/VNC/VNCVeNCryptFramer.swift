@@ -157,7 +157,16 @@ final class VNCVeNCryptFramer: NWProtocolFramerImplementation {
                     hasUsername: negotiation?.hasUsername ?? false,
                     hasPassword: negotiation?.hasPassword ?? false)
                 guard let chosen = prefs.first(where: { offered.contains($0) }) else {
-                    fail("no acceptable TLS-encrypted VeNCrypt subtype (offered \(offered))")
+                    // A Plain-only server with no username configured is the
+                    // common miss (e.g. PiKVM) — point at the fix.
+                    let plainSubtypes: Set<UInt32> = [
+                        RFBProtocol.VeNCrypt.tlsPlain, RFBProtocol.VeNCrypt.x509Plain,
+                    ]
+                    if negotiation?.hasUsername != true, offered.contains(where: { plainSubtypes.contains($0) }) {
+                        fail("this server needs a username for TLS (VeNCrypt Plain) auth — add one to the host")
+                    } else {
+                        fail("no acceptable TLS-encrypted VeNCrypt subtype (offered \(offered))")
+                    }
                     return 0
                 }
                 negotiation?.chosenSubtype = chosen

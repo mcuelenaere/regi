@@ -50,11 +50,13 @@ enum RFBProtocol {
         }
 
         /// Subtypes we accept, strongest-and-safest first. All are TLS-wrapped
-        /// (we refuse the unencrypted `plain` subtype). `hasUsername` gates the
-        /// Plain subtypes, `hasPassword` gates Plain and Vnc.
+        /// (we refuse the unencrypted `plain` subtype). Plain is offered whenever
+        /// there's a `username` — the password can be prompted after the subtype
+        /// is chosen, so a Plain-only server (PiKVM) works on the first connect
+        /// and lands on `.awaitingPassword`. VncAuth needs a password up front.
         static func preferredSubtypes(hasUsername: Bool, hasPassword: Bool) -> [UInt32] {
             var order: [UInt32] = []
-            if hasUsername && hasPassword { order += [x509Plain, tlsPlain] }
+            if hasUsername { order += [x509Plain, tlsPlain] }
             if hasPassword { order += [x509Vnc, tlsVnc] }
             order += [x509None, tlsNone]
             return order

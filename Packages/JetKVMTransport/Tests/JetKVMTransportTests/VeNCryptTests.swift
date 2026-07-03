@@ -21,6 +21,17 @@ final class VeNCryptTests: XCTestCase {
         XCTAssertFalse(prefs.contains(256))
     }
 
+    func testPreferredSubtypesUsernameNoPassword() {
+        // PiKVM's first connect: a username is set but no password is stored
+        // yet. Plain must still be offered (password is prompted afterward), so
+        // a Plain-only server matches.
+        let prefs = RFBProtocol.VeNCrypt.preferredSubtypes(hasUsername: true, hasPassword: false)
+        XCTAssertEqual(prefs, [262, 259, 260, 257]) // Plain (via username) + None; no Vnc
+        // PiKVM offers [256, 262, 259]; we pick x509Plain.
+        let offered: Set<UInt32> = [256, 262, 259]
+        XCTAssertEqual(prefs.first(where: { offered.contains($0) }), 262)
+    }
+
     func testPreferredSubtypesPasswordOnly() {
         let prefs = RFBProtocol.VeNCrypt.preferredSubtypes(hasUsername: false, hasPassword: true)
         XCTAssertEqual(prefs, [261, 258, 260, 257]) // no Plain subtypes
