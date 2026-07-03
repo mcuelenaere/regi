@@ -1,6 +1,5 @@
 import SwiftUI
-import JetKVMProtocol
-import JetKVMTransport
+import KVMKit
 
 /// Popover content with ATX power buttons, codec preference, stream
 /// quality slider, and clipboard-sync toggle. Fed by Session's

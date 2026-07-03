@@ -1,5 +1,5 @@
 import SwiftUI
-import JetKVMTransport
+import KVMKit
 
 struct KVMWindowView: View {
     @Environment(Session.self) private var session

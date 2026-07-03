@@ -1,5 +1,5 @@
 import Foundation
-import JetKVMTransport
+import KVMKit
 
 /// User-saved host entry. Backs the rows in HostsView. The id is
 /// stable across restarts — KVMSessionWindow uses it to re-find the

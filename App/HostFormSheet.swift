@@ -1,5 +1,5 @@
 import SwiftUI
-import JetKVMTransport
+import KVMKit
 
 /// Add/edit dialog for a SavedHost. Same form for both — the
 /// `mode` switches between Save (new entry) and Update + Delete

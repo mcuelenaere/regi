@@ -1,6 +1,6 @@
 import AppKit
 import SwiftUI
-import JetKVMTransport
+import KVMKit
 
 /// One window per connected host. Owns its own Session so multiple
 /// windows for different hosts can coexist. The connection flow runs
