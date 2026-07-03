@@ -29,6 +29,14 @@ public protocol LocalVideoOutput: AnyObject, Sendable {
     var onFrame: (@Sendable (LocalVideoFrame) -> Void)? { get set }
 }
 
+/// How a connected backend delivers video, so the UI has one thing to render
+/// instead of probing multiple properties. WebRTC backends (JetKVM, PiKVM)
+/// hand over a track; SPICE hands over a locally-decoded output.
+public enum KVMVideoOutput {
+    case webRTC(RTCVideoTrack)
+    case local(LocalVideoOutput)
+}
+
 /// Which family of KVM device a connection targets. Carried on
 /// `DeviceEndpoint` and used by `Session` to pick the right backend.
 /// JetKVM and PiKVM speak entirely different protocols (see the PiKVM
@@ -171,4 +179,13 @@ public extension KVMBackend {
     /// WebRTC backends (JetKVM, PiKVM) render via `videoTrack`, not a local
     /// output. Only SPICE overrides this.
     var localVideoOutput: LocalVideoOutput? { nil }
+
+    /// The single render source the UI consumes, derived from whichever
+    /// primitive the backend provides. Backends set `videoTrack` (WebRTC) or
+    /// `localVideoOutput` (SPICE); the view never has to know which.
+    var videoOutput: KVMVideoOutput? {
+        if let track = videoTrack { return .webRTC(track) }
+        if let local = localVideoOutput { return .local(local) }
+        return nil
+    }
 }

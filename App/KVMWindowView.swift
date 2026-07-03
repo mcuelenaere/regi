@@ -153,9 +153,9 @@ struct KVMWindowView: View {
                 // Frames won't flow; show the placeholder instead of
                 // leaving the user staring at a black window.
                 NoSignalPlaceholder(error: err)
-            } else if let source = videoSource {
+            } else if let output = session.videoOutput {
                 KVMVideoRepresentable(
-                    source: source,
+                    output: output,
                     session: session,
                     pointerLocked: pointerLock.state == .enabled,
                     hideCursorOverVideo: hideCursorOverVideo
@@ -383,13 +383,6 @@ struct KVMWindowView: View {
         return raw
     }
 
-    /// The active video source: a WebRTC track (JetKVM/PiKVM) or a locally
-    /// decoded source (SPICE), whichever the backend provides.
-    private var videoSource: KVMVideoRepresentable.Source? {
-        if let track = session.videoTrack { return .track(track) }
-        if let local = session.localVideoOutput { return .local(local) }
-        return nil
-    }
 }
 
 /// Inline placeholder shown over the video area when the JetKVM
@@ -441,20 +434,15 @@ private struct NoSignalPlaceholder: View {
 }
 
 private struct KVMVideoRepresentable: NSViewRepresentable {
-    /// The video comes either as a WebRTC track (JetKVM/PiKVM) or a locally
-    /// decoded source (SPICE) — the view renders each with the right path.
-    enum Source {
-        case track(RTCVideoTrack)
-        case local(LocalVideoOutput)
-    }
-    let source: Source
+    /// What to render, chosen by the backend (WebRTC track vs local output).
+    let output: KVMVideoOutput
     let session: Session
     let pointerLocked: Bool
     let hideCursorOverVideo: Bool
 
     private func attach(to view: KVMVideoView) {
-        switch source {
-        case .track(let track): view.attach(track: track)
+        switch output {
+        case .webRTC(let track): view.attach(track: track)
         case .local(let output): view.attach(localVideo: output)
         }
     }

@@ -38,8 +38,9 @@ public final class Session {
 
     public var state: State { backend?.state ?? .idle }
     public var videoTrack: RTCVideoTrack? { backend?.videoTrack }
-    /// Locally-decoded video output (SPICE); nil for WebRTC backends.
-    public var localVideoOutput: LocalVideoOutput? { backend?.localVideoOutput }
+    /// The render source the UI consumes — a WebRTC track or a locally-decoded
+    /// output — without having to know which backend it's talking to.
+    public var videoOutput: KVMVideoOutput? { backend?.videoOutput }
     public var hasReceivedFirstFrame: Bool { backend?.hasReceivedFirstFrame ?? false }
     public var capabilities: KVMCapabilities { backend?.capabilities ?? .none }
     public var latestStats: ConnectionStats? { backend?.latestStats }
