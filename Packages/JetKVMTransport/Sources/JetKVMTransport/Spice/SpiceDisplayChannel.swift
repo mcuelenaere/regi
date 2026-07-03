@@ -75,6 +75,11 @@ final class SpiceDisplayChannel: SpiceChannel {
         /// server's own frame schedule the frame reached us — i.e. buffering /
         /// network delay above the best case. 0 when no video is flowing.
         var frameDelayMs = 0.0
+        /// Screen-updating draw ops received (FILL/COPY/OPAQUE/COPY_BITS) and
+        /// stream (re)creations — for diagnosing where updates come from and
+        /// whether the server's video-stream detector is flapping.
+        var drawOps = 0
+        var streamCreates = 0
     }
     private var stats = Stats()
 
@@ -272,6 +277,7 @@ final class SpiceDisplayChannel: SpiceChannel {
                 let s = try SpiceMsgStreamCreate.parse(payload)
                 lock.lock()
                 streams[s.streamID] = Stream(codec: s.codec, dest: s.dest)
+                stats.streamCreates += 1
                 lock.unlock()
                 if s.codec == .h264 { h264Decoders[s.streamID] = SpiceH264Decoder() }
                 log.notice("SPICE stream \(s.streamID) created codec=\(String(describing: s.codec), privacy: .public) \(s.dest.width)x\(s.dest.height)")
@@ -311,6 +317,7 @@ final class SpiceDisplayChannel: SpiceChannel {
                 let fill = try SpiceDrawFill.parse(payload)
                 guard let color = fill.solidColor else { return }
                 lock.lock()
+                stats.drawOps += 1
                 if let surface = surfaces[fill.base.surfaceID] {
                     surface.fill(rect: fill.base.box, color: color)
                     if fill.base.surfaceID == primaryID { dirty = true }
@@ -327,6 +334,7 @@ final class SpiceDisplayChannel: SpiceChannel {
                 // Decode outside the lock (the decoder is only touched here).
                 let decoded = decoder.decode(image)
                 lock.lock()
+                stats.drawOps += 1
                 if let decoded, let surface = surfaces[copy.base.surfaceID] {
                     surface.blit(src: decoded.pixels, srcWidth: decoded.width, srcHeight: decoded.height,
                                  srcArea: copy.srcArea, dest: copy.base.box)
@@ -337,6 +345,7 @@ final class SpiceDisplayChannel: SpiceChannel {
             case .copyBits:
                 let cb = try SpiceCopyBits.parse(payload)
                 lock.lock()
+                stats.drawOps += 1
                 if let surface = surfaces[cb.base.surfaceID] {
                     surface.copyBits(srcX: Int(cb.srcX), srcY: Int(cb.srcY), dest: cb.base.box)
                     if cb.base.surfaceID == primaryID { dirty = true }
