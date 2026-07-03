@@ -516,7 +516,12 @@ final class SpiceVideoSink: @unchecked Sendable {
     private var poolWidth = 0, poolHeight = 0
 
     init(factory: RTCPeerConnectionFactory) {
-        source = factory.videoSource()
+        // Screencast semantics: a plain videoSource() treats frames as *camera*
+        // input and applies frame-rate adaptation, CPU downscaling, and temporal
+        // smoothing — which drops/blurs desktop updates and makes incremental
+        // redraws look chunky. The screencast source disables all of that and
+        // passes every frame through at full resolution.
+        source = factory.videoSource(forScreenCast: true)
         capturer = RTCVideoCapturer(delegate: source)
         track = factory.videoTrack(with: source, trackId: "spice-video")
     }
