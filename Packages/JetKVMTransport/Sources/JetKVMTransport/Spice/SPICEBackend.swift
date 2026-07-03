@@ -247,6 +247,7 @@ public final class SPICEBackend: KVMBackend {
         let deltaEmitted = max(0, snap.emittedFrames - prev.snapshot.emittedFrames)
         let deltaDecoded = max(0, snap.streamFramesDecoded - prev.snapshot.streamFramesDecoded)
         let deltaDecodeSec = max(0, snap.streamDecodeTimeSec - prev.snapshot.streamDecodeTimeSec)
+        let deltaDraws = snap.drawOps - prev.snapshot.drawOps
 
         let fps = Double(deltaEmitted) / dt
         // Latency is only meaningful while video is actually flowing.
@@ -258,6 +259,19 @@ public final class SPICEBackend: KVMBackend {
         let playbackDelay = videoActive ? snap.frameDelayMs : nil
         let inputLatency = frameIntervalMs.map { $0 + (playbackDelay ?? 0) }
 
+        // "Codec" reflects how the screen is being delivered *right now*: the
+        // stream codec while video frames flow, "Images" when it's the plain
+        // image-draw path (no active stream), else keep the last shown value so
+        // an idle screen doesn't blank out.
+        let deliveredCodec: String?
+        if videoActive {
+            deliveredCodec = snap.codec?.mimeType
+        } else if deltaDraws > 0 {
+            deliveredCodec = "Images"
+        } else {
+            deliveredCodec = latestStats?.codec
+        }
+
         let sample = ConnectionStats(
             timestamp: now,
             roundTripTimeMs: nil,
@@ -268,7 +282,7 @@ public final class SPICEBackend: KVMBackend {
             connectionType: nil,
             framesPerSecond: fps,
             framesDropped: Int64(snap.streamFramesDropped),
-            codec: snap.codec?.mimeType,
+            codec: deliveredCodec,
             freezeCount: 0,
             totalFreezesDurationSec: 0,
             decodeTimePerFrameMs: deltaDecoded > 0 ? (deltaDecodeSec / Double(deltaDecoded)) * 1000 : nil,
@@ -286,9 +300,8 @@ public final class SPICEBackend: KVMBackend {
         // us (decoded+dropped); emitted = frames we handed the renderer.
         let deltaReceived = (snap.streamFramesDecoded + snap.streamFramesDropped)
             - (prev.snapshot.streamFramesDecoded + prev.snapshot.streamFramesDropped)
-        let deltaDraws = snap.drawOps - prev.snapshot.drawOps
         let deltaCreates = snap.streamCreates - prev.snapshot.streamCreates
-        log.notice("""
+        log.debug("""
         SPICE rates/s: streamRecv=\(String(format: "%.1f", Double(deltaReceived) / dt)) \
         emitted=\(String(format: "%.1f", fps)) drawOps=\(String(format: "%.1f", Double(deltaDraws) / dt)) \
         streamCreates=\(deltaCreates) drops=\(snap.streamFramesDropped - prev.snapshot.streamFramesDropped)
