@@ -67,10 +67,9 @@ public enum DeviceKind: String, Sendable, Codable, Hashable, CaseIterable {
 public enum KVMState: Equatable, Sendable {
     case idle
     case connecting(Phase)
-    /// Password (and, for PiKVM, username) required. The associated
-    /// `LocalDevice?` is JetKVM's device record for re-display; PiKVM
-    /// passes `nil`.
-    case awaitingPassword(LocalDevice?)
+    /// Password (and, for PiKVM, username) required. The UI collects the
+    /// credential and re-runs `connect(...)`.
+    case awaitingPassword
     /// First request to the device failed system trust evaluation and
     /// the user hasn't opted into trusting self-signed certs for this
     /// host. UI prompts; on accept the caller re-runs `connect(...)`
