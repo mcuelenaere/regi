@@ -187,14 +187,16 @@ struct SpiceMsgStreamCreate {
 /// STREAM_DATA (123): one encoded frame for a stream.
 struct SpiceMsgStreamData {
     var streamID: UInt32
+    /// Server multimedia timestamp (ms) — feeds the stream-report window.
+    var multiMediaTime: UInt32
     var data: [UInt8]
 
     static func parse(_ data: Data) throws -> SpiceMsgStreamData {
         var r = SpiceByteReader(data)
         let id = try r.readU32()
-        _ = try r.readU32()               // multi_media_time
+        let mmTime = try r.readU32()      // multi_media_time
         let size = try r.readU32()
-        return SpiceMsgStreamData(streamID: id, data: try r.readBytes(Int(size)))
+        return SpiceMsgStreamData(streamID: id, multiMediaTime: mmTime, data: try r.readBytes(Int(size)))
     }
 }
 
@@ -202,17 +204,37 @@ struct SpiceMsgStreamData {
 /// destination rect.
 struct SpiceMsgStreamDataSized {
     var streamID: UInt32
+    var multiMediaTime: UInt32
     var dest: SpiceRect
     var data: [UInt8]
 
     static func parse(_ data: Data) throws -> SpiceMsgStreamDataSized {
         var r = SpiceByteReader(data)
         let id = try r.readU32()
-        _ = try r.readU32()               // multi_media_time
+        let mmTime = try r.readU32()      // multi_media_time
         _ = try r.readU32(); _ = try r.readU32()   // width, height
         let dest = try SpiceRect.read(&r)
         let size = try r.readU32()
-        return SpiceMsgStreamDataSized(streamID: id, dest: dest, data: try r.readBytes(Int(size)))
+        return SpiceMsgStreamDataSized(streamID: id, multiMediaTime: mmTime, dest: dest,
+                                       data: try r.readBytes(Int(size)))
+    }
+}
+
+/// STREAM_ACTIVATE_REPORT (319): the server asks the client to start sending
+/// periodic STREAM_REPORT feedback for a stream. `maxWindowSize` (frames) and
+/// `timeoutMs` bound how often a report is due; the server uses those reports
+/// for adaptive rate control, so a client that advertises the STREAM_REPORT
+/// cap but never reports gets throttled to the minimum bitrate.
+struct SpiceMsgStreamActivateReport {
+    var streamID: UInt32
+    var uniqueID: UInt32
+    var maxWindowSize: UInt32
+    var timeoutMs: UInt32
+
+    static func parse(_ data: Data) throws -> SpiceMsgStreamActivateReport {
+        var r = SpiceByteReader(data)
+        return SpiceMsgStreamActivateReport(streamID: try r.readU32(), uniqueID: try r.readU32(),
+                                            maxWindowSize: try r.readU32(), timeoutMs: try r.readU32())
     }
 }
 

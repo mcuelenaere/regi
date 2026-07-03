@@ -195,4 +195,21 @@ extension SpiceByteWriter {
         w.writeU64(cacheSize)
         return w.data
     }
+
+    /// stream_report body (SPICE_MSGC_DISPLAY_STREAM_REPORT): tells the server
+    /// how the client is keeping up with a video stream so it can adapt the
+    /// bitrate. Fields: stream_id, unique_id, start/end frame mm_time, frames
+    /// received, frames dropped, last-frame delay (ms), audio delay (ms;
+    /// UINT32_MAX = no audio).
+    static func streamReport(streamID: UInt32, uniqueID: UInt32,
+                             startFrameMMTime: UInt32, endFrameMMTime: UInt32,
+                             numFrames: UInt32, numDrops: UInt32,
+                             lastFrameDelay: Int32, audioDelay: UInt32) -> Data {
+        var w = SpiceByteWriter()
+        w.writeU32(streamID); w.writeU32(uniqueID)
+        w.writeU32(startFrameMMTime); w.writeU32(endFrameMMTime)
+        w.writeU32(numFrames); w.writeU32(numDrops)
+        w.writeI32(lastFrameDelay); w.writeU32(audioDelay)
+        return w.data
+    }
 }

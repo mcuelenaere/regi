@@ -169,7 +169,41 @@ final class SpiceDisplayTests: XCTestCase {
         w.writeBytes([0xDE, 0xAD, 0xBE, 0xEF])
         let d = try SpiceMsgStreamData.parse(w.data)
         XCTAssertEqual(d.streamID, 7)
+        XCTAssertEqual(d.multiMediaTime, 12345)
         XCTAssertEqual(d.data, [0xDE, 0xAD, 0xBE, 0xEF])
+    }
+
+    func testStreamActivateReportParse() throws {
+        var w = SpiceByteWriter()
+        w.writeU32(7)      // stream_id
+        w.writeU32(99)     // unique_id
+        w.writeU32(20)     // max_window_size (frames)
+        w.writeU32(1000)   // timeout_ms
+        let a = try SpiceMsgStreamActivateReport.parse(w.data)
+        XCTAssertEqual(a.streamID, 7)
+        XCTAssertEqual(a.uniqueID, 99)
+        XCTAssertEqual(a.maxWindowSize, 20)
+        XCTAssertEqual(a.timeoutMs, 1000)
+    }
+
+    /// The STREAM_REPORT body must match spice.proto field order/width so the
+    /// server's rate control reads it correctly (all little-endian u32 except
+    /// last_frame_delay, which is i32).
+    func testStreamReportEncoding() throws {
+        let payload = SpiceByteWriter.streamReport(
+            streamID: 7, uniqueID: 99,
+            startFrameMMTime: 1000, endFrameMMTime: 1660,
+            numFrames: 20, numDrops: 0,
+            lastFrameDelay: 0, audioDelay: .max)
+        var r = SpiceByteReader(payload)
+        XCTAssertEqual(try r.readU32(), 7)
+        XCTAssertEqual(try r.readU32(), 99)
+        XCTAssertEqual(try r.readU32(), 1000)
+        XCTAssertEqual(try r.readU32(), 1660)
+        XCTAssertEqual(try r.readU32(), 20)
+        XCTAssertEqual(try r.readU32(), 0)
+        XCTAssertEqual(try r.readI32(), 0)
+        XCTAssertEqual(try r.readU32(), UInt32.max)   // no audio
     }
 
     // MARK: - Channel

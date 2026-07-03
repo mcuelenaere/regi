@@ -41,6 +41,24 @@ final class SpiceDisplayChannel: SpiceChannel {
     /// One H.264 decoder per H.264 stream. Touched only on the read loop.
     private var h264Decoders: [UInt32: SpiceH264Decoder] = [:]
 
+    /// Per-stream STREAM_REPORT accounting, keyed by stream id. Populated when
+    /// the server sends STREAM_ACTIVATE_REPORT; a report is emitted once the
+    /// window (frames or timeout) fills. Servers throttle streams whose client
+    /// advertised the report cap but stays silent, so this is what keeps the
+    /// bitrate/framerate from collapsing. Guarded by `lock`.
+    private struct ReportWindow {
+        var uniqueID: UInt32
+        var maxWindowSize: UInt32
+        var timeoutMs: UInt32
+        var started = false
+        var numFrames: UInt32 = 0
+        var numDrops: UInt32 = 0
+        var startMMTime: UInt32 = 0
+        var endMMTime: UInt32 = 0
+        var windowStartNanos: UInt64 = 0
+    }
+    private var reportWindows: [UInt32: ReportWindow] = [:]
+
     private let decoder = SpiceImageDecoder()
 
     /// Cumulative display metrics, guarded by `lock`. The backend snapshots
@@ -85,10 +103,13 @@ final class SpiceDisplayChannel: SpiceChannel {
 
     /// Decode a video-stream frame and composite it onto the primary surface
     /// at the stream's destination rect. Called from the read loop, so the
-    /// decoder (serial) is safe to touch outside the lock.
-    private func blitStreamFrame(streamID: UInt32, data: [UInt8], dest destOverride: SpiceRect?) {
+    /// decoder (serial) is safe to touch outside the lock. Returns a
+    /// STREAM_REPORT payload to send back when the report window has filled
+    /// (nil otherwise); the async caller does the send.
+    private func blitStreamFrame(streamID: UInt32, data: [UInt8], mmTime: UInt32,
+                                 dest destOverride: SpiceRect?) -> Data? {
         lock.lock()
-        guard var stream = streams[streamID] else { lock.unlock(); return }
+        guard var stream = streams[streamID] else { lock.unlock(); return nil }
         if let destOverride { stream.dest = destOverride; streams[streamID] = stream }
         let codec = stream.codec
         let dest = stream.dest
@@ -101,9 +122,11 @@ final class SpiceDisplayChannel: SpiceChannel {
         case .h264:  decodedFrame = h264Decoders[streamID]?.decode(data)
         default:     decodedFrame = nil     // VP8/VP9/H265 not yet supported
         }
-        let decodeSec = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1_000_000_000
+        let now = DispatchTime.now().uptimeNanoseconds
+        let decodeSec = Double(now - t0) / 1_000_000_000
 
         lock.lock()
+        defer { lock.unlock() }
         stats.codec = codec
         stats.streamDecodeTimeSec += decodeSec
         if decodedFrame == nil { stats.streamFramesDropped += 1 } else { stats.streamFramesDecoded += 1 }
@@ -114,7 +137,38 @@ final class SpiceDisplayChannel: SpiceChannel {
                          dest: dest)
             dirty = true
         }
-        lock.unlock()
+        return accumulateReport(streamID: streamID, mmTime: mmTime,
+                                dropped: decodedFrame == nil, now: now)
+    }
+
+    /// Fold one stream frame into its report window (caller holds `lock`).
+    /// Returns a STREAM_REPORT payload when the window fills, else nil.
+    private func accumulateReport(streamID: UInt32, mmTime: UInt32,
+                                  dropped: Bool, now: UInt64) -> Data? {
+        guard var w = reportWindows[streamID] else { return nil }
+        if !w.started {
+            w.started = true
+            w.numFrames = 0; w.numDrops = 0
+            w.startMMTime = mmTime
+            w.windowStartNanos = now
+        }
+        w.endMMTime = mmTime
+        w.numFrames += 1
+        if dropped { w.numDrops += 1 }
+
+        let elapsedMs = (now - w.windowStartNanos) / 1_000_000
+        let due = w.numFrames >= w.maxWindowSize || (w.timeoutMs > 0 && elapsedMs >= w.timeoutMs)
+        guard due else { reportWindows[streamID] = w; return nil }
+
+        // Report perfect keep-up: 0 client-side delay, no audio (UINT32_MAX).
+        let payload = SpiceByteWriter.streamReport(
+            streamID: streamID, uniqueID: w.uniqueID,
+            startFrameMMTime: w.startMMTime, endFrameMMTime: w.endMMTime,
+            numFrames: w.numFrames, numDrops: w.numDrops,
+            lastFrameDelay: 0, audioDelay: .max)
+        w.started = false
+        reportWindows[streamID] = w
+        return payload
     }
 
     /// Snapshot + emit the primary surface if it changed since the last emit.
@@ -188,6 +242,7 @@ final class SpiceDisplayChannel: SpiceChannel {
                 lock.lock()
                 surfaces.removeAll()
                 streams.removeAll()
+                reportWindows.removeAll()
                 primaryID = nil
                 dirty = false
                 lock.unlock()
@@ -203,19 +258,33 @@ final class SpiceDisplayChannel: SpiceChannel {
 
             case .streamData:
                 let d = try SpiceMsgStreamData.parse(payload)
-                blitStreamFrame(streamID: d.streamID, data: d.data, dest: nil)
+                if let report = blitStreamFrame(streamID: d.streamID, data: d.data,
+                                                mmTime: d.multiMediaTime, dest: nil) {
+                    try? await send(type: SpiceMsg.DisplayClient.streamReport.rawValue, payload: report)
+                }
 
             case .streamDataSized:
                 let d = try SpiceMsgStreamDataSized.parse(payload)
-                blitStreamFrame(streamID: d.streamID, data: d.data, dest: d.dest)
+                if let report = blitStreamFrame(streamID: d.streamID, data: d.data,
+                                                mmTime: d.multiMediaTime, dest: d.dest) {
+                    try? await send(type: SpiceMsg.DisplayClient.streamReport.rawValue, payload: report)
+                }
+
+            case .streamActivateReport:
+                let a = try SpiceMsgStreamActivateReport.parse(payload)
+                lock.lock()
+                reportWindows[a.streamID] = ReportWindow(uniqueID: a.uniqueID,
+                                                         maxWindowSize: max(1, a.maxWindowSize),
+                                                         timeoutMs: a.timeoutMs)
+                lock.unlock()
 
             case .streamDestroy:
                 let d = try SpiceMsgStreamDestroy.parse(payload)
-                lock.lock(); streams[d.streamID] = nil; lock.unlock()
+                lock.lock(); streams[d.streamID] = nil; reportWindows[d.streamID] = nil; lock.unlock()
                 h264Decoders[d.streamID] = nil
 
             case .streamDestroyAll:
-                lock.lock(); streams.removeAll(); lock.unlock()
+                lock.lock(); streams.removeAll(); reportWindows.removeAll(); lock.unlock()
                 h264Decoders.removeAll()
 
             case .drawFill:
