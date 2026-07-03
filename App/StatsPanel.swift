@@ -1,6 +1,6 @@
 import Charts
 import SwiftUI
-import JetKVMTransport
+import KVMKit
 
 /// Popover content showing live WebRTC connection metrics.
 /// Mirrors the diagnostic overlay the JetKVM web UI ships, plus a

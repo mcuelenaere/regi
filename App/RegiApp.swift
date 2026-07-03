@@ -1,5 +1,5 @@
 import SwiftUI
-import JetKVMTransport
+import KVMKit
 import OSLog
 
 private let log = Logger(subsystem: "app.regi.mac", category: "app")

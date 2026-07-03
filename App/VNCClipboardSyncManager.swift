@@ -1,6 +1,6 @@
 import AppKit
 import Foundation
-import JetKVMTransport
+import KVMKit
 import OSLog
 
 private let log = Logger(subsystem: "app.regi.mac", category: "vnc-clipboard-sync")

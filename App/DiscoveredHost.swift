@@ -1,5 +1,5 @@
 import Foundation
-import JetKVMTransport
+import KVMKit
 
 /// A KVM device discovered via mDNS / Bonjour. Distinct from
 /// SavedHost — discovered entries are ephemeral (vanish when the

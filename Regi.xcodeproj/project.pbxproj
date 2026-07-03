@@ -12,10 +12,8 @@
 		1A00000000000000000000A3 /* TrustedHostStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A00000000000000000000B3 /* TrustedHostStore.swift */; };
 		2A00000000000000000000A1 /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = 2A00000000000000000000B1 /* Localizable.xcstrings */; };
 		D100000000000000000000D1 /* RegiApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = C100000000000000000000C1 /* RegiApp.swift */; };
-		D200000000000000000000D2 /* WebRTC in Frameworks */ = {isa = PBXBuildFile; productRef = E200000000000000000000E2 /* WebRTC */; };
-		D300000000000000000000D3 /* JetKVMProtocol in Frameworks */ = {isa = PBXBuildFile; productRef = E400000000000000000000E4 /* JetKVMProtocol */; };
+		D300000000000000000000D3 /* KVMKit in Frameworks */ = {isa = PBXBuildFile; productRef = E400000000000000000000E4 /* KVMKit */; };
 		D370A16B2FB3CE940040AE62 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = D370A16A2FB3CE940040AE62 /* Assets.xcassets */; };
-		D400000000000000000000D4 /* JetKVMTransport in Frameworks */ = {isa = PBXBuildFile; productRef = E600000000000000000000E6 /* JetKVMTransport */; };
 		D600000000000000000000D6 /* KVMWindowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C500000000000000000000C5 /* KVMWindowView.swift */; };
 		D700000000000000000000D7 /* KVMVideoView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C600000000000000000000C6 /* KVMVideoView.swift */; };
 		D800000000000000000000D8 /* KeyboardCapturer.swift in Sources */ = {isa = PBXBuildFile; fileRef = C700000000000000000000C7 /* KeyboardCapturer.swift */; };
@@ -70,9 +68,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				D200000000000000000000D2 /* WebRTC in Frameworks */,
-				D300000000000000000000D3 /* JetKVMProtocol in Frameworks */,
-				D400000000000000000000D4 /* JetKVMTransport in Frameworks */,
+				D300000000000000000000D3 /* KVMKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -152,9 +148,7 @@
 			);
 			name = Regi;
 			packageProductDependencies = (
-				E200000000000000000000E2 /* WebRTC */,
-				E400000000000000000000E4 /* JetKVMProtocol */,
-				E600000000000000000000E6 /* JetKVMTransport */,
+				E400000000000000000000E4 /* KVMKit */,
 			);
 			productName = Regi;
 			productReference = C300000000000000000000C3 /* Regi.app */;
@@ -186,9 +180,7 @@
 			mainGroup = A200000000000000000000A2;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				E100000000000000000000E1 /* XCRemoteSwiftPackageReference "WebRTC" */,
-				E300000000000000000000E3 /* XCLocalSwiftPackageReference "Packages/JetKVMProtocol" */,
-				E500000000000000000000E5 /* XCLocalSwiftPackageReference "Packages/JetKVMTransport" */,
+				E300000000000000000000E3 /* XCLocalSwiftPackageReference "Packages/KVMKit" */,
 			);
 			productRefGroup = A500000000000000000000A5 /* Products */;
 			projectDirPath = "";
@@ -440,40 +432,16 @@
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
-		E300000000000000000000E3 /* XCLocalSwiftPackageReference "Packages/JetKVMProtocol" */ = {
+		E300000000000000000000E3 /* XCLocalSwiftPackageReference "Packages/KVMKit" */ = {
 			isa = XCLocalSwiftPackageReference;
-			relativePath = Packages/JetKVMProtocol;
-		};
-		E500000000000000000000E5 /* XCLocalSwiftPackageReference "Packages/JetKVMTransport" */ = {
-			isa = XCLocalSwiftPackageReference;
-			relativePath = Packages/JetKVMTransport;
+			relativePath = Packages/KVMKit;
 		};
 /* End XCLocalSwiftPackageReference section */
 
-/* Begin XCRemoteSwiftPackageReference section */
-		E100000000000000000000E1 /* XCRemoteSwiftPackageReference "WebRTC" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/AttilaTheFun/WebRTC.git";
-			requirement = {
-				kind = exactVersion;
-				version = 148.0.0;
-			};
-		};
-/* End XCRemoteSwiftPackageReference section */
-
 /* Begin XCSwiftPackageProductDependency section */
-		E200000000000000000000E2 /* WebRTC */ = {
+		E400000000000000000000E4 /* KVMKit */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = E100000000000000000000E1 /* XCRemoteSwiftPackageReference "WebRTC" */;
-			productName = WebRTC;
-		};
-		E400000000000000000000E4 /* JetKVMProtocol */ = {
-			isa = XCSwiftPackageProductDependency;
-			productName = JetKVMProtocol;
-		};
-		E600000000000000000000E6 /* JetKVMTransport */ = {
-			isa = XCSwiftPackageProductDependency;
-			productName = JetKVMTransport;
+			productName = KVMKit;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

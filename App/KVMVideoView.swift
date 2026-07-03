@@ -1,6 +1,5 @@
 import AppKit
-import JetKVMProtocol
-import JetKVMTransport
+import KVMKit
 import OSLog
 
 private let log = Logger(subsystem: "app.regi.mac", category: "kvm-view")
