@@ -59,12 +59,24 @@ class SpiceChannel {
     /// of a naturally-aligned UInt64 is atomic on the platforms we target.
     private(set) var receiveBlockedSinceNanos: UInt64 = 0
 
+    /// Worst read-loop idle (ns) seen right after hitting the ACK window since
+    /// the last reset — i.e. the effective flow-control round-trip that gates
+    /// large redraws. Diagnostic; drained by the stats poller.
+    private(set) var ackStallMaxNanos: UInt64 = 0
+    func resetAckStallStat() { ackStallMaxNanos = 0 }
+
     private func runLoop() async {
         do {
             while !Task.isCancelled {
-                receiveBlockedSinceNanos = DispatchTime.now().uptimeNanoseconds
+                let wasAtAckWindow = lastMessageHitAckWindow
+                let blockStart = DispatchTime.now().uptimeNanoseconds
+                receiveBlockedSinceNanos = blockStart
                 let (type, payload) = try await connection.receive()
                 receiveBlockedSinceNanos = 0
+                if wasAtAckWindow {
+                    let idle = DispatchTime.now().uptimeNanoseconds &- blockStart
+                    if idle > ackStallMaxNanos { ackStallMaxNanos = idle }
+                }
                 await dispatch(type: type, payload: payload)
             }
         } catch {
@@ -107,7 +119,9 @@ class SpiceChannel {
         if ackCount >= ackWindow {
             ackCount = 0
             lastMessageHitAckWindow = true
-            Task { [weak self] in
+            // High priority + noDelay socket: get the ACK on the wire ASAP so
+            // the server's flow-control stall is only the raw round-trip.
+            Task(priority: .high) { [weak self] in
                 try? await self?.send(type: SpiceMsg.CommonClient.ack.rawValue)
             }
         } else {

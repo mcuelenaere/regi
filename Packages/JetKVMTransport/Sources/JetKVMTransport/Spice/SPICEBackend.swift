@@ -301,10 +301,15 @@ public final class SPICEBackend: KVMBackend {
         let deltaReceived = (snap.streamFramesDecoded + snap.streamFramesDropped)
             - (prev.snapshot.streamFramesDecoded + prev.snapshot.streamFramesDropped)
         let deltaCreates = snap.streamCreates - prev.snapshot.streamCreates
+        // Effective flow-control round-trip that gates large redraws — should
+        // drop sharply now that Nagle is disabled.
+        let ackStallMs = Double(display.ackStallMaxNanos) / 1_000_000
+        display.resetAckStallStat()
         log.debug("""
         SPICE rates/s: streamRecv=\(String(format: "%.1f", Double(deltaReceived) / dt)) \
         emitted=\(String(format: "%.1f", fps)) drawOps=\(String(format: "%.1f", Double(deltaDraws) / dt)) \
-        streamCreates=\(deltaCreates) drops=\(snap.streamFramesDropped - prev.snapshot.streamFramesDropped)
+        streamCreates=\(deltaCreates) drops=\(snap.streamFramesDropped - prev.snapshot.streamFramesDropped) \
+        ackStallMax=\(String(format: "%.1f", ackStallMs))ms
         """)
     }
 

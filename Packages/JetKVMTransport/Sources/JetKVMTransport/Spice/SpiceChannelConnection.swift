@@ -272,6 +272,18 @@ actor SpiceChannelConnection {
         return tls
     }
 
+    /// TCP options with Nagle disabled. SPICE is latency-sensitive in both
+    /// directions: our tiny flow-control ACKs (and input events) have nothing
+    /// queued behind them, so Nagle + the peer's delayed-ACK would stall them
+    /// tens of ms — which balloons every ACK-window stall (fragmenting large
+    /// redraws) and adds input lag. `noDelay` sends them immediately.
+    private static func makeTCPOptions() -> NWProtocolTCP.Options {
+        let o = NWProtocolTCP.Options()
+        o.noDelay = true
+        o.enableKeepalive = true
+        return o
+    }
+
     private func openSocket() async throws {
         let params: NWParameters
         let endpointHost: String
@@ -280,20 +292,14 @@ actor SpiceChannelConnection {
         if let proxy {
             // TCP to the proxy; the framer CONNECTs to host:port; TLS (if any)
             // runs over the tunnel. Framer goes *below* TLS in the stack.
-            params = useTLS
-                ? NWParameters(tls: makeTLSOptions(), tcp: NWProtocolTCP.Options())
-                : NWParameters(tls: nil, tcp: NWProtocolTCP.Options())
+            params = NWParameters(tls: useTLS ? makeTLSOptions() : nil, tcp: Self.makeTCPOptions())
             let framer = NWProtocolFramer.Options(definition: SpiceProxyTunnel.definition)
             params.defaultProtocolStack.applicationProtocols.append(framer)
             SpiceProxyTunnel.enqueueTarget("\(host):\(port)")
             endpointHost = proxy.host
             endpointPort = proxy.port
-        } else if useTLS {
-            params = NWParameters(tls: makeTLSOptions())
-            endpointHost = host
-            endpointPort = port
         } else {
-            params = NWParameters.tcp
+            params = NWParameters(tls: useTLS ? makeTLSOptions() : nil, tcp: Self.makeTCPOptions())
             endpointHost = host
             endpointPort = port
         }
