@@ -29,6 +29,7 @@ final class VNCStreamEngine: @unchecked Sendable {
     private let zlib = ZlibDecoder()
     private let hextile = HextileDecoder()
     private let zrle = ZRLEDecoder()
+    private let h264 = H264Decoder()
     private let stats: VNCStatsCollector
 
     /// Guards partial-update requests once a resize voids the framebuffer.
@@ -140,6 +141,10 @@ final class VNCStreamEngine: @unchecked Sendable {
                 dirty = true
             case RFBProtocol.Encoding.zrle:
                 try await zrle.decodeRect(header, channel: channel, framebuffer: framebuffer)
+                stats.record(encoding: header.encoding)
+                dirty = true
+            case RFBProtocol.Encoding.h264:
+                try await h264.decodeRect(header, channel: channel, framebuffer: framebuffer)
                 stats.record(encoding: header.encoding)
                 dirty = true
             default:

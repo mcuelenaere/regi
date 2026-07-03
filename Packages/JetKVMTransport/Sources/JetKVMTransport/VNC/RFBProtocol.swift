@@ -63,6 +63,8 @@ enum RFBProtocol {
         static let zlib: Int32 = 6
         static let tight: Int32 = 7
         static let zrle: Int32 = 16
+        /// RFB "Open H.264" encoding (PiKVM kvmd-vnc, TigerVNC 1.13+, patched QEMU).
+        static let h264: Int32 = 50
 
         // Pseudo-encodings.
         static let desktopSize: Int32 = -223

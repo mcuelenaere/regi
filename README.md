@@ -33,10 +33,12 @@ is in the macOS integration around it.
   controls are hidden when they don't apply (PiKVM parity is on the
   roadmap).
 - **Standalone VNC (RFB 3.8).** Connect to any plain VNC server — QEMU/libvirt
-  `-vnc`, or a Proxmox VM's QEMU VNC port. Tight (with JPEG via ImageIO) is
-  preferred, with ZRLE / Zlib / Hextile / CopyRect / Raw fallbacks for servers
-  that don't offer it — all decoded off the main thread, with each
-  `FramebufferUpdate` presented atomically (no tearing or per-strip shimmer);
+  `-vnc`, a Proxmox VM's QEMU VNC port, or PiKVM's `kvmd-vnc`. H.264 (RFB
+  encoding 50, via VideoToolbox — as used by PiKVM and TigerVNC 1.13+) is
+  preferred where offered, then Tight (JPEG via ImageIO), with
+  ZRLE / Zlib / Hextile / CopyRect / Raw fallbacks — all decoded off the main
+  thread, with each `FramebufferUpdate` presented atomically (no tearing or
+  per-strip shimmer);
   dynamic resolution changes (virtio-gpu / DesktopSize), QEMU extended key
   events for layout-independent typing, and UTF-8 clipboard sync via the
   Extended Clipboard pseudo-encoding (falling back to Latin-1 cut text).

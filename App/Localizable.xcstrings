@@ -112,6 +112,9 @@
     "H.265" : {
 
     },
+    "Hard-resets the guest, like the reset button. Unsaved state is lost." : {
+
+    },
     "HDMI signal error detected." : {
 
     },
@@ -178,6 +181,9 @@
     "Power" : {
 
     },
+    "Power control over VNC (XVP). Requires a server started with power control enabled; QEMU supports shutdown and reset." : {
+
+    },
     "Power, codec, and quality controls." : {
 
     },
@@ -193,6 +199,9 @@
     "Reset host?" : {
 
     },
+    "Reset the VM?" : {
+
+    },
     "Reset…" : {
 
     },
@@ -203,6 +212,9 @@
 
     },
     "Save the password to the macOS Keychain so it auto-fills next time you connect to this host." : {
+
+    },
+    "Sends an ACPI shutdown request to the guest." : {
 
     },
     "Sends the reset signal to the host." : {
@@ -218,6 +230,15 @@
 
     },
     "Show Hosts" : {
+
+    },
+    "Shut Down" : {
+
+    },
+    "Shut down the VM?" : {
+
+    },
+    "Shut Down…" : {
 
     },
     "Sign In" : {

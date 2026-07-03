@@ -50,25 +50,24 @@ lossy case. The remaining unimplemented *features* QEMU exposes, roughly by valu
 Not supported by QEMU's server (so not worth implementing for the QEMU target):
 Fence / ContinuousUpdates, RRE/CoRRE/TRLE/ZlibHex.
 
-## VNC: Open H.264 encoding (RFB encoding 50)
+## VNC: H.264 decoder — single-context limitation
 
-**Where:** `VNCStreamEngine.handleFramebufferUpdate` (the per-rect encoding
-switch) and `VNCBackend.encodings` (the advertised `SetEncodings` list).
+**Where:** `Packages/JetKVMTransport/Sources/JetKVMTransport/VNC/H264Decoder.swift`.
 
-**What's there now:** we decode Raw / CopyRect / Tight only. The RFB "Open
-H.264" encoding (50) exists in the rfbproto registry and noVNC can decode it,
-but **no shipping server emits it**: the QEMU patch series ("Add VNC Open H.264
-Encoding", Dietmar Maurer / Proxmox, April 2025, GStreamer x264) never merged —
-QEMU master's `ui/meson.build` has no `vnc-enc-h264.c`, and Proxmox's `pve-qemu`
-carries no downstream VNC/H.264 patches. Adding a decoder now would be dead,
-untestable code.
+**What's there now:** the RFB "Open H.264" encoding (50) is decoded via
+VideoToolbox (PiKVM `kvmd-vnc` and TigerVNC 1.13+ interoperate on it, as does
+the still-unmerged QEMU GStreamer patch). We keep **one** decoder context, which
+is correct for the way PiKVM/QEMU stream H.264 (a single full-frame rect per
+update). TigerVNC keys contexts per rectangle geometry and can run several
+concurrent H.264 regions; a server doing that would make us reset our single
+context on every geometry switch (functional but wasteful — each switch drops
+the reference frames and forces a keyframe wait).
 
-**What "fixed" looks like:** once the QEMU series lands upstream (watch
-`ui/vnc*` in qemu.git and the `pve-qemu` patch series), add a VideoToolbox
-decoder path — encoding 50 rects carry an Annex-B H.264 stream; feed it to a
-`VTDecompressionSession` producing `CVPixelBuffer`s that drop straight into the
-existing `VideoFramePresenter` (IOSurface) path — and advertise encoding 50 in
-`SetEncodings`.
+**What "better" looks like:** a small context cache keyed by rect geometry
+(mirroring TigerVNC's `contexts` deque), each with its own
+`VTDecompressionSession`, honouring the per-rect `resetContext` (0x1) vs
+`resetAllContexts` (0x2) flags independently instead of collapsing both to a
+full reset. Only worth it if a real server multiplexes H.264 regions.
 
 ---
 

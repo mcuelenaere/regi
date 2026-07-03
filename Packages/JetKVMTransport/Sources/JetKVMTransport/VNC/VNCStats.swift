@@ -14,6 +14,7 @@ final class VNCStatsCollector: @unchecked Sendable {
         var zlibRects: Int = 0
         var hextileRects: Int = 0
         var zrleRects: Int = 0
+        var h264Rects: Int = 0
     }
 
     private let lock = NSLock()
@@ -41,6 +42,7 @@ final class VNCStatsCollector: @unchecked Sendable {
         case RFBProtocol.Encoding.zlib: current.zlibRects += 1
         case RFBProtocol.Encoding.hextile: current.hextileRects += 1
         case RFBProtocol.Encoding.zrle: current.zrleRects += 1
+        case RFBProtocol.Encoding.h264: current.h264Rects += 1
         default: break
         }
     }

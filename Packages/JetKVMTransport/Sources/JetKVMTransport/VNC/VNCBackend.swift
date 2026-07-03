@@ -603,8 +603,10 @@ public final class VNCBackend: KVMBackend {
         let dZRLE = snap.zrleRects - anchor.snapshot.zrleRects
         let dZlib = snap.zlibRects - anchor.snapshot.zlibRects
         let dHextile = snap.hextileRects - anchor.snapshot.hextileRects
+        let dH264 = snap.h264Rects - anchor.snapshot.h264Rects
         let codecLabel: String?
-        if dTight > 0 { codecLabel = dJPEG > 0 ? "Tight (JPEG)" : "Tight" }
+        if dH264 > 0 { codecLabel = "H.264" }
+        else if dTight > 0 { codecLabel = dJPEG > 0 ? "Tight (JPEG)" : "Tight" }
         else if dZRLE > 0 { codecLabel = "ZRLE" }
         else if dZlib > 0 { codecLabel = "Zlib" }
         else if dHextile > 0 { codecLabel = "Hextile" }
@@ -646,6 +648,7 @@ public final class VNCBackend: KVMBackend {
     /// that don't offer Tight, then CopyRect for scrolls and Raw as the
     /// mandatory last resort, then the pseudo-encodings.
     private static let encodings: [Int32] = [
+        RFBProtocol.Encoding.h264,
         RFBProtocol.Encoding.tight,
         RFBProtocol.Encoding.zrle,
         RFBProtocol.Encoding.zlib,
