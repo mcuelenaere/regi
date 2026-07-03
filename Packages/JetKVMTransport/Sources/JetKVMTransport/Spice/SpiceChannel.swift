@@ -52,22 +52,19 @@ class SpiceChannel {
 
     // MARK: - Loop
 
-    /// A read blocked this long before the next message arrived means the
-    /// server's previous batch is fully delivered — a natural frame boundary.
-    private static let batchBoundaryNanos: UInt64 = 3_000_000   // 3 ms
-
-    /// Called on the read loop when the connection was idle before the next
-    /// message (the previous batch finished). Subclasses emit a frame here so
-    /// snapshots land on server batch boundaries, not mid-batch (which tears).
-    func didReachBatchBoundary() async {}
+    /// Monotonic time (ns) at which the read loop began waiting for the next
+    /// message, or 0 while it is actively processing one. The display channel
+    /// uses this to emit a frame only once the server has gone quiet (read loop
+    /// blocked) — never mid-batch, which would show a half-drawn frame. A read
+    /// of a naturally-aligned UInt64 is atomic on the platforms we target.
+    private(set) var receiveBlockedSinceNanos: UInt64 = 0
 
     private func runLoop() async {
         do {
             while !Task.isCancelled {
-                let waitStart = DispatchTime.now().uptimeNanoseconds
+                receiveBlockedSinceNanos = DispatchTime.now().uptimeNanoseconds
                 let (type, payload) = try await connection.receive()
-                let idle = DispatchTime.now().uptimeNanoseconds &- waitStart
-                if idle >= Self.batchBoundaryNanos { await didReachBatchBoundary() }
+                receiveBlockedSinceNanos = 0
                 await dispatch(type: type, payload: payload)
             }
         } catch {
@@ -114,6 +111,7 @@ class SpiceChannel {
         guard let generation = try? r.readU32(), let window = try? r.readU32() else { return }
         ackWindow = window
         ackCount = 0
+        log.notice("SPICE channel \(self.connection.channelType.rawValue) SET_ACK window=\(window)")
         var w = SpiceByteWriter()
         w.writeU32(generation)
         try? await send(type: SpiceMsg.CommonClient.ackSync.rawValue, payload: w.data)

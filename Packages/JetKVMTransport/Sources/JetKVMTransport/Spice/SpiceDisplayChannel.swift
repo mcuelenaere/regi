@@ -33,15 +33,15 @@ final class SpiceDisplayChannel: SpiceChannel {
     private var surfaces: [UInt32: SpiceSurface] = [:]
     private var primaryID: UInt32?
     private var dirty = false
-    /// Monotonic timestamps (ns) for burst-aware emission: `lastDrawNanos` is
-    /// bumped by every draw/stream op, `lastEmitNanos` by every emit. We only
-    /// snapshot once a draw burst has settled (no draw for `quietNanos`), which
-    /// avoids capturing a frame mid-burst (partial bands = tearing), with a
-    /// `maxLatencyNanos` cap so continuous drawing still updates.
-    private var lastDrawNanos: UInt64 = 0
+    /// We snapshot the surface only once the read loop has been *blocked*
+    /// waiting for the server for `quietNanos` — i.e. the current batch of draw
+    /// ops is fully applied. Emitting on a blind clock while the read loop is
+    /// still mid-batch shows a half-drawn frame (the "window wipes in from the
+    /// left" artifact). `maxLatencyNanos` is a safety valve so a pathological
+    /// gapless stream still updates rather than freezing.
     private var lastEmitNanos: UInt64 = 0
-    private static let quietNanos: UInt64 = 6_000_000        // 6 ms idle = burst done
-    private static let maxLatencyNanos: UInt64 = 33_000_000  // ≥30 fps under continuous draw
+    private static let quietNanos: UInt64 = 6_000_000          // read loop idle this long = batch done
+    private static let maxLatencyNanos: UInt64 = 200_000_000   // freeze-avoidance floor only
 
     /// Active video streams by id: codec + current destination rect on the
     /// primary surface. Guarded by `lock`.
@@ -164,7 +164,6 @@ final class SpiceDisplayChannel: SpiceChannel {
                                             bottom: Int32(frame.height), right: Int32(frame.width)),
                          dest: dest)
             dirty = true
-            lastDrawNanos = now
         }
         return accumulateReport(streamID: streamID, mmTime: mmTime,
                                 dropped: decodedFrame == nil, now: now)
@@ -200,31 +199,22 @@ final class SpiceDisplayChannel: SpiceChannel {
         return payload
     }
 
-    /// Mark the primary surface changed, timestamping the draw so the emitter
-    /// can tell when a burst has settled. Caller holds `lock`.
+    /// Mark the primary surface changed. Caller holds `lock`.
     private func markDirtyLocked() {
         dirty = true
-        lastDrawNanos = DispatchTime.now().uptimeNanoseconds
     }
 
-    /// Emit at a server batch boundary (read loop went idle) — the surface is
-    /// in a complete, between-frames state, so this is the tear-free moment to
-    /// snapshot. This is the primary emit path for active content.
-    override func didReachBatchBoundary() async {
-        snapshotAndEmit()
-    }
-
-    /// Snapshot + emit the primary surface once a draw burst has settled (or the
-    /// latency cap is hit). The timer fallback for the trailing frame after
-    /// activity stops, and for a continuous firehose that never yields a batch
-    /// boundary. Internal so tests can drive it deterministically.
+    /// Snapshot + emit the primary surface, but only once the read loop has been
+    /// blocked on the server for `quietNanos` (the batch is fully applied), so
+    /// we never publish a half-drawn frame. The `maxLatencyNanos` cap only fires
+    /// if the server somehow never pauses. Polled by the timer; internal so
+    /// tests can drive it deterministically.
     func emitIfDirty() {
         let now = DispatchTime.now().uptimeNanoseconds
-        lock.lock()
-        let settled = now &- lastDrawNanos >= Self.quietNanos
+        let blockedSince = receiveBlockedSinceNanos
+        let batchDone = blockedSince != 0 && now &- blockedSince >= Self.quietNanos
         let latencyCap = now &- lastEmitNanos >= Self.maxLatencyNanos
-        guard settled || latencyCap else { lock.unlock(); return }
-        lock.unlock()
+        guard batchDone || latencyCap else { return }
         snapshotAndEmit()
     }
 
