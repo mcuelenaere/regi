@@ -303,9 +303,16 @@ final class SpiceDisplayChannel: SpiceChannel {
         w.writeU32(UInt32(1024 * 1024))        // 1M-pixel GLZ window
         try? await send(type: SpiceMsg.DisplayClient.initMsg.rawValue, payload: w.data)
 
-        // No PREFERRED_VIDEO_CODEC_TYPE message and no codec caps in the link:
-        // video streaming is deliberately disabled (see channelCaps — the
-        // server's per-strip MJPEG streams shimmer; plain draws stay coherent).
+        // Tell the server which video codecs we can decode, in preference
+        // order. Modern (gstreamer) servers advertise PREF_VIDEO_CODEC_TYPE
+        // and only stream video once they receive this — the legacy CODEC_*
+        // caps are ignored. Payload: num_codecs (u8) + codec types (u8 each).
+        var codecs = SpiceByteWriter()
+        let preferred: [SpiceProtocol.VideoCodec] = [.h264, .mjpeg]
+        codecs.writeU8(UInt8(preferred.count))
+        for c in preferred { codecs.writeU8(c.rawValue) }
+        try? await send(type: SpiceMsg.DisplayClient.preferredVideoCodecType.rawValue, payload: codecs.data)
+        log.notice("SPICE sent preferred video codecs: \(preferred.map { String(describing: $0) }.joined(separator: ">"), privacy: .public)")
     }
 
     override func handle(type: UInt16, payload: Data) async {
