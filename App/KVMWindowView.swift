@@ -30,6 +30,16 @@ struct KVMWindowView: View {
         return c.atxPower || c.videoCodecPreference || c.streamQuality || c.clipboardSync
     }
 
+    /// Whether the Controls popover should be openable. JetKVM's controls ride
+    /// its JSON-RPC channel (and self-disable inside the panel until it's
+    /// ready), so gate on `rpcReady` there; VNC/PiKVM have no RPC channel, so a
+    /// live connection is enough. `videoCodecPreference` is JetKVM-only, so it
+    /// distinguishes the two without a device-kind check.
+    private var controlsReady: Bool {
+        guard case .connected = session.state else { return false }
+        return session.rpcReady || !session.capabilities.videoCodecPreference
+    }
+
     private var keyboardCaptureBinding: Binding<Bool> {
         Binding(
             // Only show as checked when capture is actually doing
@@ -232,7 +242,7 @@ struct KVMWindowView: View {
                         ControlPanel()
                             .environment(session)
                     }
-                    .disabled(!session.rpcReady)
+                    .disabled(!controlsReady)
                     .help("Power, codec, and quality controls.")
                 }
             }
@@ -257,7 +267,7 @@ struct KVMWindowView: View {
         // the session down via .onDisappear, so no explicit
         // Disconnect entry is needed.
         .focusedSceneValue(\.sessionActions, SessionActions(
-            canShowControls: hasControlCapabilities && session.rpcReady,
+            canShowControls: hasControlCapabilities && controlsReady,
             toggleControls: { showControls.toggle() },
             toggleStats: { showStats.toggle() }
         ))
