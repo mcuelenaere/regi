@@ -33,6 +33,15 @@ final class SpiceDisplayChannel: SpiceChannel {
     private var surfaces: [UInt32: SpiceSurface] = [:]
     private var primaryID: UInt32?
     private var dirty = false
+    /// Monotonic timestamps (ns) for burst-aware emission: `lastDrawNanos` is
+    /// bumped by every draw/stream op, `lastEmitNanos` by every emit. We only
+    /// snapshot once a draw burst has settled (no draw for `quietNanos`), which
+    /// avoids capturing a frame mid-burst (partial bands = tearing), with a
+    /// `maxLatencyNanos` cap so continuous drawing still updates.
+    private var lastDrawNanos: UInt64 = 0
+    private var lastEmitNanos: UInt64 = 0
+    private static let quietNanos: UInt64 = 6_000_000        // 6 ms idle = burst done
+    private static let maxLatencyNanos: UInt64 = 33_000_000  // ≥30 fps under continuous draw
 
     /// Active video streams by id: codec + current destination rect on the
     /// primary surface. Guarded by `lock`.
@@ -93,7 +102,7 @@ final class SpiceDisplayChannel: SpiceChannel {
 
     private let timerQueue = DispatchQueue(label: "app.regi.mac.spice-display-emit")
     private var frameTimer: DispatchSourceTimer?
-    private static let frameInterval = DispatchTimeInterval.milliseconds(16)   // ~60 Hz
+    private static let frameInterval = DispatchTimeInterval.milliseconds(4)   // poll for burst settle
 
     override func start() {
         super.start()
@@ -155,6 +164,7 @@ final class SpiceDisplayChannel: SpiceChannel {
                                             bottom: Int32(frame.height), right: Int32(frame.width)),
                          dest: dest)
             dirty = true
+            lastDrawNanos = now
         }
         return accumulateReport(streamID: streamID, mmTime: mmTime,
                                 dropped: decodedFrame == nil, now: now)
@@ -190,7 +200,15 @@ final class SpiceDisplayChannel: SpiceChannel {
         return payload
     }
 
-    /// Snapshot + emit the primary surface if it changed since the last emit.
+    /// Mark the primary surface changed, timestamping the draw so the emitter
+    /// can tell when a burst has settled. Caller holds `lock`.
+    private func markDirtyLocked() {
+        dirty = true
+        lastDrawNanos = DispatchTime.now().uptimeNanoseconds
+    }
+
+    /// Snapshot + emit the primary surface once a draw burst has settled (or the
+    /// latency cap is hit), so we don't capture a half-drawn frame (tearing).
     /// Internal so tests can drive it deterministically without the timer.
     func emitIfDirty() {
         lock.lock()
@@ -198,7 +216,12 @@ final class SpiceDisplayChannel: SpiceChannel {
             lock.unlock()
             return
         }
+        let now = DispatchTime.now().uptimeNanoseconds
+        let settled = now &- lastDrawNanos >= Self.quietNanos
+        let latencyCap = now &- lastEmitNanos >= Self.maxLatencyNanos
+        guard settled || latencyCap else { lock.unlock(); return }
         dirty = false
+        lastEmitNanos = now
         stats.emittedFrames += 1
         let frame = SpiceFrame(width: surface.width, height: surface.height, bgra: surface.pixels)
         lock.unlock()
@@ -320,7 +343,7 @@ final class SpiceDisplayChannel: SpiceChannel {
                 stats.drawOps += 1
                 if let surface = surfaces[fill.base.surfaceID] {
                     surface.fill(rect: fill.base.box, color: color)
-                    if fill.base.surfaceID == primaryID { dirty = true }
+                    if fill.base.surfaceID == primaryID { markDirtyLocked() }
                 }
                 lock.unlock()
 
@@ -338,7 +361,7 @@ final class SpiceDisplayChannel: SpiceChannel {
                 if let decoded, let surface = surfaces[copy.base.surfaceID] {
                     surface.blit(src: decoded.pixels, srcWidth: decoded.width, srcHeight: decoded.height,
                                  srcArea: copy.srcArea, dest: copy.base.box)
-                    if copy.base.surfaceID == primaryID { dirty = true }
+                    if copy.base.surfaceID == primaryID { markDirtyLocked() }
                 }
                 lock.unlock()
 
@@ -348,7 +371,7 @@ final class SpiceDisplayChannel: SpiceChannel {
                 stats.drawOps += 1
                 if let surface = surfaces[cb.base.surfaceID] {
                     surface.copyBits(srcX: Int(cb.srcX), srcY: Int(cb.srcY), dest: cb.base.box)
-                    if cb.base.surfaceID == primaryID { dirty = true }
+                    if cb.base.surfaceID == primaryID { markDirtyLocked() }
                 }
                 lock.unlock()
 
