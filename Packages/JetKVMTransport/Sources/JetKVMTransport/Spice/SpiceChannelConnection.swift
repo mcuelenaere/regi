@@ -237,17 +237,28 @@ actor SpiceChannelConnection {
     private static func channelCaps(for channel: SpiceProtocol.ChannelType) -> SpiceCaps {
         switch channel {
         case .display:
-            // Advertise both codec-negotiation mechanisms: the legacy
-            // per-codec caps AND PREF_VIDEO_CODEC_TYPE (modern gstreamer
-            // servers use the latter — they ignore CODEC_* and instead expect
-            // a PREFERRED_VIDEO_CODEC_TYPE message, which the display channel
-            // sends on connect). Only codecs we can decode (H.264, MJPEG).
+            // Deliberately advertise MULTI_CODEC with NO codec caps, which
+            // tells a modern server we support no stream codec → it never
+            // creates video streams and delivers everything as plain draws
+            // (spice-gtk's SPICE_DISABLE_BUILTIN_MJPEG uses the same trick).
+            //
+            // Why: for virtio-gpu guests QEMU sends the screen as 32px-wide
+            // column strips, and the server promotes EACH strip to its own
+            // MJPEG stream with independent rate control. Under congestion
+            // each stream drops different frames, so adjacent strips show
+            // different source frames — a left-to-right shimmer no client can
+            // composite away (the missing strips were never sent). Plain
+            // draws degrade gracefully instead: the server coalesces
+            // superseded drawables, so fps drops but each delivered update
+            // stays whole.
+            //
+            // NOTE: dropping MULTI_CODEC too would backfire — a client with
+            // no codec caps at all is assumed legacy and gets MJPEG streams
+            // unconditionally.
             return SpiceCaps(bits: [
                 SpiceProtocol.DisplayCap.sizedStream.rawValue,
                 SpiceProtocol.DisplayCap.streamReport.rawValue,
                 SpiceProtocol.DisplayCap.multiCodec.rawValue,
-                SpiceProtocol.DisplayCap.codecMJPEG.rawValue,
-                SpiceProtocol.DisplayCap.codecH264.rawValue,
                 SpiceProtocol.DisplayCap.prefVideoCodecType.rawValue,
             ])
         default:
