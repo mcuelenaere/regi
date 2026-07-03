@@ -132,6 +132,55 @@ final class SpiceDisplayTests: XCTestCase {
         XCTAssertEqual(Array(surface.pixels.prefix(4)), [0x33, 0x22, 0x11, 0xFF])
     }
 
+    func testCopyBitsParse() throws {
+        var p = SpiceByteWriter()
+        p.writeU32(0)                                    // surface_id
+        writeRect(&p, top: 100, left: 0, bottom: 200, right: 50)   // dest box
+        p.writeU8(0)                                     // clip NONE
+        p.writeI32(10); p.writeI32(20)                   // src_pos x, y
+        let cb = try SpiceCopyBits.parse(p.data)
+        XCTAssertEqual(cb.base.box, SpiceRect(top: 100, left: 0, bottom: 200, right: 50))
+        XCTAssertEqual(cb.srcX, 10)
+        XCTAssertEqual(cb.srcY, 20)
+    }
+
+    /// COPY_BITS scrolls a region up: copy rows [2,4) to rows [0,2) on a 2×4
+    /// surface. The moved block must match the source; overlap-safe.
+    func testSurfaceCopyBitsScroll() {
+        let surface = SpiceSurface(width: 2, height: 4)
+        // Paint each row with a distinct value via fill.
+        for row in 0..<4 {
+            surface.fill(rect: SpiceRect(top: Int32(row), left: 0, bottom: Int32(row + 1), right: 2),
+                         color: UInt32(row) << 16)     // R = row
+        }
+        // Move rows 2,3 up to rows 0,1.
+        surface.copyBits(srcX: 0, srcY: 2, dest: SpiceRect(top: 0, left: 0, bottom: 2, right: 2))
+        // Row 0 should now hold old row 2 (R=2), row 1 old row 3 (R=3).
+        XCTAssertEqual(surface.pixels[2], 2)             // pixel(0,0) R channel
+        XCTAssertEqual(surface.pixels[(1 * 2 + 0) * 4 + 2], 3)   // pixel(0,1) R
+    }
+
+    func testInvalListParse() throws {
+        var p = SpiceByteWriter()
+        p.writeU16(2)                       // count
+        p.writeU8(1); p.writeU64(42)        // ResourceID{type, id}
+        p.writeU8(1); p.writeU64(99)
+        let inval = try SpiceMsgInvalList.parse(p.data)
+        XCTAssertEqual(inval.ids, [42, 99])
+    }
+
+    func testInvalidateEvictsCachedImage() {
+        let decoder = SpiceImageDecoder()
+        let cached = SpiceImage(type: .bitmap, id: 7, cacheMe: true, width: 1, height: 1,
+                                payload: [1, 2, 3, 0], bitmap: .init(format: 8, flags: 0x04, stride: 4))
+        XCTAssertNotNil(decoder.decode(cached))
+        decoder.invalidate(ids: [7])
+        // FROM_CACHE for the evicted id must miss now.
+        let ref = SpiceImage(type: .fromCache, id: 7, cacheMe: false, width: 1, height: 1,
+                             payload: [], bitmap: nil)
+        XCTAssertNil(decoder.decode(ref))
+    }
+
     func testSurfaceBlitClampsOutOfBounds() {
         // Source larger than the surface; blit must clamp, not crash.
         let src = [UInt8](repeating: 0x77, count: 4 * 4 * 4)   // 4×4 BGRA

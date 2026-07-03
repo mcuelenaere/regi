@@ -60,6 +60,37 @@ final class SpiceSurface {
         }
     }
 
+    /// Copy a `dest`-sized block from `(srcX, srcY)` to `dest` within this
+    /// same surface (SPICE COPY_BITS — used for scrolling / window drags).
+    /// Source and destination regions may overlap, so the source is
+    /// snapshotted into a scratch buffer first. Both ends are clamped.
+    func copyBits(srcX: Int, srcY: Int, dest: SpiceRect) {
+        var (dx, dy, cw, ch) = clampedRegion(destLeft: Int(dest.left), destTop: Int(dest.top),
+                                             w: dest.width, h: dest.height)
+        let sx = max(0, srcX), sy = max(0, srcY)
+        // A clamped-up source origin shifts the destination start to match, so
+        // corresponding pixels stay aligned.
+        dx += (sx - srcX); dy += (sy - srcY)
+        cw = min(cw, width - sx)
+        ch = min(ch, height - sy)
+        guard cw > 0, ch > 0, dx >= 0, dy >= 0, dx + cw <= width, dy + ch <= height else { return }
+
+        let rowBytes = cw * 4
+        var scratch = [UInt8](repeating: 0, count: rowBytes * ch)
+        pixels.withUnsafeMutableBufferPointer { buf in
+            scratch.withUnsafeMutableBufferPointer { tmp in
+                for row in 0..<ch {
+                    let sRow = ((sy + row) * width + sx) * 4
+                    for i in 0..<rowBytes { tmp[row * rowBytes + i] = buf[sRow + i] }
+                }
+                for row in 0..<ch {
+                    let dRow = ((dy + row) * width + dx) * 4
+                    for i in 0..<rowBytes { buf[dRow + i] = tmp[row * rowBytes + i] }
+                }
+            }
+        }
+    }
+
     /// Clamp a destination region to the surface, returning the usable
     /// origin + size (all non-negative, within bounds).
     private func clampedRegion(destLeft: Int, destTop: Int, w: Int, h: Int)

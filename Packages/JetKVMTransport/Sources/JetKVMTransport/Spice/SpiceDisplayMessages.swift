@@ -247,6 +247,40 @@ struct SpiceMsgStreamDestroy {
     }
 }
 
+/// COPY_BITS (104): copy a `base.box`-sized block from `src` to `base.box`
+/// within the same surface. Used for scrolling and window drags.
+struct SpiceCopyBits {
+    var base: SpiceDisplayBase
+    var srcX: Int32
+    var srcY: Int32
+
+    static func parse(_ data: Data) throws -> SpiceCopyBits {
+        var r = SpiceByteReader(data)
+        let base = try SpiceDisplayBase.read(&r)
+        return SpiceCopyBits(base: base, srcX: try r.readI32(), srcY: try r.readI32())
+    }
+}
+
+/// INVAL_LIST (105): image-cache entries the server has dropped and will no
+/// longer reference via FROM_CACHE. Body: count u16, then `count` ResourceIDs
+/// (type u8 + id u64, byte-packed). We invalidate every id from our image
+/// cache regardless of type (we only cache pixmaps).
+struct SpiceMsgInvalList {
+    var ids: [UInt64]
+
+    static func parse(_ data: Data) throws -> SpiceMsgInvalList {
+        var r = SpiceByteReader(data)
+        let count = try r.readU16()
+        var ids: [UInt64] = []
+        ids.reserveCapacity(Int(count))
+        for _ in 0..<count {
+            _ = try r.readU8()            // ResourceID.type
+            ids.append(try r.readU64())   // ResourceID.id
+        }
+        return SpiceMsgInvalList(ids: ids)
+    }
+}
+
 /// A parsed DRAW_FILL (opcode 302). v1 supports solid-color brushes only.
 struct SpiceDrawFill {
     var base: SpiceDisplayBase

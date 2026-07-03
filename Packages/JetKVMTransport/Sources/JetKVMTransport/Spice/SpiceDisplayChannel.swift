@@ -208,7 +208,10 @@ final class SpiceDisplayChannel: SpiceChannel {
     }
 
     override func handle(type: UInt16, payload: Data) async {
-        guard let msg = SpiceMsg.Display(rawValue: type) else { return }
+        guard let msg = SpiceMsg.Display(rawValue: type) else {
+            logUnhandled(type: type, name: "unknown")
+            return
+        }
         do {
             switch msg {
             case .surfaceCreate:
@@ -297,7 +300,11 @@ final class SpiceDisplayChannel: SpiceChannel {
                 }
                 lock.unlock()
 
-            case .drawCopy:
+            // DRAW_OPAQUE shares DRAW_COPY's leading layout (base, src_bitmap,
+            // src_area); its extra brush/rop govern compositing we don't model,
+            // so we treat it as a straight image copy — enough to get the pixels
+            // on screen.
+            case .drawCopy, .drawOpaque:
                 let copy = try SpiceDrawCopy.parse(payload)
                 guard let image = copy.image else { return }
                 // Decode outside the lock (the decoder is only touched here).
@@ -310,11 +317,40 @@ final class SpiceDisplayChannel: SpiceChannel {
                 }
                 lock.unlock()
 
+            case .copyBits:
+                let cb = try SpiceCopyBits.parse(payload)
+                lock.lock()
+                if let surface = surfaces[cb.base.surfaceID] {
+                    surface.copyBits(srcX: Int(cb.srcX), srcY: Int(cb.srcY), dest: cb.base.box)
+                    if cb.base.surfaceID == primaryID { dirty = true }
+                }
+                lock.unlock()
+
+            case .invalList:
+                let inval = try SpiceMsgInvalList.parse(payload)
+                decoder.invalidate(ids: inval.ids)
+
+            case .invalAllPixmaps:
+                decoder.invalidateAllImages()
+
+            case .invalPalette, .invalAllPalettes:
+                break   // we don't cache palettes
+
             default:
-                break   // streams + uncommon draw ops: v1 skips
+                logUnhandled(type: type, name: String(describing: msg))
             }
         } catch {
             log.debug("display message \(type) parse failed: \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    // Log each unhandled display op once, so missing operations are visible at
+    // runtime without flooding the log. Guarded by `lock`.
+    private var loggedUnhandled: Set<UInt16> = []
+    private func logUnhandled(type: UInt16, name: String) {
+        lock.lock(); let isNew = loggedUnhandled.insert(type).inserted; lock.unlock()
+        if isNew {
+            log.notice("SPICE display op not implemented: type=\(type) (\(name, privacy: .public))")
         }
     }
 }

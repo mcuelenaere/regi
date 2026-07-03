@@ -33,6 +33,23 @@ final class SpiceImageDecoder {
         cacheOrder.removeAll()
     }
 
+    /// Drop specific cached images the server invalidated (INVAL_LIST). Keeps
+    /// our cache in sync with the server's model so a later FROM_CACHE never
+    /// resolves to a stale image.
+    func invalidate(ids: [UInt64]) {
+        guard !ids.isEmpty else { return }
+        let drop = Set(ids)
+        for id in drop { cache[id] = nil }
+        cacheOrder.removeAll { drop.contains($0) }
+    }
+
+    /// Drop the entire image cache (INVAL_ALL_PIXMAPS). The GLZ dictionary is
+    /// separate and left intact.
+    func invalidateAllImages() {
+        cache.removeAll()
+        cacheOrder.removeAll()
+    }
+
     /// Decode one MJPEG video-stream frame (a JPEG) to BGRA.
     func decodeMJPEGFrame(_ data: [UInt8]) -> Decoded? { decodeJPEG(ensureHuffmanTables(data)) }
 
