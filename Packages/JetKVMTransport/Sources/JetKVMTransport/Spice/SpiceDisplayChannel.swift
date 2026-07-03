@@ -42,6 +42,12 @@ final class SpiceDisplayChannel: SpiceChannel {
     private var lastEmitNanos: UInt64 = 0
     private static let quietNanos: UInt64 = 6_000_000          // read loop idle this long = batch done
     private static let maxLatencyNanos: UInt64 = 200_000_000   // freeze-avoidance floor only
+    /// The server's ACK window is small (~20 msgs), so a large redraw is sent
+    /// in chunks separated by ACK round-trip stalls. We coalesce across a stall
+    /// (don't present the partial frame) until either the server continues or
+    /// the idle outlasts this grace — longer than any plausible round-trip, so
+    /// a frame that genuinely ends on a chunk boundary still flushes.
+    private static let ackStallGraceNanos: UInt64 = 60_000_000  // 60 ms
 
     /// Active video streams by id: codec + current destination rect on the
     /// primary surface. Guarded by `lock`.
@@ -212,9 +218,15 @@ final class SpiceDisplayChannel: SpiceChannel {
     func emitIfDirty() {
         let now = DispatchTime.now().uptimeNanoseconds
         let blockedSince = receiveBlockedSinceNanos
-        let batchDone = blockedSince != 0 && now &- blockedSince >= Self.quietNanos
+        let idleFor = blockedSince != 0 ? now &- blockedSince : 0
+        let batchDone = blockedSince != 0 && idleFor >= Self.quietNanos
+        // If the last message hit the ACK window, this idle is almost certainly
+        // the server parked waiting for our ACK to keep sending the same frame —
+        // presenting now would show it half-drawn (the window "wipe"). Hold off
+        // until the server continues, or the idle clearly outlasts a round-trip.
+        let ackStall = lastMessageHitAckWindow && idleFor < Self.ackStallGraceNanos
         let latencyCap = now &- lastEmitNanos >= Self.maxLatencyNanos
-        guard batchDone || latencyCap else { return }
+        guard (batchDone && !ackStall) || latencyCap else { return }
         snapshotAndEmit()
     }
 

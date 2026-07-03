@@ -95,14 +95,23 @@ class SpiceChannel {
         await handle(type: type, payload: payload)
     }
 
+    /// True when the message just processed was the one that hit the ACK
+    /// window (so we sent an ACK). A read-loop idle right after this is almost
+    /// always the server stalled awaiting that ACK to keep sending the *same*
+    /// frame — the display channel uses this to avoid presenting mid-frame.
+    private(set) var lastMessageHitAckWindow = false
+
     private func countTowardAck() {
-        guard ackWindow > 0 else { return }
+        guard ackWindow > 0 else { lastMessageHitAckWindow = false; return }
         ackCount += 1
         if ackCount >= ackWindow {
             ackCount = 0
+            lastMessageHitAckWindow = true
             Task { [weak self] in
                 try? await self?.send(type: SpiceMsg.CommonClient.ack.rawValue)
             }
+        } else {
+            lastMessageHitAckWindow = false
         }
     }
 
