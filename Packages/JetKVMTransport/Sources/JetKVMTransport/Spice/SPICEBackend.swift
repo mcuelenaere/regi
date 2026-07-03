@@ -20,17 +20,20 @@ private let log = Logger(subsystem: "app.regi.mac", category: "spice")
 @Observable
 public final class SPICEBackend: KVMBackend {
     public private(set) var state: KVMState = .idle
-    public private(set) var videoTrack: RTCVideoTrack?
+    /// SPICE renders locally, not over WebRTC — no video track. The view uses
+    /// `localVideoOutput` instead.
+    public var videoTrack: RTCVideoTrack? { nil }
+    public var localVideoOutput: LocalVideoOutput? { presenter }
     public private(set) var hasReceivedFirstFrame: Bool = false
     public let capabilities: KVMCapabilities = .none
     public private(set) var latestStats: ConnectionStats?
     public private(set) var statsHistory: [ConnectionStats] = []
 
-    // WebRTC local video plumbing (no peer connection — local render only).
-    // The sink converts + feeds frames off the main actor (see SpiceVideoSink)
-    // so per-frame pixel work never contends with main-actor input handling.
-    private let factory = RTCPeerConnectionFactory()
-    private var videoSink: SpiceVideoSink?
+    // Converts decoded BGRA frames to CVPixelBuffers off the main actor and
+    // hands them straight to the view's layer — no WebRTC pipeline (which would
+    // adapt/smooth/queue frames as if they were camera video). See
+    // SpiceVideoPresenter.
+    private let presenter = SpiceVideoPresenter()
 
     // Channels.
     private var mainConn: SpiceChannelConnection?
@@ -115,7 +118,6 @@ public final class SPICEBackend: KVMBackend {
         }
 
         state = .connecting(.signaling)
-        setupVideoTrack()
 
         // Await MAIN_INIT to learn the session id secondary channels use,
         // but never hang: fail if it doesn't arrive (server linked but sent
@@ -163,12 +165,13 @@ public final class SPICEBackend: KVMBackend {
 
         let display = SpiceDisplayChannel(connection: displayConn)
         self.display = display
-        // Feed WebRTC on the display's emit queue (where onFrame fires), NOT
-        // the main actor — the heavy CVPixelBuffer work would otherwise starve
-        // the input pump. Only the cheap frame-size note hops to the main actor.
-        let sink = videoSink
+        // Convert + hand the frame to the presenter on the display's emit queue
+        // (where onFrame fires), NOT the main actor — the CVPixelBuffer copy
+        // would otherwise contend with the input pump. Only the cheap
+        // frame-size note (for input coordinate mapping) hops to the main actor.
+        let presenter = self.presenter
         display.onFrame = { [weak self] frame in
-            sink?.push(frame)
+            presenter.present(frame)
             let size = CGSize(width: frame.width, height: frame.height)
             Task { @MainActor in self?.noteFrameSize(size) }
         }
@@ -206,7 +209,7 @@ public final class SPICEBackend: KVMBackend {
         display?.stop(); inputs?.stop(); main?.stop()
         await mainConn?.close()
         display = nil; inputs = nil; main = nil; mainConn = nil
-        videoTrack = nil; videoSink = nil
+        presenter.detach()
         hasReceivedFirstFrame = false
         heldModifiers.removeAll()
         heldKeys.removeAll()
@@ -314,12 +317,6 @@ public final class SPICEBackend: KVMBackend {
     }
 
     // MARK: - Video
-
-    private func setupVideoTrack() {
-        let sink = SpiceVideoSink(factory: factory)
-        self.videoSink = sink
-        self.videoTrack = sink.track
-    }
 
     /// Record the current frame size for input coordinate mapping. Cheap; runs
     /// on the main actor while the heavy pixel work stays on the emit queue.
@@ -499,37 +496,30 @@ private final class OneShot: @unchecked Sendable {
     }
 }
 
-/// Owns the WebRTC video source/track and converts decoded SPICE frames into
-/// `RTCVideoFrame`s, feeding them off the main actor. WebRTC video sources
-/// accept frames from any thread, so `push` is safe to call from the display
-/// channel's emit queue — keeping the 3 MB-per-frame pixel work away from the
-/// main actor, where it would otherwise starve the input pump and stall the
-/// whole session. A `CVPixelBufferPool` avoids a fresh IOSurface allocation
-/// per frame.
-final class SpiceVideoSink: @unchecked Sendable {
-    let track: RTCVideoTrack
-    private let source: RTCVideoSource
-    private let capturer: RTCVideoCapturer
-
+/// Converts decoded SPICE BGRA frames into IOSurface-backed `CVPixelBuffer`s
+/// and hands them to the view via `onFrame`, off the main actor. This is the
+/// whole "video output" for SPICE — no WebRTC. The view assigns the buffer's
+/// IOSurface to a `CALayer`, which CoreAnimation composites at vsync (the
+/// direct equivalent of spice-gtk blitting its canvas to a vsynced surface).
+/// A `CVPixelBufferPool` avoids a fresh IOSurface allocation per frame.
+final class SpiceVideoPresenter: LocalVideoOutput, @unchecked Sendable {
     private let lock = NSLock()
+    private var _onFrame: (@Sendable (LocalVideoFrame) -> Void)?
+    var onFrame: (@Sendable (LocalVideoFrame) -> Void)? {
+        get { lock.lock(); defer { lock.unlock() }; return _onFrame }
+        set { lock.lock(); _onFrame = newValue; lock.unlock() }
+    }
+
     private var pool: CVPixelBufferPool?
     private var poolWidth = 0, poolHeight = 0
 
-    init(factory: RTCPeerConnectionFactory) {
-        // Screencast semantics: a plain videoSource() treats frames as *camera*
-        // input and applies frame-rate adaptation, CPU downscaling, and temporal
-        // smoothing — which drops/blurs desktop updates and makes incremental
-        // redraws look chunky. The screencast source disables all of that and
-        // passes every frame through at full resolution.
-        source = factory.videoSource(forScreenCast: true)
-        capturer = RTCVideoCapturer(delegate: source)
-        track = factory.videoTrack(with: source, trackId: "spice-video")
-    }
+    /// Stop delivering frames (on disconnect).
+    func detach() { onFrame = nil }
 
-    /// Convert one decoded BGRA frame and hand it to WebRTC. Callable from any
-    /// thread; must NOT be the main actor for a busy stream.
-    func push(_ frame: SpiceFrame) {
-        guard frame.width > 0, frame.height > 0,
+    /// Convert one decoded BGRA frame and hand it to the view. Callable from
+    /// any thread; must NOT be the main actor for a busy stream.
+    func present(_ frame: SpiceFrame) {
+        guard let cb = onFrame, frame.width > 0, frame.height > 0,
               let pb = pixelBuffer(width: frame.width, height: frame.height) else { return }
         CVPixelBufferLockBaseAddress(pb, [])
         if let base = CVPixelBufferGetBaseAddress(pb) {
@@ -544,11 +534,7 @@ final class SpiceVideoSink: @unchecked Sendable {
             }
         }
         CVPixelBufferUnlockBaseAddress(pb, [])
-
-        let rtcBuffer = RTCCVPixelBuffer(pixelBuffer: pb)
-        let rtcFrame = RTCVideoFrame(buffer: rtcBuffer, rotation: ._0,
-                                     timeStampNs: Int64(DispatchTime.now().uptimeNanoseconds))
-        source.capturer(capturer, didCapture: rtcFrame)
+        cb(LocalVideoFrame(pixelBuffer: pb, width: frame.width, height: frame.height))
     }
 
     /// A pooled BGRA pixel buffer for `width`×`height`, rebuilding the pool

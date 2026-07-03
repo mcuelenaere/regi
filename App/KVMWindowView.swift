@@ -153,9 +153,9 @@ struct KVMWindowView: View {
                 // Frames won't flow; show the placeholder instead of
                 // leaving the user staring at a black window.
                 NoSignalPlaceholder(error: err)
-            } else if let track = session.videoTrack {
+            } else if let source = videoSource {
                 KVMVideoRepresentable(
-                    track: track,
+                    source: source,
                     session: session,
                     pointerLocked: pointerLock.state == .enabled,
                     hideCursorOverVideo: hideCursorOverVideo
@@ -382,6 +382,14 @@ struct KVMWindowView: View {
         guard let raw = session.videoState?.error, !raw.isEmpty else { return nil }
         return raw
     }
+
+    /// The active video source: a WebRTC track (JetKVM/PiKVM) or a locally
+    /// decoded source (SPICE), whichever the backend provides.
+    private var videoSource: KVMVideoRepresentable.Source? {
+        if let track = session.videoTrack { return .track(track) }
+        if let local = session.localVideoOutput { return .local(local) }
+        return nil
+    }
 }
 
 /// Inline placeholder shown over the video area when the JetKVM
@@ -433,17 +441,30 @@ private struct NoSignalPlaceholder: View {
 }
 
 private struct KVMVideoRepresentable: NSViewRepresentable {
-    let track: RTCVideoTrack
+    /// The video comes either as a WebRTC track (JetKVM/PiKVM) or a locally
+    /// decoded source (SPICE) — the view renders each with the right path.
+    enum Source {
+        case track(RTCVideoTrack)
+        case local(LocalVideoOutput)
+    }
+    let source: Source
     let session: Session
     let pointerLocked: Bool
     let hideCursorOverVideo: Bool
+
+    private func attach(to view: KVMVideoView) {
+        switch source {
+        case .track(let track): view.attach(track: track)
+        case .local(let output): view.attach(localVideo: output)
+        }
+    }
 
     func makeNSView(context: Context) -> KVMVideoView {
         let view = KVMVideoView()
         view.setSession(session)
         view.pointerLocked = pointerLocked
         view.hideCursorOverVideo = hideCursorOverVideo
-        view.attach(track: track)
+        attach(to: view)
         return view
     }
 
@@ -451,7 +472,7 @@ private struct KVMVideoRepresentable: NSViewRepresentable {
         nsView.setSession(session)
         nsView.pointerLocked = pointerLocked
         nsView.hideCursorOverVideo = hideCursorOverVideo
-        nsView.attach(track: track)
+        attach(to: nsView)
         // SwiftUI re-runs updateNSView whenever observed Session
         // state changes. Tell the NSView to reconsider its
         // cursor-rect hide condition (videoState.error may have
