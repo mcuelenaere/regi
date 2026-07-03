@@ -29,7 +29,7 @@ jobs:
       # `swift test --package-path …`, which writes its own
       # `.build/` — that one's small and not worth caching.
       - name: Cache SPM packages
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/Library/Developer/Xcode/DerivedData/**/SourcePackages/artifacts
