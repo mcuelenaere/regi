@@ -47,6 +47,22 @@ final class SpiceDisplayChannel: SpiceChannel {
     private var lastEmitNanos: UInt64 = 0
     private static let quietNanos: UInt64 = 12_000_000         // > WiFi jitter, < QEMU tick
     private static let maxLatencyNanos: UInt64 = 200_000_000   // freeze-avoidance floor only
+
+    /// Streamed-video grouping. The server encodes each 32px column strip as
+    /// its own MJPEG stream (~10 concurrent), so during video the wire never
+    /// goes quiet and idle detection can't find frame boundaries. But strips
+    /// cut from the same source video frame share the same multi_media_time;
+    /// a strip with a clearly newer mm_time means the previous video frame is
+    /// complete → present it. All guarded by `lock`.
+    private var streamGroupMMTime: UInt32 = 0
+    private var lastStreamFrameNanos: UInt64 = 0
+    private var multiStreamActive = false
+    /// mm_time delta that starts a new group (strips of one frame agree
+    /// within ~1 ms; consecutive video frames are ≥16 ms apart).
+    private static let mmGroupEpsilonMs: UInt32 = 8
+    /// While multi-stream video is live, the idle timer is only a trailing
+    /// flush (mm_time owns cadence); needs to outlast inter-frame gaps.
+    private static let streamTrailingQuietNanos: UInt64 = 50_000_000
     /// The server's ACK window is small (~20 msgs), so a large redraw is sent
     /// in chunks separated by ACK round-trip stalls. We coalesce across a stall
     /// (don't present the partial frame) until either the server continues or
@@ -159,6 +175,20 @@ final class SpiceDisplayChannel: SpiceChannel {
         let now = DispatchTime.now().uptimeNanoseconds
         let decodeSec = Double(now - t0) / 1_000_000_000
 
+        // mm_time grouping: this frame carrying a clearly newer mm_time means
+        // every strip of the previous video frame has been applied — the one
+        // reliable frame boundary while multiple strip-streams keep the wire
+        // busy. Present the completed frame BEFORE blitting this one (which
+        // belongs to the next group).
+        if decodedFrame != nil {
+            let boundary: Bool = {
+                lock.lock(); defer { lock.unlock() }
+                return dirty && streamGroupMMTime != 0
+                    && mmTime >= streamGroupMMTime &+ Self.mmGroupEpsilonMs
+            }()
+            if boundary { snapshotAndEmit() }
+        }
+
         lock.lock()
         defer { lock.unlock() }
         stats.codec = codec
@@ -175,6 +205,11 @@ final class SpiceDisplayChannel: SpiceChannel {
                                             bottom: Int32(frame.height), right: Int32(frame.width)),
                          dest: dest)
             dirty = true
+            // max(): strips of one group can disagree by ~1 ms; keep the
+            // group clock monotonic so stragglers don't drag it backwards.
+            streamGroupMMTime = max(streamGroupMMTime, mmTime)
+            lastStreamFrameNanos = now
+            multiStreamActive = streams.count > 1
         }
         return accumulateReport(streamID: streamID, mmTime: mmTime,
                                 dropped: decodedFrame == nil, now: now)
@@ -224,7 +259,15 @@ final class SpiceDisplayChannel: SpiceChannel {
         let now = DispatchTime.now().uptimeNanoseconds
         let blockedSince = receiveBlockedSinceNanos
         let idleFor = blockedSince != 0 ? now &- blockedSince : 0
-        let batchDone = blockedSince != 0 && idleFor >= Self.quietNanos
+        // While several strip-streams are actively delivering, mm_time grouping
+        // in blitStreamFrame owns presentation cadence — the timer is only a
+        // trailing flush (e.g. video paused mid-group), so it must outlast the
+        // inter-frame gaps it would otherwise misread as boundaries.
+        lock.lock()
+        let strictStreams = multiStreamActive && now &- lastStreamFrameNanos < 200_000_000
+        lock.unlock()
+        let quiet = strictStreams ? Self.streamTrailingQuietNanos : Self.quietNanos
+        let batchDone = blockedSince != 0 && idleFor >= quiet
         // If the last message hit the ACK window, this idle is almost certainly
         // the server parked waiting for our ACK to keep sending the same frame —
         // presenting now would show it half-drawn (the window "wipe"). Hold off
@@ -312,6 +355,8 @@ final class SpiceDisplayChannel: SpiceChannel {
                 streams.removeAll()
                 reportWindows.removeAll()
                 mmOffsetBaselineMs = nil
+                streamGroupMMTime = 0
+                multiStreamActive = false
                 primaryID = nil
                 dirty = false
                 lock.unlock()
@@ -355,7 +400,10 @@ final class SpiceDisplayChannel: SpiceChannel {
                 h264Decoders[d.streamID] = nil
 
             case .streamDestroyAll:
-                lock.lock(); streams.removeAll(); reportWindows.removeAll(); lock.unlock()
+                lock.lock()
+                streams.removeAll(); reportWindows.removeAll()
+                streamGroupMMTime = 0; multiStreamActive = false
+                lock.unlock()
                 h264Decoders.removeAll()
 
             case .drawFill:
