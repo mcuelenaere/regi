@@ -43,6 +43,27 @@ public final class JetKVMBackend: KVMBackend {
     /// JetKVM exposes the full control-plane feature set.
     public let capabilities: KVMCapabilities = .jetKVM
 
+    /// ATX power control — available once the control-plane RPC channel is up.
+    public var availablePowerActions: [KVMPowerAction] {
+        rpcReady ? [.powerButtonShort, .reset, .powerButtonLong] : []
+    }
+    /// Front-panel power-LED state, from the cached `getATXState`.
+    public var powerIndicator: Bool? { atxState?.power }
+
+    /// Map the semantic action to JetKVM's ATX RPC. Shutdown/reboot aren't
+    /// distinct ATX actions (a short press does ACPI power-off), so they're
+    /// not advertised and ignored if somehow requested.
+    public func sendPowerAction(_ action: KVMPowerAction) async throws {
+        let atx: ATXPowerAction
+        switch action {
+        case .powerButtonShort: atx = .powerShort
+        case .powerButtonLong: atx = .powerLong
+        case .reset: atx = .reset
+        case .shutdown, .reboot: return
+        }
+        try await setATXPowerAction(atx)
+    }
+
     public private(set) var state: State = .idle
     public private(set) var deviceMetadata: DeviceMetadata?
     public private(set) var device: LocalDevice?

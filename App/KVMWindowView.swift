@@ -26,7 +26,8 @@ struct KVMWindowView: View {
     /// hides the Controls toolbar item entirely.
     private var hasControlCapabilities: Bool {
         let c = session.capabilities
-        return c.atxPower || c.videoCodecPreference || c.streamQuality || c.clipboardSync
+        return !session.availablePowerActions.isEmpty
+            || c.videoCodecPreference || c.streamQuality || c.clipboardSync
     }
 
     /// Whether the Controls popover should be openable. JetKVM's controls ride
