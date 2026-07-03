@@ -1,7 +1,7 @@
+import AppKit
+import CoreVideo
 import Foundation
 import JetKVMProtocol
-import CoreVideo
-import WebRTC
 
 /// One locally-decoded frame ready to present, from a backend that renders
 /// its own video (VNC) rather than receiving a WebRTC track. Reference type
@@ -19,22 +19,32 @@ public final class LocalVideoFrame: @unchecked Sendable {
     }
 }
 
-/// Video output for backends that decode frames locally (VNC) and present
-/// them directly, with no WebRTC pipeline in between. Mutually exclusive with
-/// `KVMBackend.videoTrack`. The view sets `onFrame`; the backend invokes it
-/// (possibly off the main actor) once per decoded frame. Not `@MainActor`: the
-/// closure is `@Sendable` and the implementation must synchronize its own
-/// storage, since it's set on the main actor but called from the decode path.
+/// Producer side of the locally-decoded video path (VNC): the backend's decode
+/// task invokes `onFrame` once per frame. `LocalVideoRenderer` consumes it. Not
+/// `@MainActor`: the closure is `@Sendable` and the implementation must
+/// synchronize its own storage, since it's set on the main actor but called
+/// from the decode path.
 public protocol LocalVideoOutput: AnyObject, Sendable {
     var onFrame: (@Sendable (LocalVideoFrame) -> Void)? { get set }
 }
 
-/// How a connected backend delivers video, so the UI has one thing to render
-/// instead of probing multiple properties. WebRTC backends (JetKVM, PiKVM)
-/// hand over a track; VNC hands over a locally-decoded output.
-public enum KVMVideoOutput {
-    case webRTC(RTCVideoTrack)
-    case local(LocalVideoOutput)
+/// A backend-owned video renderer. Each backend builds the renderer that suits
+/// its video technology — `WebRTCVideoRenderer` (JetKVM/PiKVM) or
+/// `LocalVideoRenderer` (VNC) — and the App embeds `view` and observes size
+/// changes. This keeps WebRTC out of `KVMCore` and the App: the host view never
+/// has to know which pipeline is behind the pixels.
+///
+/// `@MainActor` because it vends and mutates an `NSView`.
+@MainActor
+public protocol KVMVideoRenderer: AnyObject {
+    /// The view that displays the video. The host embeds it and owns layout.
+    var view: NSView { get }
+    /// Fired on the main actor when the source video size changes. The first
+    /// non-zero size doubles as "first frame rendered"; the host also uses the
+    /// size for aspect-fit coordinate mapping.
+    var onVideoSizeChanged: ((CGSize) -> Void)? { get set }
+    /// Stop rendering and release the hookup to the video source.
+    func detach()
 }
 
 /// Which family of KVM device a connection targets. Carried on
@@ -146,10 +156,10 @@ public struct KVMCapabilities: Sendable, Equatable {
 public protocol KVMBackend: AnyObject {
     // Observable connection state
     var state: KVMState { get }
-    var videoTrack: RTCVideoTrack? { get }
-    /// Locally-decoded video output (VNC). Nil for WebRTC backends, which
-    /// expose `videoTrack` instead. The two are mutually exclusive.
-    var localVideoOutput: LocalVideoOutput? { get }
+    /// The renderer for the live video, or nil before video is available.
+    /// The backend builds the renderer matching its video technology; the
+    /// App embeds `videoRenderer.view`.
+    var videoRenderer: (any KVMVideoRenderer)? { get }
     var hasReceivedFirstFrame: Bool { get }
     var capabilities: KVMCapabilities { get }
     var latestStats: ConnectionStats? { get }
@@ -174,19 +184,4 @@ public protocol KVMBackend: AnyObject {
     // Bandwidth gate. JetKVM pauses the encoder feed; PiKVM v1 no-ops.
     func pauseVideo()
     func resumeVideo()
-}
-
-public extension KVMBackend {
-    /// WebRTC backends (JetKVM, PiKVM) render via `videoTrack`, not a local
-    /// output. Only VNC overrides this.
-    var localVideoOutput: LocalVideoOutput? { nil }
-
-    /// The single render source the UI consumes, derived from whichever
-    /// primitive the backend provides. Backends set `videoTrack` (WebRTC) or
-    /// `localVideoOutput` (VNC); the view never has to know which.
-    var videoOutput: KVMVideoOutput? {
-        if let track = videoTrack { return .webRTC(track) }
-        if let local = localVideoOutput { return .local(local) }
-        return nil
-    }
 }

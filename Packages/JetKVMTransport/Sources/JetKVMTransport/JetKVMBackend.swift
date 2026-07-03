@@ -46,8 +46,8 @@ public final class JetKVMBackend: KVMBackend {
     public private(set) var state: State = .idle
     public private(set) var deviceMetadata: DeviceMetadata?
     public private(set) var device: LocalDevice?
-    public private(set) var videoTrack: RTCVideoTrack?
-    /// Distinct from `videoTrack != nil` — the track is attached
+    public private(set) var videoRenderer: (any KVMVideoRenderer)?
+    /// Distinct from `videoRenderer != nil` — the track is attached
     /// during SDP negotiation (well before frames flow), but actual
     /// pixels can lag by hundreds of ms. The KVMVideoView renderer
     /// fires `didChangeVideoSize` when the first non-zero-dim frame
@@ -727,7 +727,7 @@ public final class JetKVMBackend: KVMBackend {
     }
 
     private func attachVideoTrack(_ track: RTCVideoTrack) {
-        videoTrack = track
+        videoRenderer = WebRTCVideoRenderer(track: track)
     }
 
     /// Called by KVMVideoView when its `RTCVideoViewDelegate` reports
@@ -900,7 +900,8 @@ public final class JetKVMBackend: KVMBackend {
         webrtc = nil
         signaling = nil
         http = nil
-        videoTrack = nil
+        videoRenderer?.detach()
+        videoRenderer = nil
         hasReceivedFirstFrame = false
         hidReady = false
         rpcReady = false

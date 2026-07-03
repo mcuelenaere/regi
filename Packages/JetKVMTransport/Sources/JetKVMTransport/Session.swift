@@ -2,7 +2,6 @@ import Foundation
 import JetKVMProtocol
 import Observation
 import OSLog
-import WebRTC
 
 private let log = Logger(subsystem: "app.regi.mac", category: "session")
 
@@ -37,11 +36,10 @@ public final class Session {
     // MARK: - Observable state (forwarded)
 
     public var state: State { backend?.state ?? .idle }
-    public var videoTrack: RTCVideoTrack? { backend?.videoTrack }
-    /// The single render source the UI consumes — a WebRTC track (JetKVM,
-    /// PiKVM) or a locally-decoded output (VNC). The view switches on this
-    /// instead of probing `videoTrack` directly.
-    public var videoOutput: KVMVideoOutput? { backend?.videoOutput }
+    /// The renderer for the live video — a WebRTC renderer (JetKVM, PiKVM) or a
+    /// local one (VNC), built by the active backend. Nil before video arrives.
+    /// The view embeds `videoRenderer.view` and never sees the pipeline behind it.
+    public var videoRenderer: (any KVMVideoRenderer)? { backend?.videoRenderer }
     public var hasReceivedFirstFrame: Bool { backend?.hasReceivedFirstFrame ?? false }
     public var capabilities: KVMCapabilities { backend?.capabilities ?? .none }
     public var latestStats: ConnectionStats? { backend?.latestStats }

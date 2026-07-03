@@ -1,35 +1,27 @@
 import AppKit
-import CoreVideo
 import JetKVMProtocol
 import JetKVMTransport
 import OSLog
-import WebRTC
 
 private let log = Logger(subsystem: "app.regi.mac", category: "kvm-view")
 
-/// `NSView` that hosts an `RTCMTLNSVideoView` for rendering a JetKVM video
-/// track and captures keyboard/mouse events for forwarding to the host.
+/// `NSView` that hosts a backend-supplied `KVMVideoRenderer` (WebRTC or local)
+/// and captures keyboard/mouse events for forwarding to the host.
 ///
-/// The Metal view does the heavy lifting (VideoToolbox-backed hardware
-/// decode, Metal rendering); we keep first-responder + event handling on
-/// this parent view so input lands in code we control.
+/// The renderer's view does the heavy lifting (decode + rendering); we keep
+/// first-responder + event handling on this host view so input lands in code
+/// we control.
 ///
-/// The view tracks the source video frame size via `RTCVideoViewDelegate`
-/// so it can compute the aspect-fit content rect (the actual rendered
-/// video sub-rect within the view, accounting for letterboxing /
-/// pillarboxing) and translate mouse coordinates accordingly. Without
-/// this, the host cursor drifts out of sync with the user's cursor over
+/// The view tracks the source video frame size via the renderer's
+/// `onVideoSizeChanged` callback so it can compute the aspect-fit content rect
+/// (the actual rendered video sub-rect within the view, accounting for
+/// letterboxing / pillarboxing) and translate mouse coordinates accordingly.
+/// Without this, the host cursor drifts out of sync with the user's cursor over
 /// any black-bar regions.
 final class KVMVideoView: NSView {
-    private var rtcView: RTCMTLNSVideoView?
-    private weak var currentTrack: RTCVideoTrack?
-    // Direct (WebRTC-free) render path for VNC: a layer whose contents is the
-    // decoded frame's IOSurface, composited by CoreAnimation at vsync.
-    private var frameLayer: CALayer?
-    private weak var localVideo: LocalVideoOutput?
-    /// Retains the most recent pixel buffers so their pooled IOSurfaces aren't
-    /// recycled while CoreAnimation is still scanning them out (would tear).
-    private var retainedBuffers: [CVPixelBuffer] = []
+    /// The backend-supplied renderer whose view is embedded here. Owns the
+    /// video pipeline (WebRTC or local); this view is just its host.
+    private var renderer: (any KVMVideoRenderer)?
     private weak var session: Session?
     private var videoSize: CGSize = .zero
     /// Set by the SwiftUI representable when pointer-lock is engaged.
@@ -106,98 +98,36 @@ final class KVMVideoView: NSView {
         self.session = session
     }
 
-    /// Attach a remote video track. Replaces any previously attached track.
-    func attach(track: RTCVideoTrack) {
-        if currentTrack === track { return }
-        if let prev = currentTrack, let rtcView {
-            prev.remove(rtcView)
-        }
-        let view = rtcView ?? makeRTCView()
-        if rtcView == nil { rtcView = view }
-        track.add(view)
-        currentTrack = track
-    }
-
-    /// Detach any attached track (e.g. when the session disconnects).
-    func detach() {
-        if let track = currentTrack, let rtcView {
-            track.remove(rtcView)
-        }
-        currentTrack = nil
-        localVideo?.onFrame = nil
-        localVideo = nil
-        retainedBuffers.removeAll()
-    }
-
-    /// Attach a locally-decoded video source (VNC) — no WebRTC. Frames are
-    /// composited by CoreAnimation via a layer whose contents is each frame's
-    /// IOSurface, which vsyncs cleanly without a video-codec pipeline.
-    func attach(localVideo: LocalVideoOutput) {
-        if self.localVideo === localVideo { return }
+    /// Embed a backend-supplied video renderer, replacing any previous one.
+    /// The renderer owns the video pipeline (WebRTC or local); this view only
+    /// hosts its `view` edge-to-edge and reacts to source-size changes for
+    /// aspect-fit coordinate mapping.
+    func attach(renderer: any KVMVideoRenderer) {
+        if self.renderer === renderer { return }
         detach()
-        self.localVideo = localVideo
+        self.renderer = renderer
 
-        let fl = frameLayer ?? {
-            let l = CALayer()
-            l.contentsGravity = .resizeAspect          // letterbox like the RTC view
-            l.backgroundColor = NSColor.black.cgColor
-            l.frame = bounds
-            layer?.addSublayer(l)
-            frameLayer = l
-            return l
-        }()
-        fl.contentsScale = window?.backingScaleFactor ?? 2
-
-        localVideo.onFrame = { [weak self] frame in
-            // Producer runs off the main actor; hop to main for the (cheap)
-            // layer update.
-            DispatchQueue.main.async { self?.presentLocalFrame(frame) }
+        let rv = renderer.view
+        rv.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(rv)
+        NSLayoutConstraint.activate([
+            rv.topAnchor.constraint(equalTo: topAnchor),
+            rv.bottomAnchor.constraint(equalTo: bottomAnchor),
+            rv.leadingAnchor.constraint(equalTo: leadingAnchor),
+            rv.trailingAnchor.constraint(equalTo: trailingAnchor),
+        ])
+        renderer.onVideoSizeChanged = { [weak self] size in
+            guard let self, size != self.videoSize else { return }
+            self.updateVideoSize(size)
         }
     }
 
-    /// Show one decoded frame: point the layer at its IOSurface and refresh the
-    /// tracked source size. Runs on the main thread.
-    private func presentLocalFrame(_ frame: LocalVideoFrame) {
-        guard let fl = frameLayer,
-              let surface = CVPixelBufferGetIOSurface(frame.pixelBuffer)?.takeUnretainedValue()
-        else { return }
-        // Keep this and the previous buffers alive so the pool can't overwrite
-        // an IOSurface still on screen; drop older ones.
-        retainedBuffers.append(frame.pixelBuffer)
-        if retainedBuffers.count > 3 { retainedBuffers.removeFirst(retainedBuffers.count - 3) }
-
-        // Assigning identical geometry each frame shouldn't animate.
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        fl.contents = surface
-        CATransaction.commit()
-
-        let size = CGSize(width: frame.width, height: frame.height)
-        if size != videoSize { updateVideoSize(size) }
-    }
-
-    private func makeRTCView() -> RTCMTLNSVideoView {
-        let view = RTCMTLNSVideoView(frame: bounds)
-        view.translatesAutoresizingMaskIntoConstraints = false
-        // Become the delegate so didChangeVideoSize fires and we can
-        // track the source's aspect ratio for coord translation.
-        view.delegate = self
-        addSubview(view)
-        NSLayoutConstraint.activate([
-            view.topAnchor.constraint(equalTo: topAnchor),
-            view.bottomAnchor.constraint(equalTo: bottomAnchor),
-            view.leadingAnchor.constraint(equalTo: leadingAnchor),
-            view.trailingAnchor.constraint(equalTo: trailingAnchor),
-        ])
-        return view
-    }
-
-    override func layout() {
-        super.layout()
-        // The direct-render layer isn't autoresized (added manually); keep it
-        // covering the view so contentsGravity can aspect-fit within it.
-        frameLayer?.frame = bounds
-        if let scale = window?.backingScaleFactor { frameLayer?.contentsScale = scale }
+    /// Detach the current renderer (e.g. when the session disconnects).
+    func detach() {
+        renderer?.onVideoSizeChanged = nil
+        renderer?.detach()
+        renderer?.view.removeFromSuperview()
+        renderer = nil
     }
 
     /// The aspect-fit sub-rect of the rendered video within `bounds`.
@@ -463,7 +393,7 @@ final class KVMVideoView: NSView {
     /// regardless of this flag.
     private var shouldHideCursorOverVideo: Bool {
         guard hideCursorOverVideo else { return false }
-        guard currentTrack != nil || localVideo != nil else { return false }
+        guard renderer != nil else { return false }
         guard session?.hasReceivedFirstFrame == true else { return false }
         if let err = session?.videoState?.error, !err.isEmpty { return false }
         return true
@@ -515,16 +445,10 @@ final class KVMVideoView: NSView {
     }
 }
 
-extension KVMVideoView: RTCVideoViewDelegate {
-    func videoView(_ videoView: RTCVideoRenderer, didChangeVideoSize size: CGSize) {
-        updateVideoSize(size)
-    }
-}
-
 extension KVMVideoView {
-    /// Common source-size handling for both render paths (WebRTC delegate and
-    /// direct VNC frames): mark first frame, refresh cursor rects, and resize
-    /// the window to the video aspect on a genuine aspect change.
+    /// Common source-size handling for the active renderer: mark first frame,
+    /// refresh cursor rects, and resize the window to the video aspect on a
+    /// genuine aspect change.
     func updateVideoSize(_ size: CGSize) {
         // First non-zero size = first frame has actually rendered.
         // Tell Session so the connect-flow overlay can come down.

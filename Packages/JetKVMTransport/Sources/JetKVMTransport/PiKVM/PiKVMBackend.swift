@@ -17,7 +17,7 @@ private let log = Logger(subsystem: "app.regi.mac", category: "pikvm")
 @Observable
 public final class PiKVMBackend: KVMBackend {
     public private(set) var state: KVMState = .idle
-    public private(set) var videoTrack: RTCVideoTrack?
+    public private(set) var videoRenderer: (any KVMVideoRenderer)?
     public private(set) var hasReceivedFirstFrame: Bool = false
     public let capabilities: KVMCapabilities = .none
     public private(set) var latestStats: ConnectionStats?
@@ -134,7 +134,7 @@ public final class PiKVMBackend: KVMBackend {
         // Remote video track → UI.
         pumpTasks.append(Task { [weak self] in
             for await track in await webrtc.videoTracks {
-                self?.videoTrack = track
+                self?.videoRenderer = WebRTCVideoRenderer(track: track)
             }
         })
 
@@ -321,7 +321,8 @@ public final class PiKVMBackend: KVMBackend {
         janus = nil
         events = nil
         http = nil
-        videoTrack = nil
+        videoRenderer?.detach()
+        videoRenderer = nil
         hasReceivedFirstFrame = false
         latestStats = nil
         statsHistory = []
