@@ -154,6 +154,70 @@ struct SpiceDrawCopy {
     }
 }
 
+/// STREAM_CREATE (122): a server-side video stream over a surface region.
+struct SpiceMsgStreamCreate {
+    var streamID: UInt32
+    var codec: SpiceProtocol.VideoCodec?
+    var dest: SpiceRect
+
+    static func parse(_ data: Data) throws -> SpiceMsgStreamCreate {
+        var r = SpiceByteReader(data)
+        _ = try r.readU32()               // surface_id
+        let id = try r.readU32()
+        _ = try r.readU8()                // stream_flags
+        let codecRaw = try r.readU8()     // video_codec_type
+        _ = try r.readU64()               // stamp
+        _ = try r.readU32(); _ = try r.readU32()   // stream_width, stream_height
+        _ = try r.readU32(); _ = try r.readU32()   // src_width, src_height
+        let dest = try SpiceRect.read(&r)
+        // clip ignored (v1)
+        return SpiceMsgStreamCreate(streamID: id,
+                                    codec: SpiceProtocol.VideoCodec(rawValue: codecRaw),
+                                    dest: dest)
+    }
+}
+
+/// STREAM_DATA (123): one encoded frame for a stream.
+struct SpiceMsgStreamData {
+    var streamID: UInt32
+    var data: [UInt8]
+
+    static func parse(_ data: Data) throws -> SpiceMsgStreamData {
+        var r = SpiceByteReader(data)
+        let id = try r.readU32()
+        _ = try r.readU32()               // multi_media_time
+        let size = try r.readU32()
+        return SpiceMsgStreamData(streamID: id, data: try r.readBytes(Int(size)))
+    }
+}
+
+/// STREAM_DATA_SIZED (316): a frame that also carries a (possibly changed)
+/// destination rect.
+struct SpiceMsgStreamDataSized {
+    var streamID: UInt32
+    var dest: SpiceRect
+    var data: [UInt8]
+
+    static func parse(_ data: Data) throws -> SpiceMsgStreamDataSized {
+        var r = SpiceByteReader(data)
+        let id = try r.readU32()
+        _ = try r.readU32()               // multi_media_time
+        _ = try r.readU32(); _ = try r.readU32()   // width, height
+        let dest = try SpiceRect.read(&r)
+        let size = try r.readU32()
+        return SpiceMsgStreamDataSized(streamID: id, dest: dest, data: try r.readBytes(Int(size)))
+    }
+}
+
+/// STREAM_DESTROY (125).
+struct SpiceMsgStreamDestroy {
+    var streamID: UInt32
+    static func parse(_ data: Data) throws -> SpiceMsgStreamDestroy {
+        var r = SpiceByteReader(data)
+        return SpiceMsgStreamDestroy(streamID: try r.readU32())
+    }
+}
+
 /// A parsed DRAW_FILL (opcode 302). v1 supports solid-color brushes only.
 struct SpiceDrawFill {
     var base: SpiceDisplayBase

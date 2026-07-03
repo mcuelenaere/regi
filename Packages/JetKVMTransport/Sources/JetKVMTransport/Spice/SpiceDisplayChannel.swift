@@ -34,6 +34,11 @@ final class SpiceDisplayChannel: SpiceChannel {
     private var primaryID: UInt32?
     private var dirty = false
 
+    /// Active video streams by id: codec + current destination rect on the
+    /// primary surface. Guarded by `lock`.
+    private struct Stream { var codec: SpiceProtocol.VideoCodec?; var dest: SpiceRect }
+    private var streams: [UInt32: Stream] = [:]
+
     private let decoder = SpiceImageDecoder()
 
     private let timerQueue = DispatchQueue(label: "app.regi.mac.spice-display-emit")
@@ -58,6 +63,31 @@ final class SpiceDisplayChannel: SpiceChannel {
         timer.setEventHandler { [weak self] in self?.emitIfDirty() }
         timer.resume()
         frameTimer = timer
+    }
+
+    /// Decode a video-stream frame and composite it onto the primary surface
+    /// at the stream's destination rect. Called from the read loop, so the
+    /// decoder (serial) is safe to touch outside the lock.
+    private func blitStreamFrame(streamID: UInt32, data: [UInt8], dest destOverride: SpiceRect?) {
+        lock.lock()
+        guard var stream = streams[streamID] else { lock.unlock(); return }
+        if let destOverride { stream.dest = destOverride; streams[streamID] = stream }
+        let codec = stream.codec
+        let dest = stream.dest
+        lock.unlock()
+
+        // MJPEG only for now; other codecs are dropped until decoders land.
+        guard codec == .mjpeg, let frame = decoder.decodeMJPEGFrame(data) else { return }
+
+        lock.lock()
+        if let id = primaryID, let surface = surfaces[id] {
+            surface.blit(src: frame.pixels, srcWidth: frame.width, srcHeight: frame.height,
+                         srcArea: SpiceRect(top: 0, left: 0,
+                                            bottom: Int32(frame.height), right: Int32(frame.width)),
+                         dest: dest)
+            dirty = true
+        }
+        lock.unlock()
     }
 
     /// Snapshot + emit the primary surface if it changed since the last emit.
@@ -119,10 +149,35 @@ final class SpiceDisplayChannel: SpiceChannel {
             case .reset:
                 lock.lock()
                 surfaces.removeAll()
+                streams.removeAll()
                 primaryID = nil
                 dirty = false
                 lock.unlock()
                 decoder.reset()
+
+            case .streamCreate:
+                let s = try SpiceMsgStreamCreate.parse(payload)
+                lock.lock()
+                streams[s.streamID] = Stream(codec: s.codec, dest: s.dest)
+                lock.unlock()
+                if s.codec != .mjpeg {
+                    log.notice("SPICE stream \(s.streamID) codec \(String(describing: s.codec), privacy: .public) not yet supported")
+                }
+
+            case .streamData:
+                let d = try SpiceMsgStreamData.parse(payload)
+                blitStreamFrame(streamID: d.streamID, data: d.data, dest: nil)
+
+            case .streamDataSized:
+                let d = try SpiceMsgStreamDataSized.parse(payload)
+                blitStreamFrame(streamID: d.streamID, data: d.data, dest: d.dest)
+
+            case .streamDestroy:
+                let d = try SpiceMsgStreamDestroy.parse(payload)
+                lock.lock(); streams[d.streamID] = nil; lock.unlock()
+
+            case .streamDestroyAll:
+                lock.lock(); streams.removeAll(); lock.unlock()
 
             case .drawFill:
                 let fill = try SpiceDrawFill.parse(payload)

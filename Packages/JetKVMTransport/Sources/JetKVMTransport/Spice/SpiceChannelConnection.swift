@@ -104,7 +104,7 @@ actor SpiceChannelConnection {
                 SpiceProtocol.CommonCap.authSpice.rawValue,
                 SpiceProtocol.CommonCap.miniHeader.rawValue,
             ]),
-            channelCaps: SpiceCaps()
+            channelCaps: Self.channelCaps(for: channelType)
         )
         try await sendRaw(client.encode())
 
@@ -182,6 +182,25 @@ actor SpiceChannelConnection {
     }
 
     // MARK: - Socket
+
+    /// Per-channel capabilities advertised in the link. The display channel
+    /// advertises video-codec support so the server streams video regions
+    /// (MJPEG + H.264) instead of tiling them as image draws.
+    private static func channelCaps(for channel: SpiceProtocol.ChannelType) -> SpiceCaps {
+        switch channel {
+        case .display:
+            // Only advertise codecs we can actually decode — the server picks
+            // from these. (H.264 added once its decoder lands.)
+            return SpiceCaps(bits: [
+                SpiceProtocol.DisplayCap.sizedStream.rawValue,
+                SpiceProtocol.DisplayCap.streamReport.rawValue,
+                SpiceProtocol.DisplayCap.multiCodec.rawValue,
+                SpiceProtocol.DisplayCap.codecMJPEG.rawValue,
+            ])
+        default:
+            return SpiceCaps()
+        }
+    }
 
     /// TLS options with a verify block that anchors trust to the `.vv` CA
     /// (when present) and does a soft host-subject check; falls back to

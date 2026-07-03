@@ -30,6 +30,29 @@ enum SpiceProtocol {
     /// Matches SPICE_COMMON_CAP_AUTH_SPICE.
     static let authMechanismSpice: UInt32 = CommonCap.authSpice.rawValue
 
+    /// Display-channel capability bit indices (`SPICE_DISPLAY_CAP_*`).
+    /// Advertised in the display channel's link so the server streams video
+    /// regions (instead of sending them as tiled image draws).
+    enum DisplayCap: UInt32 {
+        case sizedStream = 0
+        case streamReport = 4
+        case multiCodec = 8
+        case codecMJPEG = 9
+        case codecVP8 = 10
+        case codecH264 = 11
+        case codecVP9 = 13
+        case codecH265 = 14
+    }
+
+    /// Video stream codec (`SPICE_VIDEO_CODEC_TYPE_*`) in STREAM_CREATE.
+    enum VideoCodec: UInt8 {
+        case mjpeg = 1
+        case vp8 = 2
+        case h264 = 3
+        case vp9 = 4
+        case h265 = 5
+    }
+
     /// Channel types (`SPICE_CHANNEL_*`). Stable protocol values.
     enum ChannelType: UInt8 {
         case main = 1

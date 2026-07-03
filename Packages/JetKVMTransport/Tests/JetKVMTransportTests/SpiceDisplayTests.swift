@@ -108,6 +108,35 @@ final class SpiceDisplayTests: XCTestCase {
         XCTAssertEqual(surface.pixels.allSatisfy { $0 == 0x77 }, true)
     }
 
+    // MARK: - Video streams
+
+    func testStreamCreateParse() throws {
+        var w = SpiceByteWriter()
+        w.writeU32(0)                 // surface_id
+        w.writeU32(7)                 // id
+        w.writeU8(0)                  // flags
+        w.writeU8(1)                  // codec_type = MJPEG
+        w.writeU64(0)                 // stamp
+        w.writeU32(640); w.writeU32(480)   // stream w/h
+        w.writeU32(640); w.writeU32(480)   // src w/h
+        writeRect(&w, top: 10, left: 20, bottom: 490, right: 660)   // dest
+        let s = try SpiceMsgStreamCreate.parse(w.data)
+        XCTAssertEqual(s.streamID, 7)
+        XCTAssertEqual(s.codec, .mjpeg)
+        XCTAssertEqual(s.dest, SpiceRect(top: 10, left: 20, bottom: 490, right: 660))
+    }
+
+    func testStreamDataParse() throws {
+        var w = SpiceByteWriter()
+        w.writeU32(7)                 // id
+        w.writeU32(12345)             // multi_media_time
+        w.writeU32(4)                 // data_size
+        w.writeBytes([0xDE, 0xAD, 0xBE, 0xEF])
+        let d = try SpiceMsgStreamData.parse(w.data)
+        XCTAssertEqual(d.streamID, 7)
+        XCTAssertEqual(d.data, [0xDE, 0xAD, 0xBE, 0xEF])
+    }
+
     // MARK: - Channel
 
     func testDisplayChannelCompositesFillOnPrimary() async throws {

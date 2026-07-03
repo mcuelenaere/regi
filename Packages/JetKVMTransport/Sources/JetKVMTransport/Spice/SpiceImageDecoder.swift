@@ -27,6 +27,9 @@ final class SpiceImageDecoder {
         cacheOrder.removeAll()
     }
 
+    /// Decode one MJPEG video-stream frame (a JPEG) to BGRA.
+    func decodeMJPEGFrame(_ data: [UInt8]) -> Decoded? { decodeJPEG(data) }
+
     func decode(_ image: SpiceImage) -> Decoded? {
         if image.type == .fromCache {
             return cache[image.id]
