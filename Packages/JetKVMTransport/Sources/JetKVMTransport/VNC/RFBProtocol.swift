@@ -15,6 +15,50 @@ enum RFBProtocol {
         case invalid = 0
         case none = 1
         case vncAuth = 2
+        case veNCrypt = 19
+    }
+
+    /// VeNCrypt (security type 19): a plaintext sub-negotiation that selects a
+    /// subtype, then upgrades the socket to TLS in-band; the inner auth
+    /// (None/VNCAuth/Plain) and the rest of RFB then run inside TLS.
+    enum VeNCrypt {
+        static let version: (major: UInt8, minor: UInt8) = (0, 2)
+
+        // Subtypes.
+        static let plain: UInt32 = 256      // userpass, NO TLS — refused
+        static let tlsNone: UInt32 = 257
+        static let tlsVnc: UInt32 = 258
+        static let tlsPlain: UInt32 = 259
+        static let x509None: UInt32 = 260
+        static let x509Vnc: UInt32 = 261
+        static let x509Plain: UInt32 = 262
+
+        /// Inner authentication implied by a subtype.
+        enum InnerAuth: Equatable, Sendable {
+            case none
+            case vnc      // VNC Auth (DES) inside TLS
+            case plain    // username + password inside TLS
+        }
+
+        static func innerAuth(for subtype: UInt32) -> InnerAuth? {
+            switch subtype {
+            case tlsNone, x509None: return InnerAuth.none
+            case tlsVnc, x509Vnc: return .vnc
+            case tlsPlain, x509Plain: return .plain
+            default: return nil
+            }
+        }
+
+        /// Subtypes we accept, strongest-and-safest first. All are TLS-wrapped
+        /// (we refuse the unencrypted `plain` subtype). `hasUsername` gates the
+        /// Plain subtypes, `hasPassword` gates Plain and Vnc.
+        static func preferredSubtypes(hasUsername: Bool, hasPassword: Bool) -> [UInt32] {
+            var order: [UInt32] = []
+            if hasUsername && hasPassword { order += [x509Plain, tlsPlain] }
+            if hasPassword { order += [x509Vnc, tlsVnc] }
+            order += [x509None, tlsNone]
+            return order
+        }
     }
 
     // MARK: - Message types
@@ -230,6 +274,19 @@ enum RFBProtocol {
         w.writeU8(buttonMask)
         w.writeU16(UInt16(clamping: x))
         w.writeU16(UInt16(clamping: y))
+        return w.data
+    }
+
+    /// VeNCrypt "Plain" inner auth (sent inside TLS): u32 user-length,
+    /// u32 password-length, then the UTF-8 username and password bytes.
+    static func veNCryptPlainAuth(username: String, password: String) -> Data {
+        let user = Array(username.utf8)
+        let pass = Array(password.utf8)
+        var w = VNCByteWriter()
+        w.writeU32(UInt32(user.count))
+        w.writeU32(UInt32(pass.count))
+        w.writeBytes(user)
+        w.writeBytes(pass)
         return w.data
     }
 

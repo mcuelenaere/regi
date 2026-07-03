@@ -1,8 +1,22 @@
 import Foundation
 import Network
+import Security
 import OSLog
 
 private let log = Logger(subsystem: "app.regi.mac", category: "vnc-conn")
+
+/// Records whether TLS trust evaluation failed for lack of a trusted anchor
+/// (self-signed), so `open()` can surface `.untrustedCertificate` for the
+/// trust-override prompt. Written from the TLS verify block (a global queue),
+/// read after connect — lock-guarded.
+private final class TLSTrustState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _failed = false
+    var failed: Bool {
+        get { lock.lock(); defer { lock.unlock() }; return _failed }
+        set { lock.lock(); _failed = newValue; lock.unlock() }
+    }
+}
 
 /// A byte-stream the RFB stream engine reads through. `VNCConnection` is the
 /// production implementation (a real TCP socket); tests substitute an
@@ -28,61 +42,124 @@ protocol VNCByteChannel: Actor {
 actor VNCConnection: VNCByteChannel {
     private let host: String
     private let port: UInt16
+    /// Encrypt via VeNCrypt (in-band TLS upgrade). When set, `open()` inserts
+    /// the VeNCrypt framer below `NWProtocolTLS` and `handshake` runs the inner
+    /// auth over TLS; the plaintext RFB prefix is handled entirely by the framer.
+    private let useTLS: Bool
+    private let allowSelfSigned: Bool
+    /// Username for the VeNCrypt "Plain" inner auth (nil/empty → Plain isn't
+    /// offered as a preference).
+    private let username: String?
+
     private var connection: NWConnection?
     private(set) var bytesReceived: Int = 0
 
     /// The protocol minor version the server agreed to (7 or 8); affects
-    /// SecurityResult framing.
+    /// SecurityResult framing. Fixed at 8 on the TLS path (the framer replies 3.8).
     private var negotiatedMinor = 8
+
+    /// The VeNCrypt sub-negotiation result (TLS path only), read after connect.
+    private var negotiation: VeNCryptNegotiation?
 
     /// Cap on a single `NWConnection.receive` so a multi-megabyte Raw rect is
     /// pulled in bounded chunks instead of one monster read.
     private static let readChunk = 256 * 1024
 
-    init(host: String, port: UInt16) {
+    init(host: String, port: UInt16, useTLS: Bool = false,
+         allowSelfSigned: Bool = false, username: String? = nil) {
         self.host = host
         self.port = port
+        self.useTLS = useTLS
+        self.allowSelfSigned = allowSelfSigned
+        self.username = username
     }
 
     // MARK: - Lifecycle
 
-    func open() async throws {
-        let params = NWParameters(tls: nil, tcp: Self.makeTCPOptions())
+    /// `hasPassword` reflects whether a password is available so the VeNCrypt
+    /// subtype preference is accurate (a passwordless server that offers a None
+    /// subtype isn't forced through a password-requiring one). Plain subtypes
+    /// are still offered whenever a username is present, so a Plain-only server
+    /// (PiKVM) started without a password reaches `.awaitingPassword` and
+    /// prompts rather than failing outright.
+    func open(hasPassword: Bool = false) async throws {
         guard let nwPort = NWEndpoint.Port(rawValue: port) else {
             throw VNCConnectionError.connectionFailed("invalid port \(port)")
         }
+
+        let params: NWParameters
+        let trustState = TLSTrustState()
+        var negotiation: VeNCryptNegotiation?
+        if useTLS {
+            // VeNCrypt: framer does the plaintext prefix, TLS wraps everything
+            // after. Framer goes *below* TLS (appended = bottom of the stack).
+            let neg = VeNCryptNegotiation(
+                hasUsername: !(username ?? "").isEmpty, hasPassword: hasPassword)
+            negotiation = neg
+            self.negotiation = neg
+            params = NWParameters(tls: makeTLSOptions(trustState: trustState), tcp: Self.makeTCPOptions())
+            let framer = NWProtocolFramer.Options(definition: VNCVeNCryptFramer.definition)
+            params.defaultProtocolStack.applicationProtocols.append(framer)
+            // Only one negotiation may be pending in the framer's FIFO at a time.
+            await VeNCryptGate.shared.acquire()
+            VNCVeNCryptFramer.enqueue(neg)
+        } else {
+            params = NWParameters(tls: nil, tcp: Self.makeTCPOptions())
+        }
+
         let conn = NWConnection(host: NWEndpoint.Host(host), port: nwPort, using: params)
         connection = conn
 
-        try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-                var resumed = false
-                let resumeOnce: (Result<Void, Error>) -> Void = { result in
-                    if !resumed { resumed = true; cont.resume(with: result) }
-                }
-                let timeout = DispatchWorkItem { conn.cancel() }
-                DispatchQueue.global().asyncAfter(deadline: .now() + 8, execute: timeout)
-                conn.stateUpdateHandler = { state in
-                    switch state {
-                    case .ready:
-                        timeout.cancel()
-                        resumeOnce(.success(()))
-                    case .waiting(let error):
-                        timeout.cancel()
-                        resumeOnce(.failure(VNCConnectionError.connectionFailed("\(error)")))
-                    case .failed(let error):
-                        timeout.cancel()
-                        resumeOnce(.failure(VNCConnectionError.connectionFailed("\(error)")))
-                    case .cancelled:
-                        resumeOnce(.failure(VNCConnectionError.connectionFailed("connect timed out or closed")))
-                    default:
-                        break
-                    }
-                }
-                conn.start(queue: DispatchQueue.global(qos: .userInitiated))
+        func releaseGate() async {
+            if let neg = negotiation {
+                VNCVeNCryptFramer.discardIfPending(neg) // clean up if the framer never ran
+                await VeNCryptGate.shared.release()
             }
-        } onCancel: {
-            conn.cancel()
+        }
+
+        do {
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+                    var resumed = false
+                    let resumeOnce: (Result<Void, Error>) -> Void = { result in
+                        if !resumed { resumed = true; cont.resume(with: result) }
+                    }
+                    let timeout = DispatchWorkItem { conn.cancel() }
+                    DispatchQueue.global().asyncAfter(deadline: .now() + 8, execute: timeout)
+                    conn.stateUpdateHandler = { state in
+                        switch state {
+                        case .ready:
+                            timeout.cancel()
+                            resumeOnce(.success(()))
+                        case .waiting(let error):
+                            timeout.cancel()
+                            resumeOnce(.failure(VNCConnectionError.connectionFailed("\(error)")))
+                        case .failed(let error):
+                            timeout.cancel()
+                            resumeOnce(.failure(VNCConnectionError.connectionFailed("\(error)")))
+                        case .cancelled:
+                            resumeOnce(.failure(VNCConnectionError.connectionFailed("connect timed out or closed")))
+                        default:
+                            break
+                        }
+                    }
+                    conn.start(queue: DispatchQueue.global(qos: .userInitiated))
+                }
+            } onCancel: {
+                conn.cancel()
+            }
+            await releaseGate()
+        } catch {
+            await releaseGate()
+            // On the TLS path, a failed connect is often a cert-trust or
+            // VeNCrypt-negotiation problem — surface those specifically.
+            if trustState.failed {
+                throw VNCConnectionError.untrustedCertificate("the server's TLS certificate is not trusted")
+            }
+            if let failure = negotiation?.failure {
+                throw VNCConnectionError.handshakeFailed(failure)
+            }
+            throw error
         }
     }
 
@@ -97,6 +174,12 @@ actor VNCConnection: VNCByteChannel {
     /// may be nil; if the server requires VNC auth and no password is set, this
     /// throws `.authFailed("password required")` so the App layer can prompt.
     func handshake(password: String?, shared: Bool = true) async throws -> RFBProtocol.ServerInit {
+        // TLS path: the framer already ran the plaintext version + security +
+        // VeNCrypt sub-negotiation; we resume at the inner auth, over TLS.
+        if let negotiation {
+            return try await handshakeOverTLS(negotiation: negotiation, password: password, shared: shared)
+        }
+
         // 1. Version exchange. "RFB xxx.yyy\n".
         let versionData = try await readExactly(RFBProtocol.versionByteCount)
         guard let version = String(data: versionData, encoding: .ascii),
@@ -141,6 +224,10 @@ actor VNCConnection: VNCByteChannel {
             try await send(VNCAuth.response(challenge: challenge, password: password))
         case .invalid:
             throw VNCConnectionError.handshakeFailed("invalid security type")
+        case .veNCrypt:
+            // Only reachable if selected above, which we never do on the
+            // plaintext path (VeNCrypt runs through the TLS framer).
+            throw VNCConnectionError.handshakeFailed("VeNCrypt requires the TLS transport")
         }
 
         // 4. SecurityResult. Always sent in 3.8; in 3.7 only after VNC auth.
@@ -156,6 +243,53 @@ actor VNCConnection: VNCByteChannel {
         }
 
         // 5. ClientInit → ServerInit.
+        return try await clientAndServerInit(shared: shared)
+    }
+
+    /// VeNCrypt handshake resumed after the framer's plaintext prefix: inner
+    /// auth (None/VNCAuth/Plain) over TLS, then SecurityResult and
+    /// ClientInit/ServerInit.
+    private func handshakeOverTLS(
+        negotiation: VeNCryptNegotiation, password: String?, shared: Bool
+    ) async throws -> RFBProtocol.ServerInit {
+        if let failure = negotiation.failure {
+            throw VNCConnectionError.handshakeFailed(failure)
+        }
+        guard let inner = negotiation.innerAuth else {
+            throw VNCConnectionError.handshakeFailed("VeNCrypt negotiation did not complete")
+        }
+        negotiatedMinor = 8 // the framer replied 3.8
+
+        switch inner {
+        case .none:
+            break
+        case .vnc:
+            guard let password, !password.isEmpty else {
+                throw VNCConnectionError.authFailed("password required")
+            }
+            let challenge = try await readExactly(16)
+            try await send(VNCAuth.response(challenge: challenge, password: password))
+        case .plain:
+            guard let username, !username.isEmpty else {
+                throw VNCConnectionError.authFailed("username required")
+            }
+            guard let password, !password.isEmpty else {
+                throw VNCConnectionError.authFailed("password required")
+            }
+            try await send(RFBProtocol.veNCryptPlainAuth(username: username, password: password))
+        }
+
+        // SecurityResult (always sent in 3.8).
+        let result = try await readU32()
+        if result != 0 {
+            let reason = try await readReasonString()
+            throw VNCConnectionError.authFailed(reason.isEmpty ? "authentication failed" : reason)
+        }
+        return try await clientAndServerInit(shared: shared)
+    }
+
+    /// ClientInit (shared flag) → ServerInit (size, pixel format, name).
+    private func clientAndServerInit(shared: Bool) async throws -> RFBProtocol.ServerInit {
         try await send(Data([shared ? 1 : 0]))
         let head = try await readExactly(2 + 2 + RFBProtocol.PixelFormat.byteCount + 4)
         var r = VNCByteReader(head)
@@ -251,5 +385,33 @@ actor VNCConnection: VNCByteChannel {
         o.noDelay = true
         o.enableKeepalive = true
         return o
+    }
+
+    /// TLS options for the VeNCrypt upgrade. The verify block accepts a
+    /// system-trusted chain outright; on failure it accepts only if the user
+    /// opted into trusting this host's self-signed cert (`allowSelfSigned`),
+    /// otherwise it records the failure so `open()` can surface the trust
+    /// prompt. SNI is set to the host.
+    private func makeTLSOptions(trustState: TLSTrustState) -> NWProtocolTLS.Options {
+        let tls = NWProtocolTLS.Options()
+        let sec = tls.securityProtocolOptions
+        sec_protocol_options_set_tls_server_name(sec, host)
+        let allow = allowSelfSigned
+        sec_protocol_options_set_verify_block(
+            sec,
+            { _, secTrust, complete in
+                let trust = sec_trust_copy_ref(secTrust).takeRetainedValue()
+                var evalError: CFError?
+                if SecTrustEvaluateWithError(trust, &evalError) {
+                    complete(true)
+                } else if allow {
+                    complete(true) // user opted into trusting self-signed
+                } else {
+                    trustState.failed = true
+                    complete(false)
+                }
+            },
+            DispatchQueue.global())
+        return tls
     }
 }

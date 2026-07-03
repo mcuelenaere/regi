@@ -68,7 +68,9 @@ struct SavedHost: Codable, Identifiable, Hashable {
             port: port,
             useTLS: useTLS,
             kind: kind,
-            username: kind == .piKVM ? username : nil
+            // PiKVM always needs a login; VNC uses it for VeNCrypt "Plain" auth
+            // when present (empty → the backend picks a no-username subtype).
+            username: (kind == .piKVM || kind == .vnc) ? username : nil
         )
     }
 

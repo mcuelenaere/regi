@@ -151,9 +151,13 @@ public final class VNCBackend: KVMBackend {
         guard generation == connectGeneration else { return }
         state = .connecting(.checkingStatus)
 
-        let conn = VNCConnection(host: endpoint.host, port: UInt16(clamping: endpoint.port))
+        let conn = VNCConnection(
+            host: endpoint.host, port: UInt16(clamping: endpoint.port),
+            useTLS: endpoint.useTLS,
+            allowSelfSigned: endpoint.allowSelfSignedCertificate,
+            username: endpoint.username)
         do {
-            try await conn.open()
+            try await conn.open(hasPassword: !(password ?? "").isEmpty)
             guard generation == connectGeneration else { await conn.close(); return }
             state = .connecting(.authenticating)
             let serverInit = try await conn.handshake(password: password)
@@ -197,6 +201,13 @@ public final class VNCBackend: KVMBackend {
                 reconnectTask = nil
                 reconnectAttempt = 0
                 state = .awaitingPassword(nil)
+            case .untrustedCertificate(let reason):
+                // Surface the trust-override prompt; the App retries with
+                // allowSelfSignedCertificate once the user accepts.
+                reconnectTask?.cancel()
+                reconnectTask = nil
+                reconnectAttempt = 0
+                state = .awaitingTrustOverride(host: endpoint.host, reason: reason)
             default:
                 handleConnectFailure(Self.describe(error))
             }
@@ -672,6 +683,7 @@ public final class VNCBackend: KVMBackend {
         case .handshakeFailed(let m): return "Handshake failed: \(m)"
         case .authFailed(let m): return "Authentication failed: \(m)"
         case .unsupportedVersion(let m): return "Unsupported RFB version: \(m)"
+        case .untrustedCertificate(let m): return "Untrusted certificate: \(m)"
         }
     }
 }

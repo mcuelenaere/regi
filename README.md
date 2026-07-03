@@ -44,8 +44,10 @@ is in the macOS integration around it.
   Extended Clipboard pseudo-encoding (falling back to Latin-1 cut text).
   Power control (shutdown / reset) is offered when the server supports XVP
   (QEMU started with `power-control=on`).
-  Security types **None** and **VNC Authentication** are supported;
-  VeNCrypt/TLS is not yet (connect over a trusted network or an SSH tunnel).
+  Security types **None**, **VNC Authentication**, and **VeNCrypt** (TLS —
+  as PiKVM's `kvmd-vnc` requires) are supported, with the same self-signed
+  trust prompt as the other backends. Enable "Encrypted (TLS)" when adding a
+  VNC host to connect to a VeNCrypt server.
 - **Real keyboard capture.** System shortcuts — ⌘Tab, ⌘Space (Spotlight),
   ⌘Q, ⌘H, Mission Control, function keys — route to the remote host via
   `CGEventTap`. Engages automatically when the session window is

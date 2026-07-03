@@ -5,24 +5,32 @@ to be picked up cold without re-litigating the original investigation.
 
 ---
 
-## VNC: VeNCrypt / TLS support
+## VNC: VeNCrypt / TLS — remaining nuances
 
-**Where:** `Packages/JetKVMTransport/Sources/JetKVMTransport/VNC/` —
-`VNCConnection` (transport) and `VNCBackend` (security-type negotiation);
-`App/HostFormSheet.swift` currently pins `useTLS = false` for the `.vnc` kind.
+**Where:** `VNCVeNCryptFramer.swift`, `VNCConnection` (`makeTLSOptions` verify
+block), `VeNCryptTests`.
 
-**What's there now:** the VNC backend speaks plain RFB 3.8 over TCP with
-security types **None** (1) and **VNC Authentication** (2, DES challenge). No
-transport encryption. Fine on a trusted LAN or through an SSH tunnel, but a
-VeNCrypt-only server (common on hardened libvirt/oVirt setups) can't be
-reached, and the VNC password crosses the wire under weak DES.
+**What's implemented:** VeNCrypt (security type 19) with an in-band TLS upgrade.
+An `NWProtocolFramer` below `NWProtocolTLS` runs the plaintext RFB version +
+security + VeNCrypt subtype negotiation, then goes transparent so TLS wraps the
+rest (inner auth + session). We prefer X509→anonymous-TLS subtypes with Plain →
+VncAuth → None inner auth, and refuse the unencrypted `plain` subtype. Cert
+trust reuses the self-signed override (`TrustedHostStore` / `awaitingTrustOverride`).
+The host form has an "Encrypted (TLS)" toggle + username for `.vnc`.
 
-**What "fixed" looks like:** add the VeNCrypt security type (19) — after the
-RFB handshake selects it, the client picks a sub-type, and for the TLS/X509
-variants wraps the socket in `NWProtocolTLS` (reuse the trust-override plumbing
-in `TLSDelegate` / `TrustedHostStore`, keyed by host) before continuing the RFB
-sub-handshake. Then let the host form offer a "TLS" toggle for `.vnc` instead
-of forcing it off.
+**Nuances / possible follow-ups:**
+- We accept **anonymous TLS** subtypes (TLSNone/Vnc/Plain) when offered — these
+  encrypt but give no server authentication. Could restrict to X509 only.
+- Trust is system-eval + self-signed override; there's no per-host **cert
+  pinning** (accept-this-exact-cert). The override trusts any cert for the host
+  once accepted, like the HTTPS backends.
+- The VeNCrypt framer path can't be exercised by the loopback `FakeRFBServer`
+  (no TLS there) — the negotiation logic is unit-tested (`VeNCryptTests`) but
+  the end-to-end TLS path is validated manually against PiKVM.
+- A server that offers VeNCrypt but no subtype we accept (or rejects our
+  version) makes the framer stop without `markReady()`; there's no framer API
+  to fail the connection, so the error only surfaces after the 8 s connect
+  timeout instead of immediately. Acceptable for a misconfiguration path.
 
 ## VNC: QEMU server features we don't implement yet
 

@@ -14,6 +14,10 @@ enum VNCConnectionError: Error, Equatable {
     /// supplied. The App layer prompts for a password on this.
     case authFailed(String)
     case unsupportedVersion(String)
+    /// TLS (VeNCrypt) trust evaluation failed and the user hasn't opted into
+    /// trusting this host's self-signed certificate. The App layer surfaces the
+    /// trust-override prompt.
+    case untrustedCertificate(String)
 }
 
 /// Big-endian reader over a `Data` (RFB is big-endian on the wire). Normalizes
