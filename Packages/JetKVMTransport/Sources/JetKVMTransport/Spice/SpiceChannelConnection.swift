@@ -151,7 +151,7 @@ actor SpiceChannelConnection {
             // Log the server's display caps so codec negotiation is debuggable:
             // if MULTI_CODEC / CODEC_H264 aren't here, the server can't encode
             // H.264 no matter what the client prefers.
-            log.notice("SPICE display SERVER caps: \(Self.describeDisplayCaps(reply.channelCaps), privacy: .public)")
+            log.debug("SPICE display SERVER caps: \(Self.describeDisplayCaps(reply.channelCaps), privacy: .public)")
         }
         return reply
     }

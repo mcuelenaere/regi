@@ -111,11 +111,9 @@ final class SpiceDisplayChannel: SpiceChannel {
         /// server's own frame schedule the frame reached us — i.e. buffering /
         /// network delay above the best case. 0 when no video is flowing.
         var frameDelayMs = 0.0
-        /// Screen-updating draw ops received (FILL/COPY/OPAQUE/COPY_BITS) and
-        /// stream (re)creations — for diagnosing where updates come from and
-        /// whether the server's video-stream detector is flapping.
+        /// Screen-updating draw ops received (FILL/COPY/OPAQUE/COPY_BITS) —
+        /// drives the "Images" delivery-mode label in the stats UI.
         var drawOps = 0
-        var streamCreates = 0
     }
     private var stats = Stats()
 
@@ -312,7 +310,7 @@ final class SpiceDisplayChannel: SpiceChannel {
         codecs.writeU8(UInt8(preferred.count))
         for c in preferred { codecs.writeU8(c.rawValue) }
         try? await send(type: SpiceMsg.DisplayClient.preferredVideoCodecType.rawValue, payload: codecs.data)
-        log.notice("SPICE sent preferred video codecs: \(preferred.map { String(describing: $0) }.joined(separator: ">"), privacy: .public)")
+        log.debug("SPICE sent preferred video codecs: \(preferred.map { String(describing: $0) }.joined(separator: ">"), privacy: .public)")
     }
 
     override func handle(type: UInt16, payload: Data) async {
@@ -367,10 +365,9 @@ final class SpiceDisplayChannel: SpiceChannel {
                 let s = try SpiceMsgStreamCreate.parse(payload)
                 lock.lock()
                 streams[s.streamID] = Stream(codec: s.codec, dest: s.dest)
-                stats.streamCreates += 1
                 lock.unlock()
                 if s.codec == .h264 { h264Decoders[s.streamID] = SpiceH264Decoder() }
-                log.notice("SPICE stream \(s.streamID) created codec=\(String(describing: s.codec), privacy: .public) \(s.dest.width)x\(s.dest.height)")
+                log.debug("SPICE stream \(s.streamID) created codec=\(String(describing: s.codec), privacy: .public) \(s.dest.width)x\(s.dest.height)")
 
             case .streamData:
                 let d = try SpiceMsgStreamData.parse(payload)
@@ -469,7 +466,7 @@ final class SpiceDisplayChannel: SpiceChannel {
     private func logUnhandled(type: UInt16, name: String) {
         lock.lock(); let isNew = loggedUnhandled.insert(type).inserted; lock.unlock()
         if isNew {
-            log.notice("SPICE display op not implemented: type=\(type) (\(name, privacy: .public))")
+            log.debug("SPICE display op not implemented: type=\(type) (\(name, privacy: .public))")
         }
     }
 }

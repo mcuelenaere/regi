@@ -297,23 +297,6 @@ public final class SPICEBackend: KVMBackend {
         statsHistory.append(sample)
         let overshoot = statsHistory.count - Self.maxStatsHistory
         if overshoot > 0 { statsHistory.removeFirst(overshoot) }
-
-        // Diagnostic: where do screen updates actually come from, and is the
-        // server's video stream flapping? streamRecv = frames the server sent
-        // us (decoded+dropped); emitted = frames we handed the renderer.
-        let deltaReceived = (snap.streamFramesDecoded + snap.streamFramesDropped)
-            - (prev.snapshot.streamFramesDecoded + prev.snapshot.streamFramesDropped)
-        let deltaCreates = snap.streamCreates - prev.snapshot.streamCreates
-        // Effective flow-control round-trip that gates large redraws — should
-        // drop sharply now that Nagle is disabled.
-        let ackStallMs = Double(display.ackStallMaxNanos) / 1_000_000
-        display.resetAckStallStat()
-        log.debug("""
-        SPICE rates/s: streamRecv=\(String(format: "%.1f", Double(deltaReceived) / dt)) \
-        emitted=\(String(format: "%.1f", fps)) drawOps=\(String(format: "%.1f", Double(deltaDraws) / dt)) \
-        streamCreates=\(deltaCreates) drops=\(snap.streamFramesDropped - prev.snapshot.streamFramesDropped) \
-        ackStallMax=\(String(format: "%.1f", ackStallMs))ms
-        """)
     }
 
     // MARK: - Video

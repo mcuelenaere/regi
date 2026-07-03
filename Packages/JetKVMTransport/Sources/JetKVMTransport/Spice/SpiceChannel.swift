@@ -59,18 +59,10 @@ class SpiceChannel {
     /// of a naturally-aligned UInt64 is atomic on the platforms we target.
     private(set) var receiveBlockedSinceNanos: UInt64 = 0
 
-    /// Worst read-loop idle (ns) seen right after hitting the ACK window since
-    /// the last reset — i.e. the effective flow-control round-trip that gates
-    /// large redraws. Diagnostic; drained by the stats poller.
-    private(set) var ackStallMaxNanos: UInt64 = 0
-    func resetAckStallStat() { ackStallMaxNanos = 0 }
-
     private func runLoop() async {
         do {
             while !Task.isCancelled {
-                let wasAtAckWindow = lastMessageHitAckWindow
-                let blockStart = DispatchTime.now().uptimeNanoseconds
-                receiveBlockedSinceNanos = blockStart
+                receiveBlockedSinceNanos = DispatchTime.now().uptimeNanoseconds
                 let header = try await connection.receiveMessageHeader()
                 // Header in hand: everything from here (body bytes, decode,
                 // blit) is mid-message — the rest of this frame is still in
@@ -78,10 +70,6 @@ class SpiceChannel {
                 // multi-packet body stalling on the network otherwise looks
                 // idle and gets presented half-applied.
                 receiveBlockedSinceNanos = 0
-                if wasAtAckWindow {
-                    let idle = DispatchTime.now().uptimeNanoseconds &- blockStart
-                    if idle > ackStallMaxNanos { ackStallMaxNanos = idle }
-                }
                 let payload = try await connection.receiveMessageBody(header)
                 await dispatch(type: header.type, payload: payload)
             }
@@ -140,7 +128,7 @@ class SpiceChannel {
         guard let generation = try? r.readU32(), let window = try? r.readU32() else { return }
         ackWindow = window
         ackCount = 0
-        log.notice("SPICE channel \(self.connection.channelType.rawValue) SET_ACK window=\(window)")
+        log.debug("SPICE channel \(self.connection.channelType.rawValue) SET_ACK window=\(window)")
         var w = SpiceByteWriter()
         w.writeU32(generation)
         try? await send(type: SpiceMsg.CommonClient.ackSync.rawValue, payload: w.data)
