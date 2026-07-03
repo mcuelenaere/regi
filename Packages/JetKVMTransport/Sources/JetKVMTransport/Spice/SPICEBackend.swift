@@ -27,9 +27,10 @@ public final class SPICEBackend: KVMBackend {
     public private(set) var statsHistory: [ConnectionStats] = []
 
     // WebRTC local video plumbing (no peer connection — local render only).
+    // The sink converts + feeds frames off the main actor (see SpiceVideoSink)
+    // so per-frame pixel work never contends with main-actor input handling.
     private let factory = RTCPeerConnectionFactory()
-    private var videoSource: RTCVideoSource?
-    private var capturer: RTCVideoCapturer?
+    private var videoSink: SpiceVideoSink?
 
     // Channels.
     private var mainConn: SpiceChannelConnection?
@@ -162,8 +163,14 @@ public final class SPICEBackend: KVMBackend {
 
         let display = SpiceDisplayChannel(connection: displayConn)
         self.display = display
+        // Feed WebRTC on the display's emit queue (where onFrame fires), NOT
+        // the main actor — the heavy CVPixelBuffer work would otherwise starve
+        // the input pump. Only the cheap frame-size note hops to the main actor.
+        let sink = videoSink
         display.onFrame = { [weak self] frame in
-            Task { @MainActor in self?.pushFrame(frame) }
+            sink?.push(frame)
+            let size = CGSize(width: frame.width, height: frame.height)
+            Task { @MainActor in self?.noteFrameSize(size) }
         }
         display.start()
 
@@ -199,7 +206,7 @@ public final class SPICEBackend: KVMBackend {
         display?.stop(); inputs?.stop(); main?.stop()
         await mainConn?.close()
         display = nil; inputs = nil; main = nil; mainConn = nil
-        videoTrack = nil; videoSource = nil; capturer = nil
+        videoTrack = nil; videoSink = nil
         hasReceivedFirstFrame = false
         heldModifiers.removeAll()
         heldKeys.removeAll()
@@ -278,43 +285,15 @@ public final class SPICEBackend: KVMBackend {
     // MARK: - Video
 
     private func setupVideoTrack() {
-        let source = factory.videoSource()
-        let track = factory.videoTrack(with: source, trackId: "spice-video")
-        self.videoSource = source
-        self.capturer = RTCVideoCapturer(delegate: source)
-        self.videoTrack = track
+        let sink = SpiceVideoSink(factory: factory)
+        self.videoSink = sink
+        self.videoTrack = sink.track
     }
 
-    /// Convert a decoded BGRA frame to an `RTCVideoFrame` and feed the source.
-    private func pushFrame(_ frame: SpiceFrame) {
-        guard let source = videoSource, let capturer, frame.width > 0, frame.height > 0 else { return }
-        lastFrameSize = CGSize(width: frame.width, height: frame.height)
-        guard let pixelBuffer = Self.makeBGRAPixelBuffer(frame) else { return }
-        let rtcBuffer = RTCCVPixelBuffer(pixelBuffer: pixelBuffer)
-        let rtcFrame = RTCVideoFrame(buffer: rtcBuffer, rotation: ._0,
-                                     timeStampNs: Int64(Date().timeIntervalSince1970 * 1_000_000_000))
-        source.capturer(capturer, didCapture: rtcFrame)
-    }
-
-    private static func makeBGRAPixelBuffer(_ frame: SpiceFrame) -> CVPixelBuffer? {
-        var pb: CVPixelBuffer?
-        let attrs: [CFString: Any] = [kCVPixelBufferIOSurfacePropertiesKey: [:]]
-        guard CVPixelBufferCreate(kCFAllocatorDefault, frame.width, frame.height,
-                                  kCVPixelFormatType_32BGRA, attrs as CFDictionary, &pb) == kCVReturnSuccess,
-              let pb else { return nil }
-        CVPixelBufferLockBaseAddress(pb, [])
-        defer { CVPixelBufferUnlockBaseAddress(pb, []) }
-        guard let base = CVPixelBufferGetBaseAddress(pb) else { return nil }
-        let dstStride = CVPixelBufferGetBytesPerRow(pb)
-        let srcStride = frame.width * 4
-        frame.bgra.withUnsafeBytes { src in
-            guard let srcBase = src.baseAddress else { return }
-            for row in 0..<frame.height {
-                memcpy(base.advanced(by: row * dstStride),
-                       srcBase.advanced(by: row * srcStride), srcStride)
-            }
-        }
-        return pb
+    /// Record the current frame size for input coordinate mapping. Cheap; runs
+    /// on the main actor while the heavy pixel work stays on the emit queue.
+    private func noteFrameSize(_ size: CGSize) {
+        lastFrameSize = size
     }
 
     // MARK: - Input
@@ -486,5 +465,76 @@ private final class OneShot: @unchecked Sendable {
         if fired { return false }
         fired = true
         return true
+    }
+}
+
+/// Owns the WebRTC video source/track and converts decoded SPICE frames into
+/// `RTCVideoFrame`s, feeding them off the main actor. WebRTC video sources
+/// accept frames from any thread, so `push` is safe to call from the display
+/// channel's emit queue — keeping the 3 MB-per-frame pixel work away from the
+/// main actor, where it would otherwise starve the input pump and stall the
+/// whole session. A `CVPixelBufferPool` avoids a fresh IOSurface allocation
+/// per frame.
+final class SpiceVideoSink: @unchecked Sendable {
+    let track: RTCVideoTrack
+    private let source: RTCVideoSource
+    private let capturer: RTCVideoCapturer
+
+    private let lock = NSLock()
+    private var pool: CVPixelBufferPool?
+    private var poolWidth = 0, poolHeight = 0
+
+    init(factory: RTCPeerConnectionFactory) {
+        source = factory.videoSource()
+        capturer = RTCVideoCapturer(delegate: source)
+        track = factory.videoTrack(with: source, trackId: "spice-video")
+    }
+
+    /// Convert one decoded BGRA frame and hand it to WebRTC. Callable from any
+    /// thread; must NOT be the main actor for a busy stream.
+    func push(_ frame: SpiceFrame) {
+        guard frame.width > 0, frame.height > 0,
+              let pb = pixelBuffer(width: frame.width, height: frame.height) else { return }
+        CVPixelBufferLockBaseAddress(pb, [])
+        if let base = CVPixelBufferGetBaseAddress(pb) {
+            let dstStride = CVPixelBufferGetBytesPerRow(pb)
+            let srcStride = frame.width * 4
+            frame.bgra.withUnsafeBytes { src in
+                guard let srcBase = src.baseAddress else { return }
+                for row in 0..<frame.height {
+                    memcpy(base.advanced(by: row * dstStride),
+                           srcBase.advanced(by: row * srcStride), srcStride)
+                }
+            }
+        }
+        CVPixelBufferUnlockBaseAddress(pb, [])
+
+        let rtcBuffer = RTCCVPixelBuffer(pixelBuffer: pb)
+        let rtcFrame = RTCVideoFrame(buffer: rtcBuffer, rotation: ._0,
+                                     timeStampNs: Int64(DispatchTime.now().uptimeNanoseconds))
+        source.capturer(capturer, didCapture: rtcFrame)
+    }
+
+    /// A pooled BGRA pixel buffer for `width`×`height`, rebuilding the pool
+    /// when the frame size changes.
+    private func pixelBuffer(width: Int, height: Int) -> CVPixelBuffer? {
+        lock.lock(); defer { lock.unlock() }
+        if pool == nil || width != poolWidth || height != poolHeight {
+            let pbAttrs: [CFString: Any] = [
+                kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_32BGRA,
+                kCVPixelBufferWidthKey: width,
+                kCVPixelBufferHeightKey: height,
+                kCVPixelBufferIOSurfacePropertiesKey: [:],
+            ]
+            var newPool: CVPixelBufferPool?
+            guard CVPixelBufferPoolCreate(kCFAllocatorDefault, nil, pbAttrs as CFDictionary, &newPool) == kCVReturnSuccess else {
+                return nil
+            }
+            pool = newPool; poolWidth = width; poolHeight = height
+        }
+        guard let pool else { return nil }
+        var pb: CVPixelBuffer?
+        guard CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &pb) == kCVReturnSuccess else { return nil }
+        return pb
     }
 }
