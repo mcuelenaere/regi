@@ -190,12 +190,14 @@ actor SpiceChannelConnection {
         switch channel {
         case .display:
             // Only advertise codecs we can actually decode — the server picks
-            // from these. (H.264 added once its decoder lands.)
+            // from these. H.264 (VideoToolbox) is preferred by modern
+            // gstreamer-based servers; MJPEG is the fallback.
             return SpiceCaps(bits: [
                 SpiceProtocol.DisplayCap.sizedStream.rawValue,
                 SpiceProtocol.DisplayCap.streamReport.rawValue,
                 SpiceProtocol.DisplayCap.multiCodec.rawValue,
                 SpiceProtocol.DisplayCap.codecMJPEG.rawValue,
+                SpiceProtocol.DisplayCap.codecH264.rawValue,
             ])
         default:
             return SpiceCaps()

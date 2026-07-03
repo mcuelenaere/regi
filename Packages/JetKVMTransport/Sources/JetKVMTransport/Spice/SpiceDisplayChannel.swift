@@ -38,6 +38,8 @@ final class SpiceDisplayChannel: SpiceChannel {
     /// primary surface. Guarded by `lock`.
     private struct Stream { var codec: SpiceProtocol.VideoCodec?; var dest: SpiceRect }
     private var streams: [UInt32: Stream] = [:]
+    /// One H.264 decoder per H.264 stream. Touched only on the read loop.
+    private var h264Decoders: [UInt32: SpiceH264Decoder] = [:]
 
     private let decoder = SpiceImageDecoder()
 
@@ -76,8 +78,13 @@ final class SpiceDisplayChannel: SpiceChannel {
         let dest = stream.dest
         lock.unlock()
 
-        // MJPEG only for now; other codecs are dropped until decoders land.
-        guard codec == .mjpeg, let frame = decoder.decodeMJPEGFrame(data) else { return }
+        let decodedFrame: SpiceImageDecoder.Decoded?
+        switch codec {
+        case .mjpeg: decodedFrame = decoder.decodeMJPEGFrame(data)
+        case .h264:  decodedFrame = h264Decoders[streamID]?.decode(data)
+        default:     decodedFrame = nil     // VP8/VP9/H265 not yet supported
+        }
+        guard let frame = decodedFrame else { return }
 
         lock.lock()
         if let id = primaryID, let surface = surfaces[id] {
@@ -153,6 +160,7 @@ final class SpiceDisplayChannel: SpiceChannel {
                 primaryID = nil
                 dirty = false
                 lock.unlock()
+                h264Decoders.removeAll()
                 decoder.reset()
 
             case .streamCreate:
@@ -160,9 +168,9 @@ final class SpiceDisplayChannel: SpiceChannel {
                 lock.lock()
                 streams[s.streamID] = Stream(codec: s.codec, dest: s.dest)
                 lock.unlock()
-                if s.codec != .mjpeg {
-                    log.notice("SPICE stream \(s.streamID) codec \(String(describing: s.codec), privacy: .public) not yet supported")
-                }
+                if s.codec == .h264 { h264Decoders[s.streamID] = SpiceH264Decoder() }
+                let supported = s.codec == .mjpeg || s.codec == .h264
+                log.notice("SPICE stream \(s.streamID) create codec=\(String(describing: s.codec), privacy: .public) dest=\(s.dest.width)x\(s.dest.height)\(supported ? "" : " (unsupported)", privacy: .public)")
 
             case .streamData:
                 let d = try SpiceMsgStreamData.parse(payload)
@@ -175,9 +183,11 @@ final class SpiceDisplayChannel: SpiceChannel {
             case .streamDestroy:
                 let d = try SpiceMsgStreamDestroy.parse(payload)
                 lock.lock(); streams[d.streamID] = nil; lock.unlock()
+                h264Decoders[d.streamID] = nil
 
             case .streamDestroyAll:
                 lock.lock(); streams.removeAll(); lock.unlock()
+                h264Decoders.removeAll()
 
             case .drawFill:
                 let fill = try SpiceDrawFill.parse(payload)
