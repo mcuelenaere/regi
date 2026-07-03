@@ -1,0 +1,215 @@
+import Foundation
+
+/// SPICE message opcodes and body codecs, derived from spice-common's
+/// `spice.proto` (per-channel messages start at 101 and auto-increment;
+/// common BaseChannel messages occupy 1–99). Only the v1 subset (video +
+/// keyboard/mouse) is modelled here.
+enum SpiceMsg {
+    /// Common server → client (BaseChannel).
+    enum Common: UInt16 {
+        case migrate = 1
+        case migrateData = 2
+        case setAck = 3
+        case ping = 4
+        case waitForChannels = 5
+        case disconnecting = 6
+        case notify = 7
+    }
+    /// Common client → server.
+    enum CommonClient: UInt16 {
+        case ackSync = 1
+        case ack = 2
+        case pong = 3
+        case migrateFlushMark = 4
+        case migrateData = 5
+        case disconnecting = 6
+    }
+    /// Main channel server → client.
+    enum Main: UInt16 {
+        case migrateBegin = 101
+        case migrateCancel = 102
+        case initMsg = 103
+        case channelsList = 104
+        case mouseMode = 105
+        case multiMediaTime = 106
+        case agentConnected = 107
+        case agentDisconnected = 108
+        case agentData = 109
+        case agentToken = 110
+        case name = 113
+        case uuid = 114
+    }
+    /// Main channel client → server.
+    enum MainClient: UInt16 {
+        case clientInfo = 101
+        case attachChannels = 104
+        case mouseModeRequest = 105
+        case agentStart = 106
+    }
+    /// Inputs channel client → server.
+    enum InputsClient: UInt16 {
+        case keyDown = 101
+        case keyUp = 102
+        case keyModifiers = 103
+        case mouseMotion = 111
+        case mousePosition = 112
+        case mousePress = 113
+        case mouseRelease = 114
+    }
+    /// Inputs channel server → client.
+    enum InputsServer: UInt16 {
+        case initMsg = 101
+        case keyModifiers = 102
+        case mouseMotionAck = 111
+    }
+    /// Display channel server → client.
+    enum Display: UInt16 {
+        case mode = 101, mark = 102, reset = 103, copyBits = 104
+        case invalList = 105, invalAllPixmaps = 106, invalPalette = 107, invalAllPalettes = 108
+        case streamCreate = 122, streamData = 123, streamClip = 124
+        case streamDestroy = 125, streamDestroyAll = 126
+        case drawFill = 302, drawOpaque = 303, drawCopy = 304, drawBlend = 305
+        case drawBlackness = 306, drawWhiteness = 307, drawInvers = 308, drawRop3 = 309
+        case drawStroke = 310, drawText = 311, drawTransparent = 312, drawAlphaBlend = 313
+        case surfaceCreate = 314, surfaceDestroy = 315, streamDataSized = 316
+        case monitorsConfig = 317, drawComposite = 318, streamActivateReport = 319
+    }
+    /// Display channel client → server.
+    enum DisplayClient: UInt16 {
+        case initMsg = 101
+        case streamReport = 102
+        case preferredCompression = 103
+        case glDrawDone = 104
+        case preferredVideoCodecType = 105
+    }
+
+    /// SPICE image compression / encoding types (`enum8 image_type`).
+    enum ImageType: UInt8 {
+        case bitmap = 0, quic = 1
+        case lzPlt = 100, lzRgb = 101, glzRgb = 102, fromCache = 103, surface = 104
+        case jpeg = 105, fromCacheLossless = 106, zlibGlzRgb = 107, jpegAlpha = 108, lz4 = 109
+    }
+
+    /// SPICE mouse button ids (`enum8 mouse_button`).
+    enum MouseButton: UInt8 {
+        case invalid = 0, left = 1, middle = 2, right = 3, up = 4, down = 5
+    }
+    /// SPICE `flags16 mouse_button_mask` bits.
+    struct ButtonMask {
+        static let left: UInt16 = 1
+        static let middle: UInt16 = 2
+        static let right: UInt16 = 4
+    }
+}
+
+/// `SpiceMsgMainInit` (main INIT, opcode 103): eight u32 fields.
+struct SpiceMsgMainInit: Equatable {
+    var sessionID: UInt32
+    var displayChannelsHint: UInt32
+    var supportedMouseModes: UInt32
+    var currentMouseMode: UInt32
+    var agentConnected: UInt32
+    var agentTokens: UInt32
+    var multiMediaTime: UInt32
+    var ramHint: UInt32
+
+    static func parse(_ data: Data) throws -> SpiceMsgMainInit {
+        var r = SpiceByteReader(data)
+        return SpiceMsgMainInit(
+            sessionID: try r.readU32(),
+            displayChannelsHint: try r.readU32(),
+            supportedMouseModes: try r.readU32(),
+            currentMouseMode: try r.readU32(),
+            agentConnected: try r.readU32(),
+            agentTokens: try r.readU32(),
+            multiMediaTime: try r.readU32(),
+            ramHint: try r.readU32()
+        )
+    }
+}
+
+/// One entry in the main CHANNELS_LIST (`ChannelId`: type u8, id u8).
+struct SpiceChannelId: Equatable {
+    var type: UInt8
+    var id: UInt8
+}
+
+/// `SpiceMsgChannels` (main CHANNELS_LIST, opcode 104).
+struct SpiceMsgChannelsList: Equatable {
+    var channels: [SpiceChannelId]
+
+    static func parse(_ data: Data) throws -> SpiceMsgChannelsList {
+        var r = SpiceByteReader(data)
+        let count = try r.readU32()
+        var channels: [SpiceChannelId] = []
+        for _ in 0..<count {
+            channels.append(SpiceChannelId(type: try r.readU8(), id: try r.readU8()))
+        }
+        return SpiceMsgChannelsList(channels: channels)
+    }
+}
+
+// MARK: - Client message body encoders
+
+extension SpiceByteWriter {
+    /// key_down / key_up body: uint32 code. Down sends the make code, up the
+    /// break code (bit 7 set) — the server pushes these to the PS/2 keyboard
+    /// verbatim, so the release must differ from the press.
+    static func keyCode(_ scancode: SpiceScancode, down: Bool) -> Data {
+        var w = SpiceByteWriter()
+        w.writeU32(down ? scancode.wireCode : scancode.breakWireCode)
+        return w.data
+    }
+
+    /// mouse_position body: x, y (u32), buttons (u16 mask), display_id (u8).
+    static func mousePosition(x: UInt32, y: UInt32, buttons: UInt16, displayID: UInt8) -> Data {
+        var w = SpiceByteWriter()
+        w.writeU32(x); w.writeU32(y); w.writeU16(buttons); w.writeU8(displayID)
+        return w.data
+    }
+
+    /// mouse_motion body: dx, dy (i32), buttons (u16 mask).
+    static func mouseMotion(dx: Int32, dy: Int32, buttons: UInt16) -> Data {
+        var w = SpiceByteWriter()
+        w.writeI32(dx); w.writeI32(dy); w.writeU16(buttons)
+        return w.data
+    }
+
+    /// mouse_press / mouse_release body: button (u8), buttons (u16 mask).
+    static func mouseButton(_ button: SpiceMsg.MouseButton, buttons: UInt16) -> Data {
+        var w = SpiceByteWriter()
+        w.writeU8(button.rawValue); w.writeU16(buttons)
+        return w.data
+    }
+
+    /// mouse_mode_request body: mode (u16 flags).
+    static func mouseModeRequest(_ mode: SpiceProtocol.MouseMode) -> Data {
+        var w = SpiceByteWriter()
+        w.writeU16(UInt16(mode.rawValue))
+        return w.data
+    }
+
+    /// client_info body: cache_size (u64).
+    static func clientInfo(cacheSize: UInt64) -> Data {
+        var w = SpiceByteWriter()
+        w.writeU64(cacheSize)
+        return w.data
+    }
+
+    /// stream_report body (SPICE_MSGC_DISPLAY_STREAM_REPORT): tells the server
+    /// how the client is keeping up with a video stream so it can adapt the
+    /// bitrate. Fields: stream_id, unique_id, start/end frame mm_time, frames
+    /// received, frames dropped, last-frame delay (ms), audio delay (ms;
+    /// UINT32_MAX = no audio).
+    static func streamReport(streamID: UInt32, uniqueID: UInt32,
+                             startFrameMMTime: UInt32, endFrameMMTime: UInt32,
+                             numFrames: UInt32, numDrops: UInt32,
+                             lastFrameDelay: Int32, audioDelay: UInt32) -> Data {
+        var w = SpiceByteWriter()
+        w.writeU32(streamID); w.writeU32(uniqueID)
+        w.writeU32(startFrameMMTime); w.writeU32(endFrameMMTime)
+        w.writeU32(numFrames); w.writeU32(numDrops)
+        w.writeI32(lastFrameDelay); w.writeU32(audioDelay)
+        return w.data
+    }
+}

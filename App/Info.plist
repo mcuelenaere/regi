@@ -65,5 +65,47 @@
     -->
     <key>NSQuitAlwaysKeepsWindows</key>
     <false/>
+    <!--
+        Register Regi as a handler for virt-viewer console files (.vv), the
+        INI files Proxmox/oVirt hand out for "Console → SPICE". Double-clicking
+        one (or opening it from a browser download) launches Regi and connects.
+        .vv has no system UTI, so we declare an imported type conforming to
+        public.text (the file is INI text).
+    -->
+    <key>UTImportedTypeDeclarations</key>
+    <array>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>app.regi.mac.vv</string>
+            <key>UTTypeDescription</key>
+            <string>SPICE Console File</string>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.text</string>
+            </array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array>
+                    <string>vv</string>
+                </array>
+            </dict>
+        </dict>
+    </array>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>SPICE Console File</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Owner</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>app.regi.mac.vv</string>
+            </array>
+        </dict>
+    </array>
 </dict>
 </plist>

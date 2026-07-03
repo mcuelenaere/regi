@@ -31,13 +31,25 @@ public struct DeviceEndpoint: Sendable, Hashable {
     /// App layer). `nil` for the JetKVM path.
     public let username: String?
 
+    // MARK: - SPICE-only fields (nil for JetKVM/PiKVM)
+
+    /// HTTP CONNECT proxy (Proxmox `spiceproxy`), from the `.vv` `proxy=`.
+    public let spiceProxy: SpiceProxy?
+    /// PEM CA bundle to anchor TLS trust to (Proxmox cluster CA).
+    public let spiceCAPEM: String?
+    /// Expected certificate subject (`host-subject` from the `.vv`).
+    public let spiceHostSubject: String?
+
     public init(
         host: String,
         port: Int = 80,
         useTLS: Bool = false,
         allowSelfSignedCertificate: Bool = false,
         kind: DeviceKind = .jetKVM,
-        username: String? = nil
+        username: String? = nil,
+        spiceProxy: SpiceProxy? = nil,
+        spiceCAPEM: String? = nil,
+        spiceHostSubject: String? = nil
     ) {
         self.host = host
         self.port = port
@@ -45,6 +57,9 @@ public struct DeviceEndpoint: Sendable, Hashable {
         self.allowSelfSignedCertificate = allowSelfSignedCertificate
         self.kind = kind
         self.username = username
+        self.spiceProxy = spiceProxy
+        self.spiceCAPEM = spiceCAPEM
+        self.spiceHostSubject = spiceHostSubject
     }
 
     public func httpURL(path: String, queryItems: [URLQueryItem]? = nil) -> URL {

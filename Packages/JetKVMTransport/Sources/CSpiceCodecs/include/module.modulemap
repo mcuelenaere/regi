@@ -1,0 +1,4 @@
+module CSpiceCodecs {
+    header "CSpiceCodecs.h"
+    export *
+}

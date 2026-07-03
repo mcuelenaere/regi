@@ -38,6 +38,9 @@ public final class Session {
 
     public var state: State { backend?.state ?? .idle }
     public var videoTrack: RTCVideoTrack? { backend?.videoTrack }
+    /// The render source the UI consumes — a WebRTC track or a locally-decoded
+    /// output — without having to know which backend it's talking to.
+    public var videoOutput: KVMVideoOutput? { backend?.videoOutput }
     public var hasReceivedFirstFrame: Bool { backend?.hasReceivedFirstFrame ?? false }
     public var capabilities: KVMCapabilities { backend?.capabilities ?? .none }
     public var latestStats: ConnectionStats? { backend?.latestStats }
@@ -87,6 +90,10 @@ public final class Session {
             return b
         case .piKVM:
             let b = (backend as? PiKVMBackend) ?? PiKVMBackend()
+            backend = b
+            return b
+        case .spice:
+            let b = (backend as? SPICEBackend) ?? SPICEBackend()
             backend = b
             return b
         }

@@ -15,6 +15,9 @@ extension Notification.Name {
     static let regiConnectHost = Notification.Name("RegiConnectHost")
     static let regiEditHost = Notification.Name("RegiEditHost")
     static let regiDeleteHost = Notification.Name("RegiDeleteHost")
+    /// Posted (object: UUID) after a `.vv` file is picked + registered in
+    /// SpiceConsoleStore; HostsView opens a session window for it.
+    static let regiOpenSpiceConsole = Notification.Name("RegiOpenSpiceConsole")
 }
 
 /// Root window: list of saved hosts plus mDNS-discovered devices on
@@ -124,6 +127,20 @@ struct HostsView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .regiAddHost)) { _ in
             showingAdd = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .regiOpenSpiceConsole)) { note in
+            guard let id = note.object as? UUID,
+                  let entry = SpiceConsoleStore.shared.entry(for: id) else { return }
+            SpiceConsoleStore.shared.clearPendingOpen()
+            openWindow(value: KVMSessionWindowID(spiceConsoleID: id, entry: entry))
+        }
+        .onAppear {
+            // Cold launch via a .vv (opened before this window could receive
+            // the notification): open it now.
+            if let id = SpiceConsoleStore.shared.consumePendingOpen(),
+               let entry = SpiceConsoleStore.shared.entry(for: id) {
+                openWindow(value: KVMSessionWindowID(spiceConsoleID: id, entry: entry))
+            }
         }
         // File-menu Connect/Edit/Delete act on the selection. Guarded so
         // they no-op with nothing selected or while a sheet/alert is up.

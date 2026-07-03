@@ -1,6 +1,41 @@
 import Foundation
 import JetKVMProtocol
+import CoreVideo
 import WebRTC
+
+/// One locally-decoded frame ready to present, from a backend that renders
+/// its own video (SPICE) rather than receiving a WebRTC track. Reference type
+/// and `@unchecked Sendable` because `CVPixelBuffer` isn't `Sendable`, but the
+/// producer hands off exclusive ownership across the decode-thread → main-actor
+/// boundary and never mutates it afterward.
+public final class LocalVideoFrame: @unchecked Sendable {
+    public let pixelBuffer: CVPixelBuffer
+    public let width: Int
+    public let height: Int
+    public init(pixelBuffer: CVPixelBuffer, width: Int, height: Int) {
+        self.pixelBuffer = pixelBuffer
+        self.width = width
+        self.height = height
+    }
+}
+
+/// Video output for backends that decode frames locally (SPICE) and present
+/// them directly, with no WebRTC pipeline in between. Mutually exclusive with
+/// `KVMBackend.videoTrack`. The view sets `onFrame`; the backend invokes it
+/// (possibly off the main actor) once per decoded frame. Not `@MainActor`: the
+/// closure is `@Sendable` and the implementation must synchronize its own
+/// storage, since it's set on the main actor but called from the decode path.
+public protocol LocalVideoOutput: AnyObject, Sendable {
+    var onFrame: (@Sendable (LocalVideoFrame) -> Void)? { get set }
+}
+
+/// How a connected backend delivers video, so the UI has one thing to render
+/// instead of probing multiple properties. WebRTC backends (JetKVM, PiKVM)
+/// hand over a track; SPICE hands over a locally-decoded output.
+public enum KVMVideoOutput {
+    case webRTC(RTCVideoTrack)
+    case local(LocalVideoOutput)
+}
 
 /// Which family of KVM device a connection targets. Carried on
 /// `DeviceEndpoint` and used by `Session` to pick the right backend.
@@ -10,6 +45,7 @@ import WebRTC
 public enum DeviceKind: String, Sendable, Codable, Hashable, CaseIterable {
     case jetKVM
     case piKVM
+    case spice
 
     /// Human-facing label for the device family (used in the host list
     /// and the add-host form).
@@ -17,6 +53,7 @@ public enum DeviceKind: String, Sendable, Codable, Hashable, CaseIterable {
         switch self {
         case .jetKVM: return "JetKVM"
         case .piKVM: return "PiKVM"
+        case .spice: return "SPICE"
         }
     }
 }
@@ -109,6 +146,9 @@ public protocol KVMBackend: AnyObject {
     // Observable connection state
     var state: KVMState { get }
     var videoTrack: RTCVideoTrack? { get }
+    /// Locally-decoded video output (SPICE). Nil for WebRTC backends, which
+    /// expose `videoTrack` instead. The two are mutually exclusive.
+    var localVideoOutput: LocalVideoOutput? { get }
     var hasReceivedFirstFrame: Bool { get }
     var capabilities: KVMCapabilities { get }
     var latestStats: ConnectionStats? { get }
@@ -133,4 +173,19 @@ public protocol KVMBackend: AnyObject {
     // Bandwidth gate. JetKVM pauses the encoder feed; PiKVM v1 no-ops.
     func pauseVideo()
     func resumeVideo()
+}
+
+public extension KVMBackend {
+    /// WebRTC backends (JetKVM, PiKVM) render via `videoTrack`, not a local
+    /// output. Only SPICE overrides this.
+    var localVideoOutput: LocalVideoOutput? { nil }
+
+    /// The single render source the UI consumes, derived from whichever
+    /// primitive the backend provides. Backends set `videoTrack` (WebRTC) or
+    /// `localVideoOutput` (SPICE); the view never has to know which.
+    var videoOutput: KVMVideoOutput? {
+        if let track = videoTrack { return .webRTC(track) }
+        if let local = localVideoOutput { return .local(local) }
+        return nil
+    }
 }

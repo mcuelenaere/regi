@@ -186,7 +186,23 @@ struct KVMSessionWindow: View {
     /// the result is stable across window recreations and mDNS-
     /// discovered vs. SavedHost flows.
     private var currentEndpoint: DeviceEndpoint {
-        DeviceEndpoint(
+        // SPICE: build the endpoint from the parsed .vv (proxy / CA /
+        // host-subject) registered in SpiceConsoleStore.
+        if sessionID.kind == .spice, let id = sessionID.spiceConsoleID,
+           let cfg = SpiceConsoleStore.shared.config(for: id),
+           let ep = try? cfg.resolvedEndpoint() {
+            return DeviceEndpoint(
+                host: ep.host,
+                port: Int(ep.port),
+                useTLS: ep.useTLS,
+                allowSelfSignedCertificate: false,
+                kind: .spice,
+                spiceProxy: cfg.proxy.flatMap { SpiceProxy(url: $0) },
+                spiceCAPEM: cfg.caPEM,
+                spiceHostSubject: cfg.hostSubject
+            )
+        }
+        return DeviceEndpoint(
             host: sessionID.host,
             port: sessionID.port,
             useTLS: sessionID.useTLS,
@@ -197,6 +213,13 @@ struct KVMSessionWindow: View {
     }
 
     private func connect() async {
+        // SPICE authenticates with the one-time ticket from the .vv, not a
+        // stored password.
+        if sessionID.kind == .spice, let id = sessionID.spiceConsoleID,
+           let cfg = SpiceConsoleStore.shared.config(for: id) {
+            await session.connect(endpoint: currentEndpoint, password: cfg.password)
+            return
+        }
         let saved = PasswordVault.load(for: sessionID.host)
         await session.connect(endpoint: currentEndpoint, password: saved)
     }
