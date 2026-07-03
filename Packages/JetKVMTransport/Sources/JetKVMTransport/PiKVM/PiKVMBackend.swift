@@ -61,7 +61,7 @@ public final class PiKVMBackend: KVMBackend {
 
         // 1. Authenticate. No password yet → ask the UI for one.
         guard let password, !password.isEmpty else {
-            state = .awaitingPassword(nil)
+            state = .awaitingPassword
             return
         }
 
@@ -72,7 +72,7 @@ public final class PiKVMBackend: KVMBackend {
             try await http.login(user: user, password: password)
         } catch HTTPClientError.unauthorized {
             log.notice("PiKVM login rejected")
-            state = .awaitingPassword(nil)
+            state = .awaitingPassword
             await teardown()
             return
         } catch HTTPClientError.untrustedServerCertificate(let reason) {

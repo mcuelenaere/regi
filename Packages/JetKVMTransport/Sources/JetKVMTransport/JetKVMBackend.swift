@@ -186,13 +186,13 @@ public final class JetKVMBackend: KVMBackend {
                         try await http.login(password: password)
                     } catch HTTPClientError.unauthorized(let msg) {
                         log.notice("login rejected: \(msg ?? "<no message>", privacy: .public)")
-                        state = .awaitingPassword(self.device)
+                        state = .awaitingPassword
                         return
                     }
                     device = try await http.getDevice()
                 } else {
                     log.info("/device 401 with no password supplied → awaiting password from UI")
-                    state = .awaitingPassword(nil)
+                    state = .awaitingPassword
                     return
                 }
             }
@@ -839,12 +839,12 @@ public final class JetKVMBackend: KVMBackend {
                         // Saved password no longer works — fall back
                         // to terminal awaitingPassword so the user can
                         // retype.
-                        state = .awaitingPassword(self.device)
+                        state = .awaitingPassword
                         return
                     }
                     device = try await http.getDevice()
                 } else {
-                    state = .awaitingPassword(nil)
+                    state = .awaitingPassword
                     return
                 }
             }

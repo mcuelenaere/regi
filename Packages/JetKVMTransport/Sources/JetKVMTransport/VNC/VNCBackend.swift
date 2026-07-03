@@ -200,7 +200,7 @@ public final class VNCBackend: KVMBackend {
                 reconnectTask?.cancel()
                 reconnectTask = nil
                 reconnectAttempt = 0
-                state = .awaitingPassword(nil)
+                state = .awaitingPassword
             case .untrustedCertificate(let reason):
                 // Surface the trust-override prompt; the App retries with
                 // allowSelfSignedCertificate once the user accepts.
