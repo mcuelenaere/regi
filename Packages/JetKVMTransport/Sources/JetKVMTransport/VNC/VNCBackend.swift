@@ -3,7 +3,6 @@ import CoreGraphics
 import JetKVMProtocol
 import Observation
 import OSLog
-import WebRTC
 
 private let log = Logger(subsystem: "app.regi.mac", category: "vnc")
 
@@ -36,9 +35,13 @@ public enum VNCPowerAction: Sendable {
 @Observable
 public final class VNCBackend: KVMBackend {
     public private(set) var state: KVMState = .idle
-    /// VNC renders locally, not over WebRTC — no video track.
-    public var videoTrack: RTCVideoTrack? { nil }
-    public var localVideoOutput: LocalVideoOutput? { presenter }
+    /// VNC renders locally, not over WebRTC. The renderer consumes the
+    /// presenter's decoded frames; built once, reused across reconnects (the
+    /// presenter instance is stable).
+    public var videoRenderer: (any KVMVideoRenderer)? { localRenderer }
+    // Never reassigned (the presenter is stable), so it needs no observation;
+    // `lazy` also isn't allowed on an @Observable stored property.
+    @ObservationIgnored private lazy var localRenderer = LocalVideoRenderer(source: presenter)
     public private(set) var hasReceivedFirstFrame: Bool = false
     /// `atxPower` is advertised only once the server negotiates XVP (which
     /// requires it to run with power control enabled), so the power UI stays
@@ -295,9 +298,9 @@ public final class VNCBackend: KVMBackend {
             await conn.close()
         }
         connection = nil
-        // Note: we do NOT clear `presenter.onFrame` — the view owns that via
-        // attach/detach, and clearing it here would stop frames after a
-        // reconnect (attach() early-returns for the same presenter instance).
+        // Note: we do NOT tear down `localRenderer` here — it's wired to the
+        // stable `presenter` and reused across reconnects. The host view calls
+        // `videoRenderer.detach()` when the window closes.
     }
 
     private func wireCallbacks(_ engine: VNCStreamEngine) {
