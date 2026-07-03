@@ -173,7 +173,18 @@ struct ControlPanel: View {
 
     // MARK: - Clipboard sync
 
+    @ViewBuilder
     private var clipboardSection: some View {
+        // VNC exposes a text-only clipboard surface; JetKVM uses the agent
+        // bridge. Only one is non-nil at a time.
+        if let textClipboard = session.textClipboard {
+            vncClipboardSection(textClipboard)
+        } else {
+            jetKVMClipboardSection
+        }
+    }
+
+    private var jetKVMClipboardSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text("Clipboard sync").font(.headline)
@@ -190,6 +201,29 @@ struct ControlPanel: View {
                     .foregroundStyle(.secondary)
             } else if clipboardSyncEnabled {
                 Text("Every local clipboard write while this is on flows to the host. Password-manager copies marked transient are skipped.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func vncClipboardSection(_ clipboard: VNCTextClipboard) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Clipboard sync").font(.headline)
+                Spacer()
+                Text(clipboard.supportsUTF8 ? "UTF-8 clipboard" : "Basic clipboard")
+                    .font(.caption)
+                    .foregroundStyle(clipboard.isAvailable ? .green : .secondary)
+            }
+            Toggle("Sync text clipboard with guest", isOn: $clipboardSyncEnabled)
+                .disabled(!clipboard.isAvailable)
+            if !clipboard.isAvailable {
+                Text("Connect to sync the clipboard.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if clipboardSyncEnabled {
+                Text("Text-only sync, both directions. UTF-8 needs a guest clipboard agent (e.g. spice-vdagent with `-vga …,clipboard=vnc`); otherwise Latin-1 only. Password-manager copies marked transient are skipped.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

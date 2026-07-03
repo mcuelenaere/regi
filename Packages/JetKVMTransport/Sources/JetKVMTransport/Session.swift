@@ -38,6 +38,10 @@ public final class Session {
 
     public var state: State { backend?.state ?? .idle }
     public var videoTrack: RTCVideoTrack? { backend?.videoTrack }
+    /// The single render source the UI consumes — a WebRTC track (JetKVM,
+    /// PiKVM) or a locally-decoded output (VNC). The view switches on this
+    /// instead of probing `videoTrack` directly.
+    public var videoOutput: KVMVideoOutput? { backend?.videoOutput }
     public var hasReceivedFirstFrame: Bool { backend?.hasReceivedFirstFrame ?? false }
     public var capabilities: KVMCapabilities { backend?.capabilities ?? .none }
     public var latestStats: ConnectionStats? { backend?.latestStats }
@@ -54,6 +58,10 @@ public final class Session {
     public var failsafe: FailsafeModeNotification? { jetKVM?.failsafe }
     public var clipboardAgentState: ClipboardAgentState { jetKVM?.clipboardAgentState ?? .absent }
     public var clipboardBridge: ClipboardBridge? { jetKVM?.clipboardBridge }
+
+    /// VNC's text-only clipboard surface (nil for other backends). The
+    /// App-layer `VNCClipboardSyncManager` binds to it.
+    public var textClipboard: VNCTextClipboard? { (backend as? VNCBackend)?.textClipboard }
 
     /// Down-cast to the JetKVM backend. The read of `backend` keeps
     /// Observation tracking intact for the forwarded properties above.
@@ -87,6 +95,10 @@ public final class Session {
             return b
         case .piKVM:
             let b = (backend as? PiKVMBackend) ?? PiKVMBackend()
+            backend = b
+            return b
+        case .vnc:
+            let b = (backend as? VNCBackend) ?? VNCBackend()
             backend = b
             return b
         }

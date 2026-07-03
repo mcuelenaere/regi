@@ -35,7 +35,9 @@ final class ClipboardSyncManager {
         didSet { reconcile() }
     }
 
-    private var pollTimer: Timer?
+    /// Watches the local pasteboard (poll + activation hot-checks, echo &
+    /// concealed-write suppression). Shared with the VNC sync manager.
+    private let monitor = PasteboardMonitor()
     /// Long-lived inbound-offer consumer task. Spawned once per
     /// `ClipboardBridge` instance (tracked via `inboundTaskBridgeID`),
     /// not per start/stop cycle: `AsyncStream<T>` is single-iteration
@@ -47,24 +49,6 @@ final class ClipboardSyncManager {
     /// manager is inactive.
     private var inboundTask: Task<Void, Never>?
     private var inboundTaskBridgeID: ObjectIdentifier?
-    private var notificationTokens: [NSObjectProtocol] = []
-
-    /// changeCount value we ourselves caused by applying an inbound
-    /// offer; the next poll tick skips it so we don't echo back what
-    /// we just received.
-    private var lastAppliedInboundChangeCount: Int = NSPasteboard.general.changeCount
-
-    /// changeCount we've already considered as a possible outbound
-    /// trigger. Reset whenever the manager goes active.
-    private var lastObservedChangeCount: Int = NSPasteboard.general.changeCount
-
-    /// macOS clipboard-utility convention: items typed as
-    /// `org.nspasteboard.ConcealedType` are password-manager
-    /// "transient" writes that explicitly opt out of sync. We honour
-    /// it on outbound — 1Password / Bitwarden / Keychain all set it.
-    private static let concealedPasteboardType = NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")
-
-    static let pollInterval: TimeInterval = 0.5
 
     init(session: Session, initialEnabled: Bool) {
         self.session = session
@@ -72,34 +56,12 @@ final class ClipboardSyncManager {
 
         log.info("[MANAGER] init: initialEnabled=\(initialEnabled, privacy: .public) agentState=\(session.clipboardAgentState.rawValue, privacy: .public) bridge=\(session.clipboardBridge == nil ? "nil" : "set", privacy: .public) changeCount=\(NSPasteboard.general.changeCount, privacy: .public)")
 
-        // Hot-path event taps. macOS gives us no NSPasteboard-changed
-        // notification but we can opportunistically check at moments
-        // the user is likely to have just copied something elsewhere.
-        let nc = NotificationCenter.default
-        notificationTokens.append(nc.addObserver(
-            forName: NSApplication.didBecomeActiveNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor in self?.checkLocalClipboard() }
-        })
-        notificationTokens.append(nc.addObserver(
-            forName: NSWindow.didBecomeKeyNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor in self?.checkLocalClipboard() }
-        })
+        monitor.onLocalChange = { [weak self] _ in self?.checkLocalClipboard() }
 
         reconcile()
     }
 
     deinit {
-        // NotificationCenter handles main-thread removal safely.
-        for token in notificationTokens {
-            NotificationCenter.default.removeObserver(token)
-        }
-        pollTimer?.invalidate()
         inboundTask?.cancel()
     }
 
@@ -188,18 +150,10 @@ final class ClipboardSyncManager {
         // outbound-request reads find it.
         bridge.source = source
 
-        // Reset baselines so we don't immediately ship whatever is
-        // currently on the pasteboard.
-        lastObservedChangeCount = NSPasteboard.general.changeCount
-        lastAppliedInboundChangeCount = NSPasteboard.general.changeCount
-
-        pollTimer = Timer.scheduledTimer(
-            withTimeInterval: Self.pollInterval,
-            repeats: true
-        ) { [weak self] _ in
-            Task { @MainActor in self?.checkLocalClipboard() }
-        }
-        log.debug("[MANAGER] start: poll timer started (\(Self.pollInterval, privacy: .public)s)")
+        // The monitor resets its own baselines on start, so we don't
+        // immediately ship whatever is currently on the pasteboard.
+        monitor.start()
+        log.debug("[MANAGER] start: pasteboard monitor started")
 
         // The inbound-offers consumer task is owned by
         // `ensureInboundConsumer()` (per-bridge lifetime). Don't
@@ -220,9 +174,8 @@ final class ClipboardSyncManager {
     }
 
     private func stop() {
-        log.debug("[MANAGER] stop: tearing down poll timer")
-        pollTimer?.invalidate()
-        pollTimer = nil
+        log.debug("[MANAGER] stop: stopping pasteboard monitor")
+        monitor.stop()
         // Don't cancel inboundTask — see ensureInboundConsumer().
         // applyInboundOffer's isActive guard drops anything that
         // arrives while we're inactive.
@@ -234,29 +187,11 @@ final class ClipboardSyncManager {
 
     // MARK: - Outbound (local change → host)
 
+    /// Called by the pasteboard monitor for a genuine local change (echo and
+    /// concealed-write filtering already applied by the monitor).
     private func checkLocalClipboard() {
         guard isActive else { return }
-        let pb = NSPasteboard.general
-        let count = pb.changeCount
-
-        guard count != lastObservedChangeCount else { return }
-        log.debug("[MANAGER] checkLocalClipboard: changeCount advanced \(self.lastObservedChangeCount, privacy: .public) → \(count, privacy: .public)")
-        lastObservedChangeCount = count
-
-        // Suppress the echo from our own inbound apply.
-        if count == lastAppliedInboundChangeCount {
-            log.debug("[MANAGER] checkLocalClipboard: \(count, privacy: .public) matches lastAppliedInboundChangeCount; suppressing echo")
-            return
-        }
-
-        // Respect the concealed-paste convention.
-        if let types = pb.types, types.contains(Self.concealedPasteboardType) {
-            log.debug("[MANAGER] checkLocalClipboard: outbound suppressed (concealed type present)")
-            return
-        }
-
-        let types = (pb.types ?? []).map(\.rawValue).joined(separator: ",")
-        log.debug("[MANAGER] checkLocalClipboard: dispatching sendOffer (types=[\(types, privacy: .public)])")
+        log.debug("[MANAGER] checkLocalClipboard: dispatching sendOffer")
         Task { @MainActor [weak self] in
             await self?.session.clipboardBridge?.sendOffer()
         }
@@ -288,8 +223,7 @@ final class ClipboardSyncManager {
             applied.append((format.mime, type.rawValue, format.data.count))
         }
         let newCount = pb.changeCount
-        lastAppliedInboundChangeCount = newCount
-        lastObservedChangeCount = newCount
+        monitor.noteApplied(changeCount: newCount)
 
         let appliedDesc = applied.map { "\($0.mime)→\($0.type)(\($0.size))" }.joined(separator: ", ")
         let droppedDesc = dropped.joined(separator: ", ")

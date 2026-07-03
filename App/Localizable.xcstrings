@@ -28,6 +28,9 @@
     "Auto" : {
 
     },
+    "Basic clipboard" : {
+
+    },
     "Cancel" : {
 
     },
@@ -50,6 +53,9 @@
 
     },
     "Connect" : {
+
+    },
+    "Connect to sync the clipboard." : {
 
     },
     "Connection lost — reconnecting (attempt %lld)…" : {
@@ -116,12 +122,6 @@
 
     },
     "Hosts" : {
-
-    },
-    "https://kvm.local or kvm.local" : {
-
-    },
-    "https://pikvm.local or pikvm.local" : {
 
     },
     "Incompatible resolution or refresh rate settings" : {
@@ -232,10 +232,16 @@
     "Sync local clipboard with host" : {
 
     },
+    "Sync text clipboard with guest" : {
+
+    },
     "t" : {
 
     },
     "Takes effect on next reconnect." : {
+
+    },
+    "Text-only sync, both directions. UTF-8 needs a guest clipboard agent (e.g. spice-vdagent with `-vga …,clipboard=vnc`); otherwise Latin-1 only. Password-manager copies marked transient are skipped." : {
 
     },
     "The connected computer is powered off or asleep" : {
@@ -254,6 +260,9 @@
 
     },
     "Username" : {
+
+    },
+    "UTF-8 clipboard" : {
 
     },
     "v" : {
