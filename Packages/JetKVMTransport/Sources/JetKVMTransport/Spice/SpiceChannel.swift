@@ -52,10 +52,22 @@ class SpiceChannel {
 
     // MARK: - Loop
 
+    /// A read blocked this long before the next message arrived means the
+    /// server's previous batch is fully delivered — a natural frame boundary.
+    private static let batchBoundaryNanos: UInt64 = 3_000_000   // 3 ms
+
+    /// Called on the read loop when the connection was idle before the next
+    /// message (the previous batch finished). Subclasses emit a frame here so
+    /// snapshots land on server batch boundaries, not mid-batch (which tears).
+    func didReachBatchBoundary() async {}
+
     private func runLoop() async {
         do {
             while !Task.isCancelled {
+                let waitStart = DispatchTime.now().uptimeNanoseconds
                 let (type, payload) = try await connection.receive()
+                let idle = DispatchTime.now().uptimeNanoseconds &- waitStart
+                if idle >= Self.batchBoundaryNanos { await didReachBatchBoundary() }
                 await dispatch(type: type, payload: payload)
             }
         } catch {

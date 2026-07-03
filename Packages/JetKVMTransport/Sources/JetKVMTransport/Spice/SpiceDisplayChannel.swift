@@ -207,21 +207,36 @@ final class SpiceDisplayChannel: SpiceChannel {
         lastDrawNanos = DispatchTime.now().uptimeNanoseconds
     }
 
+    /// Emit at a server batch boundary (read loop went idle) — the surface is
+    /// in a complete, between-frames state, so this is the tear-free moment to
+    /// snapshot. This is the primary emit path for active content.
+    override func didReachBatchBoundary() async {
+        snapshotAndEmit()
+    }
+
     /// Snapshot + emit the primary surface once a draw burst has settled (or the
-    /// latency cap is hit), so we don't capture a half-drawn frame (tearing).
-    /// Internal so tests can drive it deterministically without the timer.
+    /// latency cap is hit). The timer fallback for the trailing frame after
+    /// activity stops, and for a continuous firehose that never yields a batch
+    /// boundary. Internal so tests can drive it deterministically.
     func emitIfDirty() {
+        let now = DispatchTime.now().uptimeNanoseconds
+        lock.lock()
+        let settled = now &- lastDrawNanos >= Self.quietNanos
+        let latencyCap = now &- lastEmitNanos >= Self.maxLatencyNanos
+        guard settled || latencyCap else { lock.unlock(); return }
+        lock.unlock()
+        snapshotAndEmit()
+    }
+
+    /// Take the lock, and if dirty, snapshot the primary surface and emit it.
+    private func snapshotAndEmit() {
         lock.lock()
         guard dirty, let id = primaryID, let surface = surfaces[id] else {
             lock.unlock()
             return
         }
-        let now = DispatchTime.now().uptimeNanoseconds
-        let settled = now &- lastDrawNanos >= Self.quietNanos
-        let latencyCap = now &- lastEmitNanos >= Self.maxLatencyNanos
-        guard settled || latencyCap else { lock.unlock(); return }
         dirty = false
-        lastEmitNanos = now
+        lastEmitNanos = DispatchTime.now().uptimeNanoseconds
         stats.emittedFrames += 1
         let frame = SpiceFrame(width: surface.width, height: surface.height, bgra: surface.pixels)
         lock.unlock()
