@@ -40,6 +40,7 @@ enum SpiceProtocol {
         case codecMJPEG = 9
         case codecVP8 = 10
         case codecH264 = 11
+        case prefVideoCodecType = 12
         case codecVP9 = 13
         case codecH265 = 14
     }

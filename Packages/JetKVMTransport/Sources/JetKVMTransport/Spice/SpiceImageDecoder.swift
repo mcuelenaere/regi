@@ -18,6 +18,12 @@ final class SpiceImageDecoder {
     private var cacheOrder: [UInt64] = []
     private let cacheLimit = 1024
 
+    // Cached DHT (Huffman table) segments from an MJPEG video stream. SPICE
+    // sends the tables only in the first frame ("abbreviated" JPEG stream);
+    // later frames omit them and expect the decoder to reuse them. ImageIO
+    // decodes every frame standalone and fails without tables, so we re-inject.
+    private var cachedHuffmanTables: [UInt8] = []
+
     init() { glzWindow = regi_glz_window_new() }
     deinit { regi_glz_window_free(glzWindow) }
 
@@ -28,7 +34,46 @@ final class SpiceImageDecoder {
     }
 
     /// Decode one MJPEG video-stream frame (a JPEG) to BGRA.
-    func decodeMJPEGFrame(_ data: [UInt8]) -> Decoded? { decodeJPEG(data) }
+    func decodeMJPEGFrame(_ data: [UInt8]) -> Decoded? { decodeJPEG(ensureHuffmanTables(data)) }
+
+    /// Ensure an MJPEG frame carries Huffman tables. Caches the DHT segments
+    /// from frames that have them; splices the cached ones in just before the
+    /// SOS marker for frames that don't. Returns `data` unchanged when the
+    /// frame already has tables, or when none have been seen yet.
+    /// Internal so tests can exercise the caching/splicing directly.
+    func ensureHuffmanTables(_ data: [UInt8]) -> [UInt8] {
+        var i = 0
+        let n = data.count
+        var sosOffset = -1
+        var dhtRanges: [(Int, Int)] = []
+        while i + 1 < n {
+            guard data[i] == 0xFF else { i += 1; continue }
+            let marker = data[i + 1]
+            if marker == 0xFF { i += 1; continue }                       // fill byte
+            if marker == 0xD8 || marker == 0x01 || (0xD0...0xD7).contains(marker) {
+                i += 2; continue                                         // standalone marker
+            }
+            if marker == 0xD9 { break }                                  // EOI
+            guard i + 3 < n else { break }
+            let segLen = (Int(data[i + 2]) << 8) | Int(data[i + 3])
+            if marker == 0xC4 { dhtRanges.append((i, i + 2 + segLen)) }  // DHT
+            if marker == 0xDA { sosOffset = i; break }                   // SOS — scan begins
+            i += 2 + segLen
+        }
+
+        if !dhtRanges.isEmpty {
+            var tables: [UInt8] = []
+            for (start, end) in dhtRanges where end <= n { tables.append(contentsOf: data[start..<end]) }
+            cachedHuffmanTables = tables
+            return data
+        }
+
+        guard sosOffset >= 0, !cachedHuffmanTables.isEmpty else { return data }
+        var out = Array(data[0..<sosOffset])
+        out.append(contentsOf: cachedHuffmanTables)
+        out.append(contentsOf: data[sosOffset..<n])
+        return out
+    }
 
     func decode(_ image: SpiceImage) -> Decoded? {
         if image.type == .fromCache {

@@ -120,6 +120,16 @@ final class SpiceDisplayChannel: SpiceChannel {
         w.writeU8(1)
         w.writeU32(UInt32(1024 * 1024))        // 1M-pixel GLZ window
         try? await send(type: SpiceMsg.DisplayClient.initMsg.rawValue, payload: w.data)
+
+        // Tell the server which video codecs we can decode, in preference
+        // order. Modern (gstreamer) servers advertise PREF_VIDEO_CODEC_TYPE
+        // and only stream video once they receive this — the legacy CODEC_*
+        // caps are ignored. Payload: num_codecs (u8) + codec types (u8 each).
+        var codecs = SpiceByteWriter()
+        let preferred: [SpiceProtocol.VideoCodec] = [.h264, .mjpeg]
+        codecs.writeU8(UInt8(preferred.count))
+        for c in preferred { codecs.writeU8(c.rawValue) }
+        try? await send(type: SpiceMsg.DisplayClient.preferredVideoCodecType.rawValue, payload: codecs.data)
     }
 
     override func handle(type: UInt16, payload: Data) async {
@@ -169,8 +179,6 @@ final class SpiceDisplayChannel: SpiceChannel {
                 streams[s.streamID] = Stream(codec: s.codec, dest: s.dest)
                 lock.unlock()
                 if s.codec == .h264 { h264Decoders[s.streamID] = SpiceH264Decoder() }
-                let supported = s.codec == .mjpeg || s.codec == .h264
-                log.notice("SPICE stream \(s.streamID) create codec=\(String(describing: s.codec), privacy: .public) dest=\(s.dest.width)x\(s.dest.height)\(supported ? "" : " (unsupported)", privacy: .public)")
 
             case .streamData:
                 let d = try SpiceMsgStreamData.parse(payload)
@@ -201,10 +209,11 @@ final class SpiceDisplayChannel: SpiceChannel {
 
             case .drawCopy:
                 let copy = try SpiceDrawCopy.parse(payload)
+                guard let image = copy.image else { return }
                 // Decode outside the lock (the decoder is only touched here).
-                guard let image = copy.image, let decoded = decoder.decode(image) else { return }
+                let decoded = decoder.decode(image)
                 lock.lock()
-                if let surface = surfaces[copy.base.surfaceID] {
+                if let decoded, let surface = surfaces[copy.base.surfaceID] {
                     surface.blit(src: decoded.pixels, srcWidth: decoded.width, srcHeight: decoded.height,
                                  srcArea: copy.srcArea, dest: copy.base.box)
                     if copy.base.surfaceID == primaryID { dirty = true }

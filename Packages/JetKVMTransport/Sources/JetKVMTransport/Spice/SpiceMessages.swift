@@ -78,6 +78,9 @@ enum SpiceMsg {
     enum DisplayClient: UInt16 {
         case initMsg = 101
         case streamReport = 102
+        case preferredCompression = 103
+        case glDrawDone = 104
+        case preferredVideoCodecType = 105
     }
 
     /// SPICE image compression / encoding types (`enum8 image_type`).

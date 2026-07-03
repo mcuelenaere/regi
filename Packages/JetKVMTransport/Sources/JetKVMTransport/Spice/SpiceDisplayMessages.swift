@@ -55,9 +55,13 @@ struct SpiceDisplayBase: Equatable {
     static func read(_ r: inout SpiceByteReader) throws -> SpiceDisplayBase {
         let surfaceID = try r.readU32()
         let box = try SpiceRect.read(&r)
-        // Clip: type u8; RECTS(1) carries a u32 pointer we skip.
+        // Clip: type u8; RECTS(1) carries an INLINE ClipRects — num_rects
+        // (u32) followed by that many 16-byte Rects — not a pointer.
         let clipType = try r.readU8()
-        if clipType == 1 { _ = try r.readU32() }   // @to_ptr offset
+        if clipType == 1 {
+            let numRects = try r.readU32()
+            try r.skip(Int(numRects) * 16)
+        }
         return SpiceDisplayBase(surfaceID: surfaceID, box: box)
     }
 }
@@ -139,6 +143,8 @@ struct SpiceDrawCopy {
     var base: SpiceDisplayBase
     var srcArea: SpiceRect
     var image: SpiceImage?
+    /// Raw src_bitmap offset (0 = NULL) — kept for diagnostics.
+    var srcBitmapOffset: UInt32
 
     static func parse(_ data: Data) throws -> SpiceDrawCopy {
         var r = SpiceByteReader(data)
@@ -150,7 +156,8 @@ struct SpiceDrawCopy {
         // QMask: flags u8, pos (2×i32), bitmap ptr u32 — skipped in v1.
         _ = try r.readU8(); _ = try r.readI32(); _ = try r.readI32(); _ = try r.readU32()
         let image = try SpiceImage.parse(payloadData: data, at: Int(srcBitmapOffset))
-        return SpiceDrawCopy(base: base, srcArea: srcArea, image: image)
+        return SpiceDrawCopy(base: base, srcArea: srcArea, image: image,
+                             srcBitmapOffset: srcBitmapOffset)
     }
 }
 

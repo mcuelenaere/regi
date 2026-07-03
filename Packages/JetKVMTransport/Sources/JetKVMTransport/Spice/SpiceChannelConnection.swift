@@ -189,15 +189,18 @@ actor SpiceChannelConnection {
     private static func channelCaps(for channel: SpiceProtocol.ChannelType) -> SpiceCaps {
         switch channel {
         case .display:
-            // Only advertise codecs we can actually decode — the server picks
-            // from these. H.264 (VideoToolbox) is preferred by modern
-            // gstreamer-based servers; MJPEG is the fallback.
+            // Advertise both codec-negotiation mechanisms: the legacy
+            // per-codec caps AND PREF_VIDEO_CODEC_TYPE (modern gstreamer
+            // servers use the latter — they ignore CODEC_* and instead expect
+            // a PREFERRED_VIDEO_CODEC_TYPE message, which the display channel
+            // sends on connect). Only codecs we can decode (H.264, MJPEG).
             return SpiceCaps(bits: [
                 SpiceProtocol.DisplayCap.sizedStream.rawValue,
                 SpiceProtocol.DisplayCap.streamReport.rawValue,
                 SpiceProtocol.DisplayCap.multiCodec.rawValue,
                 SpiceProtocol.DisplayCap.codecMJPEG.rawValue,
                 SpiceProtocol.DisplayCap.codecH264.rawValue,
+                SpiceProtocol.DisplayCap.prefVideoCodecType.rawValue,
             ])
         default:
             return SpiceCaps()

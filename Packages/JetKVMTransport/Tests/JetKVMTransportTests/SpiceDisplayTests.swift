@@ -80,6 +80,41 @@ final class SpiceDisplayTests: XCTestCase {
         XCTAssertEqual(Array(surface.pixels.suffix(4)), [100, 110, 120, 0xFF])
     }
 
+    /// DRAW_COPY with a RECTS clip: the clip is inline (num_rects + rects),
+    /// so src_bitmap must still resolve. Regression for the "only first frame"
+    /// bug where a RECTS clip was mis-sized as a 4-byte pointer.
+    func testDrawCopyWithRectsClipResolvesImage() throws {
+        let W = 2, H = 2
+        let bmp: [UInt8] = [10, 20, 30, 0, 40, 50, 60, 0, 70, 80, 90, 0, 100, 110, 120, 0]
+
+        var p = SpiceByteWriter()
+        // DisplayBase with a RECTS clip (1 rect): 4 + 16 + 1 + 4 + 16 = 41.
+        p.writeU32(0)
+        writeRect(&p, top: 0, left: 0, bottom: Int32(H), right: Int32(W))
+        p.writeU8(1)                       // clip type RECTS
+        p.writeU32(1)                      // num_rects
+        writeRect(&p, top: 0, left: 0, bottom: Int32(H), right: Int32(W))  // the rect
+        // Copy fixed part = 36 → image at 41 + 36 = 77.
+        let imageOffset: UInt32 = 77
+        p.writeU32(imageOffset)            // src_bitmap
+        writeRect(&p, top: 0, left: 0, bottom: Int32(H), right: Int32(W))  // src_area
+        p.writeU16(0); p.writeU8(0)        // rop, scale
+        p.writeU8(0); p.writeI32(0); p.writeI32(0); p.writeU32(0)          // QMask
+        XCTAssertEqual(p.count, Int(imageOffset), "header size must match src_bitmap offset")
+        p.writeU64(0)                      // image id
+        p.writeU8(SpiceMsg.ImageType.bitmap.rawValue)
+        p.writeU8(0)
+        p.writeU32(UInt32(W)); p.writeU32(UInt32(H))
+        p.writeU8(8); p.writeU8(0x04); p.writeU32(UInt32(W)); p.writeU32(UInt32(H))
+        p.writeU32(UInt32(W * 4)); p.writeU32(0)
+        p.writeBytes(bmp)
+
+        let copy = try SpiceDrawCopy.parse(p.data)
+        XCTAssertEqual(copy.srcBitmapOffset, imageOffset)
+        let image = try XCTUnwrap(copy.image, "src_bitmap must resolve past a RECTS clip")
+        XCTAssertEqual(image.type, .bitmap)
+    }
+
     func testDrawFillParseAndFill() throws {
         var p = SpiceByteWriter()
         p.writeU32(0)
@@ -165,6 +200,33 @@ final class SpiceDisplayTests: XCTestCase {
         XCTAssertEqual(frame.width, 2)
         XCTAssertEqual(frame.height, 2)
         XCTAssertEqual(Array(frame.bgra.prefix(4)), [0x33, 0x22, 0x11, 0xFF])
+    }
+
+    /// SPICE MJPEG streams send Huffman tables only in the first frame and
+    /// omit them thereafter; ImageIO decodes each frame standalone and rejects
+    /// the table-less ones. The decoder must cache the DHT and splice it back.
+    func testMJPEGHuffmanTableSplicing() {
+        // SOI + DQT + DHT + SOF0 + SOS(+scan) + EOI, with distinctive segment
+        // bytes so we can assert the splice point and content.
+        let dqt: [UInt8] = [0xFF, 0xDB, 0x00, 0x04, 0xAA, 0xBB]
+        let dht: [UInt8] = [0xFF, 0xC4, 0x00, 0x05, 0x11, 0x22, 0x33]
+        let sof: [UInt8] = [0xFF, 0xC0, 0x00, 0x04, 0x08, 0x00]
+        let sos: [UInt8] = [0xFF, 0xDA, 0x00, 0x03, 0x01] + [0x99, 0x99]  // scan data
+        let eoi: [UInt8] = [0xFF, 0xD9]
+        let soi: [UInt8] = [0xFF, 0xD8]
+
+        let decoder = SpiceImageDecoder()
+
+        // First frame has the DHT: returned unchanged, tables cached.
+        let firstFrame = soi + dqt + dht + sof + sos + eoi
+        XCTAssertEqual(decoder.ensureHuffmanTables(firstFrame), firstFrame)
+
+        // Later frame omits the DHT: the cached DHT is spliced in right before
+        // the SOS marker, leaving everything else intact.
+        let laterFrame = soi + dqt + sof + sos + eoi
+        let fixed = decoder.ensureHuffmanTables(laterFrame)
+        let expected = soi + dqt + sof + dht + sos + eoi
+        XCTAssertEqual(fixed, expected)
     }
 
     func testFromCacheReusesDecodedImage() {
