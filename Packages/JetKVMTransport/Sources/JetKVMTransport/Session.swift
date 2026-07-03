@@ -50,7 +50,6 @@ public final class Session {
     public var rpcReady: Bool { jetKVM?.rpcReady ?? false }
     public var videoState: VideoState? { jetKVM?.videoState }
     public var usbState: String? { jetKVM?.usbState }
-    public var atxState: ATXState? { jetKVM?.atxState }
     public var streamQualityFactor: Double? { jetKVM?.streamQualityFactor }
     public var videoCodecPreference: VideoCodecPreference? { jetKVM?.videoCodecPreference }
     public var failsafe: FailsafeModeNotification? { jetKVM?.failsafe }
@@ -61,10 +60,19 @@ public final class Session {
     /// App-layer `VNCClipboardSyncManager` binds to it.
     public var textClipboard: VNCTextClipboard? { (backend as? VNCBackend)?.textClipboard }
 
-    /// Send a VNC XVP power action (shutdown/reboot/reset). No-op on non-VNC
-    /// backends or when the server didn't negotiate XVP.
-    public func sendVNCPowerAction(_ action: VNCPowerAction) {
-        (backend as? VNCBackend)?.sendPowerAction(action)
+    // MARK: - Power control (backend-agnostic)
+
+    /// Power actions the active backend can perform right now — empty when it
+    /// has none, so the App hides the Power section. The App renders one button
+    /// per action and switches display copy on the case.
+    public var availablePowerActions: [KVMPowerAction] { backend?.availablePowerActions ?? [] }
+    /// Front-panel power-LED state, or nil when the backend can't report it.
+    public var powerIndicator: Bool? { backend?.powerIndicator }
+
+    /// Perform a power action on the active backend. No-op when the backend
+    /// doesn't support it.
+    public func sendPowerAction(_ action: KVMPowerAction) async throws {
+        try await backend?.sendPowerAction(action)
     }
 
     /// Down-cast to the JetKVM backend. The read of `backend` keeps
@@ -148,11 +156,6 @@ public final class Session {
     // These forward to the JetKVM backend when present. On other
     // backends the corresponding UI is hidden via `capabilities`, so
     // these are no-ops/neutral rather than errors.
-
-    public func setATXPowerAction(_ action: ATXPowerAction) async throws {
-        guard let jetKVM else { return }
-        try await jetKVM.setATXPowerAction(action)
-    }
 
     public func updateStreamQualityFactor(_ factor: Double) async {
         await jetKVM?.updateStreamQualityFactor(factor)

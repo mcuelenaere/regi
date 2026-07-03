@@ -6,23 +6,6 @@ import OSLog
 
 private let log = Logger(subsystem: "app.regi.mac", category: "vnc")
 
-/// A VNC XVP power-control action. QEMU implements `shutdown` (ACPI) and
-/// `reset` (hard); it rejects `reboot` with an XVP FAIL, though other servers
-/// may honour it.
-public enum VNCPowerAction: Sendable {
-    case shutdown
-    case reboot
-    case reset
-
-    var wireAction: UInt8 {
-        switch self {
-        case .shutdown: return RFBProtocol.XVP.actionShutdown
-        case .reboot: return RFBProtocol.XVP.actionReboot
-        case .reset: return RFBProtocol.XVP.actionReset
-        }
-    }
-}
-
 /// RFB 3.8 backend for standalone VNC servers (QEMU/libvirt `-vnc`, and Proxmox
 /// VMs reached via their QEMU VNC port). Decodes the framebuffer locally and
 /// presents it through `LocalVideoOutput` — no WebRTC. Reached through the
@@ -43,17 +26,21 @@ public final class VNCBackend: KVMBackend {
     // `lazy` also isn't allowed on an @Observable stored property.
     @ObservationIgnored private lazy var localRenderer = LocalVideoRenderer(source: presenter)
     public private(set) var hasReceivedFirstFrame: Bool = false
-    /// `atxPower` is advertised only once the server negotiates XVP (which
-    /// requires it to run with power control enabled), so the power UI stays
-    /// hidden otherwise.
     public var capabilities: KVMCapabilities {
-        KVMCapabilities(atxPower: xvpAvailable, clipboardSync: true, pauseResume: true)
+        KVMCapabilities(clipboardSync: true, pauseResume: true)
+    }
+    /// XVP power control (shutdown/reset), advertised only once the server
+    /// negotiates XVP — which requires it to run with power control enabled —
+    /// so the Power section stays hidden otherwise. QEMU honours shutdown and
+    /// reset but rejects reboot, so we don't offer it.
+    public var availablePowerActions: [KVMPowerAction] {
+        xvpAvailable ? [.shutdown, .reset] : []
     }
     public private(set) var latestStats: ConnectionStats?
     public private(set) var statsHistory: [ConnectionStats] = []
 
-    /// Set when the server sends an XVP INIT — power control (shutdown/reset)
-    /// is available. Drives `capabilities.atxPower`.
+    /// Set when the server sends an XVP INIT — power control is available.
+    /// Drives `availablePowerActions`.
     private(set) var xvpAvailable = false
 
     /// Text clipboard surface bound by the App-layer sync manager.
@@ -335,11 +322,18 @@ public final class VNCBackend: KVMBackend {
         }
     }
 
-    /// Send an XVP power action. No-op unless connected and the server
-    /// negotiated XVP.
-    public func sendPowerAction(_ action: VNCPowerAction) {
+    /// Send an XVP power action. No-op unless connected, the server negotiated
+    /// XVP, and the action maps to a supported XVP op.
+    public func sendPowerAction(_ action: KVMPowerAction) {
         guard case .connected = state, xvpAvailable else { return }
-        enqueue(RFBProtocol.xvp(action: action.wireAction))
+        let wire: UInt8
+        switch action {
+        case .shutdown: wire = RFBProtocol.XVP.actionShutdown
+        case .reboot: wire = RFBProtocol.XVP.actionReboot
+        case .reset: wire = RFBProtocol.XVP.actionReset
+        case .powerButtonShort, .powerButtonLong: return  // not XVP actions
+        }
+        enqueue(RFBProtocol.xvp(action: wire))
     }
 
     // MARK: - Clipboard

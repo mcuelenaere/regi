@@ -103,26 +103,41 @@ public enum KVMState: Equatable, Sendable {
     }
 }
 
+/// A power-control action a backend can perform. Semantic, not wire-level:
+/// each backend maps the cases it supports to its own protocol (JetKVM ATX RPC,
+/// VNC XVP). The App renders a button per `KVMBackend.availablePowerActions`
+/// and switches display copy on the case, so the panel needs no per-backend
+/// branching.
+public enum KVMPowerAction: String, Sendable, CaseIterable {
+    /// Momentary power-button press — clean power-on / ACPI power-off.
+    case powerButtonShort
+    /// Held power-button press — force power-off.
+    case powerButtonLong
+    /// Hard reset (physical reset line / XVP reset).
+    case reset
+    /// ACPI shutdown request to the guest OS.
+    case shutdown
+    /// Reboot request (XVP; modelled for servers that honour it).
+    case reboot
+}
+
 /// Which optional control-plane features a connected backend exposes.
-/// The App layer gates JetKVM-only UI (ATX power, codec/quality, the
-/// clipboard agent) on these so a PiKVM session shows only what it can
-/// actually drive. JetKVM advertises everything; PiKVM v1 advertises
-/// nothing (core video + input only).
+/// The App layer gates JetKVM-only UI (codec/quality, the clipboard agent) on
+/// these so a PiKVM session shows only what it can actually drive. JetKVM
+/// advertises everything; PiKVM v1 advertises nothing (core video + input
+/// only). Power control is gated separately on `availablePowerActions`.
 public struct KVMCapabilities: Sendable, Equatable {
-    public var atxPower: Bool
     public var videoCodecPreference: Bool
     public var streamQuality: Bool
     public var clipboardSync: Bool
     public var pauseResume: Bool
 
     public init(
-        atxPower: Bool = false,
         videoCodecPreference: Bool = false,
         streamQuality: Bool = false,
         clipboardSync: Bool = false,
         pauseResume: Bool = false
     ) {
-        self.atxPower = atxPower
         self.videoCodecPreference = videoCodecPreference
         self.streamQuality = streamQuality
         self.clipboardSync = clipboardSync
@@ -135,7 +150,6 @@ public struct KVMCapabilities: Sendable, Equatable {
 
     /// Everything the JetKVM transport supports today.
     public static let jetKVM = KVMCapabilities(
-        atxPower: true,
         videoCodecPreference: true,
         streamQuality: true,
         clipboardSync: true,
@@ -165,6 +179,14 @@ public protocol KVMBackend: AnyObject {
     var latestStats: ConnectionStats? { get }
     var statsHistory: [ConnectionStats] { get }
 
+    // Power control. Empty when the backend can't drive power (PiKVM, VNC
+    // without XVP) — the App hides the Power section then. `powerIndicator`
+    // is the front-panel power-LED state, or nil when the backend can't
+    // report it (VNC).
+    var availablePowerActions: [KVMPowerAction] { get }
+    var powerIndicator: Bool? { get }
+    func sendPowerAction(_ action: KVMPowerAction) async throws
+
     // Lifecycle
     func connect(endpoint: DeviceEndpoint, password: String?) async
     func disconnect() async
@@ -184,4 +206,11 @@ public protocol KVMBackend: AnyObject {
     // Bandwidth gate. JetKVM pauses the encoder feed; PiKVM v1 no-ops.
     func pauseVideo()
     func resumeVideo()
+}
+
+public extension KVMBackend {
+    /// Backends without power control (PiKVM) inherit these no-op defaults.
+    var availablePowerActions: [KVMPowerAction] { [] }
+    var powerIndicator: Bool? { nil }
+    func sendPowerAction(_ action: KVMPowerAction) async throws {}
 }
