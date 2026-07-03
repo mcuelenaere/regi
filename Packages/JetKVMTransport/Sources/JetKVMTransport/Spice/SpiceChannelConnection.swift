@@ -69,6 +69,10 @@ actor SpiceChannelConnection {
     private(set) var useMiniHeader = false
     private(set) var connectionID: UInt32 = 0
 
+    /// Total bytes read off this connection since it opened (headers +
+    /// payloads + handshake), for bandwidth stats. Monotonic.
+    private(set) var bytesReceived: Int = 0
+
     init(host: String, port: UInt16, useTLS: Bool, allowSelfSigned: Bool,
          channelType: SpiceProtocol.ChannelType, channelID: UInt8,
          connectionID: UInt32 = 0, tlsConfig: SpiceTLSConfig? = nil,
@@ -168,10 +172,12 @@ actor SpiceChannelConnection {
         if useMiniHeader {
             let h = try SpiceMiniDataHeader.parse(try await receiveExactly(SpiceMiniDataHeader.byteCount))
             let payload = h.size > 0 ? try await receiveExactly(Int(h.size)) : Data()
+            bytesReceived += SpiceMiniDataHeader.byteCount + payload.count
             return (h.type, payload)
         } else {
             let h = try SpiceDataHeader.parse(try await receiveExactly(SpiceDataHeader.byteCount))
             let payload = h.size > 0 ? try await receiveExactly(Int(h.size)) : Data()
+            bytesReceived += SpiceDataHeader.byteCount + payload.count
             return (h.type, payload)
         }
     }

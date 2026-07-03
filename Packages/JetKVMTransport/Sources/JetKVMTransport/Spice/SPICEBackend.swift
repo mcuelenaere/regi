@@ -37,6 +37,14 @@ public final class SPICEBackend: KVMBackend {
     private var inputs: SpiceInputsChannel?
     private var display: SpiceDisplayChannel?
 
+    // Stats: a ~1 Hz poller diffs the display channel's cumulative counters
+    // and the connection's byte total against the previous sample to derive
+    // bitrate / FPS / per-frame decode time. `statsAnchor` is that previous
+    // reference point (nil until the first tick establishes a baseline).
+    private var statsTask: Task<Void, Never>?
+    private var statsAnchor: (time: Date, bytes: Int, snapshot: SpiceDisplayChannel.Stats)?
+    private static let maxStatsHistory = 60
+
     // Input state.
     private var lastFrameSize = CGSize(width: 0, height: 0)
     private var heldModifiers: Set<UInt16> = []
@@ -160,6 +168,7 @@ public final class SPICEBackend: KVMBackend {
         display.start()
 
         state = .connected
+        startStatsPolling()
     }
 
     public func disconnect() async { await teardown(); state = .idle }
@@ -182,6 +191,9 @@ public final class SPICEBackend: KVMBackend {
     /// disconnect sets `.idle` afterwards). Previously this reset `.failed`
     /// back to `.idle`, so connect errors never reached the UI.
     private func teardown() async {
+        statsTask?.cancel(); statsTask = nil
+        statsAnchor = nil
+        latestStats = nil; statsHistory = []
         inputContinuation?.finish(); inputContinuation = nil
         inputTask?.cancel(); inputTask = nil
         display?.stop(); inputs?.stop(); main?.stop()
@@ -192,6 +204,65 @@ public final class SPICEBackend: KVMBackend {
         heldModifiers.removeAll()
         heldKeys.removeAll()
         pendingAbsolute = nil; pendingRelative = nil; motionTickQueued = false
+    }
+
+    // MARK: - Stats
+
+    /// Poll the display channel + connection once a second and publish a
+    /// derived `ConnectionStats` sample. SPICE is TCP (optionally TLS/proxy),
+    /// so the WebRTC-shaped RTT / jitter / packet-loss fields don't apply and
+    /// stay nil — the panel shows "—" for those. We surface what's meaningful
+    /// for diagnosing lag: bitrate, FPS, decode time, codec, session bytes.
+    private func startStatsPolling() {
+        statsTask?.cancel()
+        statsTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1))
+                if Task.isCancelled { break }
+                await self?.sampleStats()
+            }
+        }
+    }
+
+    private func sampleStats() async {
+        guard let display, case .connected = state else { return }
+        let bytes = await display.connection.bytesReceived
+        let snap = display.statsSnapshot()
+        let now = Date()
+        defer { statsAnchor = (now, bytes, snap) }
+
+        // First tick just establishes the baseline; rates need two samples.
+        guard let prev = statsAnchor else { return }
+        let dt = now.timeIntervalSince(prev.time)
+        guard dt > 0 else { return }
+
+        let deltaBytes = max(0, bytes - prev.bytes)
+        let deltaEmitted = max(0, snap.emittedFrames - prev.snapshot.emittedFrames)
+        let deltaDecoded = max(0, snap.streamFramesDecoded - prev.snapshot.streamFramesDecoded)
+        let deltaDecodeSec = max(0, snap.streamDecodeTimeSec - prev.snapshot.streamDecodeTimeSec)
+
+        let sample = ConnectionStats(
+            timestamp: now,
+            roundTripTimeMs: nil,
+            jitterMs: nil,
+            packetsReceived: 0,
+            packetsLost: 0,
+            bitrateBitsPerSecond: Double(deltaBytes) * 8 / dt,
+            connectionType: nil,
+            framesPerSecond: Double(deltaEmitted) / dt,
+            framesDropped: Int64(snap.streamFramesDropped),
+            codec: snap.codec?.mimeType,
+            freezeCount: 0,
+            totalFreezesDurationSec: 0,
+            decodeTimePerFrameMs: deltaDecoded > 0 ? (deltaDecodeSec / Double(deltaDecoded)) * 1000 : nil,
+            playbackDelayMs: nil,
+            endToEndLatencyMs: nil,
+            bytesReceivedTotal: Int64(bytes)
+        )
+        latestStats = sample
+        statsHistory.append(sample)
+        let overshoot = statsHistory.count - Self.maxStatsHistory
+        if overshoot > 0 { statsHistory.removeFirst(overshoot) }
     }
 
     // MARK: - Video

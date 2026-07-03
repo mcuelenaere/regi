@@ -52,6 +52,18 @@ enum SpiceProtocol {
         case h264 = 3
         case vp9 = 4
         case h265 = 5
+
+        /// `video/…` mime string, matching the WebRTC codec stat's shape so
+        /// the stats UI can label SPICE and WebRTC codecs the same way.
+        var mimeType: String {
+            switch self {
+            case .mjpeg: return "video/MJPEG"
+            case .vp8:   return "video/VP8"
+            case .h264:  return "video/H264"
+            case .vp9:   return "video/VP9"
+            case .h265:  return "video/H265"
+            }
+        }
     }
 
     /// Channel types (`SPICE_CHANNEL_*`). Stable protocol values.

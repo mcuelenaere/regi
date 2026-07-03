@@ -43,6 +43,22 @@ final class SpiceDisplayChannel: SpiceChannel {
 
     private let decoder = SpiceImageDecoder()
 
+    /// Cumulative display metrics, guarded by `lock`. The backend snapshots
+    /// these ~1 Hz and derives per-interval rates (FPS, decode time). Video
+    /// streams (STREAM_DATA) drive the codec/decode fields; screen updates of
+    /// any kind (draw ops or streams) drive `emittedFrames`.
+    struct Stats: Sendable {
+        var emittedFrames = 0
+        var streamFramesDecoded = 0
+        var streamFramesDropped = 0
+        var streamDecodeTimeSec = 0.0
+        var codec: SpiceProtocol.VideoCodec?
+    }
+    private var stats = Stats()
+
+    /// Thread-safe snapshot of the cumulative display metrics.
+    func statsSnapshot() -> Stats { lock.lock(); defer { lock.unlock() }; return stats }
+
     private let timerQueue = DispatchQueue(label: "app.regi.mac.spice-display-emit")
     private var frameTimer: DispatchSourceTimer?
     private static let frameInterval = DispatchTimeInterval.milliseconds(16)   // ~60 Hz
@@ -78,16 +94,20 @@ final class SpiceDisplayChannel: SpiceChannel {
         let dest = stream.dest
         lock.unlock()
 
+        let t0 = DispatchTime.now().uptimeNanoseconds
         let decodedFrame: SpiceImageDecoder.Decoded?
         switch codec {
         case .mjpeg: decodedFrame = decoder.decodeMJPEGFrame(data)
         case .h264:  decodedFrame = h264Decoders[streamID]?.decode(data)
         default:     decodedFrame = nil     // VP8/VP9/H265 not yet supported
         }
-        guard let frame = decodedFrame else { return }
+        let decodeSec = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1_000_000_000
 
         lock.lock()
-        if let id = primaryID, let surface = surfaces[id] {
+        stats.codec = codec
+        stats.streamDecodeTimeSec += decodeSec
+        if decodedFrame == nil { stats.streamFramesDropped += 1 } else { stats.streamFramesDecoded += 1 }
+        if let frame = decodedFrame, let id = primaryID, let surface = surfaces[id] {
             surface.blit(src: frame.pixels, srcWidth: frame.width, srcHeight: frame.height,
                          srcArea: SpiceRect(top: 0, left: 0,
                                             bottom: Int32(frame.height), right: Int32(frame.width)),
@@ -106,6 +126,7 @@ final class SpiceDisplayChannel: SpiceChannel {
             return
         }
         dirty = false
+        stats.emittedFrames += 1
         let frame = SpiceFrame(width: surface.width, height: surface.height, bgra: surface.pixels)
         lock.unlock()
         onFrame?(frame)
