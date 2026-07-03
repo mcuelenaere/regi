@@ -60,7 +60,7 @@ Fence / ContinuousUpdates, RRE/CoRRE/TRLE/ZlibHex.
 
 ## VNC: H.264 decoder — single-context limitation
 
-**Where:** `Packages/JetKVMTransport/Sources/JetKVMTransport/VNC/H264Decoder.swift`.
+**Where:** `Packages/KVMKit/Sources/VNCKit/H264Decoder.swift`.
 
 **What's there now:** the RFB "Open H.264" encoding (50) is decoded via
 VideoToolbox (PiKVM `kvmd-vnc` and TigerVNC 1.13+ interoperate on it, as does
@@ -81,12 +81,12 @@ full reset. Only worth it if a real server multiplexes H.264 regions.
 
 ## Move WebRTC pin back to upstream `stasel/WebRTC` once M148+ releases
 
-**Where:** `Packages/JetKVMTransport/Package.swift` and
-`Regi.xcodeproj/project.pbxproj` (the project carries its
-own `XCRemoteSwiftPackageReference` — both pins have to match or
-SPM errors on conflicting package identity).
+**Where:** `Packages/KVMKit/Package.swift` (the app no longer
+references WebRTC directly — it's a transitive dependency of the
+`KVMWebRTC` target, embedded into the app bundle through the KVMKit
+package, so there's a single pin to bump).
 
-**What's there now:** both pins point at
+**What's there now:** the pin points at
 `https://github.com/AttilaTheFun/WebRTC.git` at `148.0.0`. That's
 a personal fork carrying the fix from
 [stasel/WebRTC#147](https://github.com/stasel/WebRTC/pull/147) —
@@ -104,16 +104,14 @@ the merged tree.
 **What "fixed" looks like:**
 
 1. Track stasel/WebRTC tags. When 148.0.0 (or 149+) lands on
-   `stasel/WebRTC`, swap both pins back:
-   - `Packages/JetKVMTransport/Package.swift` — restore the
-     `https://github.com/stasel/WebRTC.git` URL.
-   - `Regi.xcodeproj/project.pbxproj` — same URL +
-     version on the `XCRemoteSwiftPackageReference`.
-2. Delete the `Package.resolved` files (both the workspace one
-   under `.../swiftpm/Package.resolved` and the package-level
-   one under `Packages/JetKVMTransport/`) and re-resolve so the
-   new revision hash is recorded.
+   `stasel/WebRTC`, swap the pin back in
+   `Packages/KVMKit/Package.swift` — restore the
+   `https://github.com/stasel/WebRTC.git` URL.
+2. Delete the `Package.resolved` files (the workspace one under
+   `.../swiftpm/Package.resolved` and the package-level one under
+   `Packages/KVMKit/`) and re-resolve so the new revision hash is
+   recorded.
 3. Build + run the same smoke test (status → device → login →
    WS → ICE → video) to confirm parity.
 4. Drop the "Temporarily on AttilaTheFun's fork" TODO comment
-   in `Packages/JetKVMTransport/Package.swift`.
+   in `Packages/KVMKit/Package.swift`.
