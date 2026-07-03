@@ -10,6 +10,7 @@ private final class Recorder: @unchecked Sendable {
     private(set) var errors: [String] = []
     private(set) var clipboard: [VNCInboundClipboard] = []
     private(set) var extKeyAcks = 0
+    private(set) var xvp: [(UInt8, UInt8)] = []
     private(set) var lastFrame: LocalVideoFrame?
 
     func present(_ f: LocalVideoFrame) { lock.lock(); presents += 1; lastFrame = f; lock.unlock() }
@@ -17,6 +18,7 @@ private final class Recorder: @unchecked Sendable {
     func error(_ m: String) { lock.lock(); errors.append(m); lock.unlock() }
     func clip(_ c: VNCInboundClipboard) { lock.lock(); clipboard.append(c); lock.unlock() }
     func extAck() { lock.lock(); extKeyAcks += 1; lock.unlock() }
+    func xvpMsg(_ code: UInt8, _ version: UInt8) { lock.lock(); xvp.append((code, version)); lock.unlock() }
 }
 
 final class VNCStreamEngineTests: XCTestCase {
@@ -54,6 +56,7 @@ final class VNCStreamEngineTests: XCTestCase {
         engine.onError = { recorder.error($0) }
         engine.onClipboard = { recorder.clip($0) }
         engine.onExtKeyEventAck = { recorder.extAck() }
+        engine.onXVP = { recorder.xvpMsg($0, $1) }
         await engine.run()
         return (recorder, channel)
     }
@@ -168,6 +171,19 @@ final class VNCStreamEngineTests: XCTestCase {
         let (rec, _) = await runEngine(script: msg.data, width: 4, height: 4)
         XCTAssertTrue(rec.clipboard.isEmpty)
         // Reaching here at all means no arithmetic-overflow trap occurred.
+    }
+
+    func testServerXVPInit() async throws {
+        // ServerXvp: type(250), padding, version(1), code(INIT=1).
+        var msg = VNCByteWriter()
+        msg.writeU8(RFBProtocol.ServerMessage.xvp.rawValue)
+        msg.writeU8(0)  // padding
+        msg.writeU8(1)  // version
+        msg.writeU8(RFBProtocol.XVP.codeInit)
+        let (rec, _) = await runEngine(script: msg.data, width: 4, height: 4)
+        XCTAssertEqual(rec.xvp.count, 1)
+        XCTAssertEqual(rec.xvp.first?.0, RFBProtocol.XVP.codeInit)
+        XCTAssertEqual(rec.xvp.first?.1, 1)
     }
 
     func testBellIsIgnored() async throws {

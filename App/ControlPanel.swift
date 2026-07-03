@@ -10,6 +10,8 @@ struct ControlPanel: View {
     @Environment(Session.self) private var session
     @State private var showResetConfirm = false
     @State private var showPowerLongConfirm = false
+    @State private var showVNCShutdownConfirm = false
+    @State private var showVNCResetConfirm = false
     @State private var pendingError: String?
     /// Persisted across launches; consumed by ClipboardSyncManager
     /// in KVMSessionWindow to decide whether to actually shuttle
@@ -61,7 +63,51 @@ struct ControlPanel: View {
 
     // MARK: - Power
 
+    @ViewBuilder
     private var powerSection: some View {
+        // VNC exposes XVP power control; JetKVM uses ATX. Only one is active.
+        if session.textClipboard != nil {
+            vncPowerSection
+        } else {
+            jetKVMPowerSection
+        }
+    }
+
+    private var vncPowerSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Power").font(.headline)
+            HStack(spacing: 8) {
+                Button("Shut Down…") { showVNCShutdownConfirm = true }
+                    .confirmationDialog(
+                        "Shut down the VM?",
+                        isPresented: $showVNCShutdownConfirm,
+                        titleVisibility: .visible
+                    ) {
+                        Button("Shut Down", role: .destructive) { session.sendVNCPowerAction(.shutdown) }
+                        Button("Cancel", role: .cancel) {}
+                    } message: {
+                        Text("Sends an ACPI shutdown request to the guest.")
+                    }
+
+                Button("Reset…") { showVNCResetConfirm = true }
+                    .confirmationDialog(
+                        "Reset the VM?",
+                        isPresented: $showVNCResetConfirm,
+                        titleVisibility: .visible
+                    ) {
+                        Button("Reset", role: .destructive) { session.sendVNCPowerAction(.reset) }
+                        Button("Cancel", role: .cancel) {}
+                    } message: {
+                        Text("Hard-resets the guest, like the reset button. Unsaved state is lost.")
+                    }
+            }
+            Text("Power control over VNC (XVP). Requires a server started with power control enabled; QEMU supports shutdown and reset.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var jetKVMPowerSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text("Power").font(.headline)

@@ -40,6 +40,9 @@ final class VNCStreamEngine: @unchecked Sendable {
     var onError: (@Sendable (String) -> Void)?
     var onClipboard: (@Sendable (VNCInboundClipboard) -> Void)?
     var onExtKeyEventAck: (@Sendable () -> Void)?
+    /// Server XVP message: (code, version). code = INIT (1) advertises power
+    /// control; FAIL (0) reports a rejected action.
+    var onXVP: (@Sendable (_ code: UInt8, _ version: UInt8) -> Void)?
 
     /// Pause gate: when set, the engine stops requesting updates after the
     /// in-flight one completes (the server then goes quiet). Lock-guarded
@@ -76,6 +79,8 @@ final class VNCStreamEngine: @unchecked Sendable {
                     break // no-op
                 case .serverCutText:
                     try await handleServerCutText()
+                case .xvp:
+                    try await handleServerXVP()
                 case .none:
                     throw VNCConnectionError.protocolError("unknown server message type \(type)")
                 }
@@ -218,6 +223,15 @@ final class VNCStreamEngine: @unchecked Sendable {
                 onClipboard?(.extended(msg))
             }
         }
+    }
+
+    /// ServerXvp: padding(1) + version(1) + code(1).
+    private func handleServerXVP() async throws {
+        var r = VNCByteReader(try await channel.readExactly(3))
+        _ = try r.readU8() // padding
+        let version = try r.readU8()
+        let code = try r.readU8()
+        onXVP?(code, version)
     }
 
     // MARK: - Requests

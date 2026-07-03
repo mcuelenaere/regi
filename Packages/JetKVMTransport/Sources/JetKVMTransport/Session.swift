@@ -63,6 +63,12 @@ public final class Session {
     /// App-layer `VNCClipboardSyncManager` binds to it.
     public var textClipboard: VNCTextClipboard? { (backend as? VNCBackend)?.textClipboard }
 
+    /// Send a VNC XVP power action (shutdown/reboot/reset). No-op on non-VNC
+    /// backends or when the server didn't negotiate XVP.
+    public func sendVNCPowerAction(_ action: VNCPowerAction) {
+        (backend as? VNCBackend)?.sendPowerAction(action)
+    }
+
     /// Down-cast to the JetKVM backend. The read of `backend` keeps
     /// Observation tracking intact for the forwarded properties above.
     private var jetKVM: JetKVMBackend? { backend as? JetKVMBackend }

@@ -31,16 +31,10 @@ of forcing it off.
 
 Audited against QEMU's `ui/vnc.h` / `set_encodings()`. We now decode all of
 QEMU's efficient frame encodings (Tight preferred; ZRLE/Zlib/Hextile/CopyRect/Raw
-fallbacks). ZYWRLE (lossy wavelet ZRLE) and TightPNG are intentionally skipped —
-niche, and Tight+JPEG already covers the lossy case. The remaining unimplemented
-*features* QEMU exposes, roughly by value:
+fallbacks) and implement XVP power control. ZYWRLE (lossy wavelet ZRLE) and
+TightPNG are intentionally skipped — niche, and Tight+JPEG already covers the
+lossy case. The remaining unimplemented *features* QEMU exposes, roughly by value:
 
-- **XVP power control** (`VNC_ENCODING_XVP`, 0xFFFFFECB). Lets the client send
-  shutdown / reboot / reset to the VM — the direct analogue of JetKVM's ATX
-  power. Would map onto the existing `KVMCapabilities.atxPower` +
-  `setATXPowerAction` surface and light up the power section of the control
-  panel for VNC. Flow: advertise the pseudo-encoding, receive `XVP_INIT`, then
-  send XVP client messages. Best next feature if VNC power control is wanted.
 - **Cursor pseudo-encodings** (`RICH_CURSOR` 0xFFFFFF11, `ALPHA_CURSOR`,
   `XCURSOR`). Server ships the cursor sprite so the client renders it locally
   instead of it being baked into the framebuffer — removes the double-cursor

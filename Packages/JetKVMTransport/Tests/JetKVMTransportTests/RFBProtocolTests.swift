@@ -97,6 +97,13 @@ final class RFBProtocolTests: XCTestCase {
         XCTAssertEqual(RFBProtocol.Encoding.extendedClipboard, -1_063_131_698)
     }
 
+    func testXVPEncodingValueAndMessage() {
+        XCTAssertEqual(RFBProtocol.Encoding.xvp, -309)
+        // Client XVP: type(250), padding, version(1), action.
+        let data = [UInt8](RFBProtocol.xvp(action: RFBProtocol.XVP.actionReset))
+        XCTAssertEqual(data, [250, 0, 1, 4])
+    }
+
     func testCompressionAndQualityLevels() {
         XCTAssertEqual(RFBProtocol.Encoding.compressionLevel(2), -254)
         XCTAssertEqual(RFBProtocol.Encoding.jpegQuality(8), -24)

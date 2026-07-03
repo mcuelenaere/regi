@@ -40,6 +40,8 @@ is in the macOS integration around it.
   dynamic resolution changes (virtio-gpu / DesktopSize), QEMU extended key
   events for layout-independent typing, and UTF-8 clipboard sync via the
   Extended Clipboard pseudo-encoding (falling back to Latin-1 cut text).
+  Power control (shutdown / reset) is offered when the server supports XVP
+  (QEMU started with `power-control=on`).
   Security types **None** and **VNC Authentication** are supported;
   VeNCrypt/TLS is not yet (connect over a trusted network or an SSH tunnel).
 - **Real keyboard capture.** System shortcuts — ⌘Tab, ⌘Space (Spotlight),

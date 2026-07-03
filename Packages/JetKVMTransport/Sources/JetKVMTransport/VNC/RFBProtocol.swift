@@ -24,6 +24,9 @@ enum RFBProtocol {
         case setColourMapEntries = 1
         case bell = 2
         case serverCutText = 3
+        /// XVP power-control (server → client): INIT advertises support, FAIL
+        /// reports a rejected action.
+        case xvp = 250
     }
 
     enum ClientMessage: UInt8 {
@@ -33,8 +36,22 @@ enum RFBProtocol {
         case keyEvent = 4
         case pointerEvent = 5
         case clientCutText = 6
+        /// XVP power-control action (client → server).
+        case xvp = 250
         /// QEMU client-message family; submessage 0 = extended key event.
         case qemu = 255
+    }
+
+    /// XVP (power control) constants. The client advertises the XVP
+    /// pseudo-encoding; a server started with power control on replies with an
+    /// XVP `init`, after which the client may send shutdown/reboot/reset.
+    enum XVP {
+        static let version: UInt8 = 1
+        static let codeFail: UInt8 = 0
+        static let codeInit: UInt8 = 1
+        static let actionShutdown: UInt8 = 2
+        static let actionReboot: UInt8 = 3
+        static let actionReset: UInt8 = 4
     }
 
     // MARK: - Encodings
@@ -52,6 +69,8 @@ enum RFBProtocol {
         static let lastRect: Int32 = -224
         static let qemuPointerMotionChange: Int32 = -257
         static let qemuExtendedKeyEvent: Int32 = -258
+        /// XVP power control (0xFFFFFECB).
+        static let xvp = Int32(bitPattern: 0xFFFF_FECB)
         /// VNC Extended Clipboard (0xC0A1E5CE as a signed 32-bit value).
         static let extendedClipboard = Int32(bitPattern: 0xC0A1_E5CE)
 
@@ -209,6 +228,16 @@ enum RFBProtocol {
         w.writeU8(buttonMask)
         w.writeU16(UInt16(clamping: x))
         w.writeU16(UInt16(clamping: y))
+        return w.data
+    }
+
+    /// Client XVP power-control message: type(250), padding, version, action.
+    static func xvp(action: UInt8) -> Data {
+        var w = VNCByteWriter()
+        w.writeU8(ClientMessage.xvp.rawValue)
+        w.writeU8(0) // padding
+        w.writeU8(XVP.version)
+        w.writeU8(action)
         return w.data
     }
 

@@ -7,6 +7,23 @@ import WebRTC
 
 private let log = Logger(subsystem: "app.regi.mac", category: "vnc")
 
+/// A VNC XVP power-control action. QEMU implements `shutdown` (ACPI) and
+/// `reset` (hard); it rejects `reboot` with an XVP FAIL, though other servers
+/// may honour it.
+public enum VNCPowerAction: Sendable {
+    case shutdown
+    case reboot
+    case reset
+
+    var wireAction: UInt8 {
+        switch self {
+        case .shutdown: return RFBProtocol.XVP.actionShutdown
+        case .reboot: return RFBProtocol.XVP.actionReboot
+        case .reset: return RFBProtocol.XVP.actionReset
+        }
+    }
+}
+
 /// RFB 3.8 backend for standalone VNC servers (QEMU/libvirt `-vnc`, and Proxmox
 /// VMs reached via their QEMU VNC port). Decodes the framebuffer locally and
 /// presents it through `LocalVideoOutput` — no WebRTC. Reached through the
@@ -23,9 +40,18 @@ public final class VNCBackend: KVMBackend {
     public var videoTrack: RTCVideoTrack? { nil }
     public var localVideoOutput: LocalVideoOutput? { presenter }
     public private(set) var hasReceivedFirstFrame: Bool = false
-    public let capabilities = KVMCapabilities(clipboardSync: true, pauseResume: true)
+    /// `atxPower` is advertised only once the server negotiates XVP (which
+    /// requires it to run with power control enabled), so the power UI stays
+    /// hidden otherwise.
+    public var capabilities: KVMCapabilities {
+        KVMCapabilities(atxPower: xvpAvailable, clipboardSync: true, pauseResume: true)
+    }
     public private(set) var latestStats: ConnectionStats?
     public private(set) var statsHistory: [ConnectionStats] = []
+
+    /// Set when the server sends an XVP INIT — power control (shutdown/reset)
+    /// is available. Drives `capabilities.atxPower`.
+    private(set) var xvpAvailable = false
 
     /// Text clipboard surface bound by the App-layer sync manager.
     public let textClipboard = VNCTextClipboard()
@@ -251,6 +277,7 @@ public final class VNCBackend: KVMBackend {
         textClipboard.supportsUTF8 = false
         serverSupportsExtendedClipboard = false
         sentExtendedClipboardCaps = false
+        xvpAvailable = false
         engine = nil
         statsCollector = nil
         if let conn = connection {
@@ -275,6 +302,30 @@ public final class VNCBackend: KVMBackend {
         engine.onClipboard = { [weak self] inbound in
             Task { @MainActor in self?.handleInboundClipboard(inbound) }
         }
+        engine.onXVP = { [weak self] code, _ in
+            Task { @MainActor in self?.handleXVP(code: code) }
+        }
+    }
+
+    // MARK: - Power control (XVP)
+
+    private func handleXVP(code: UInt8) {
+        switch code {
+        case RFBProtocol.XVP.codeInit:
+            log.info("XVP power control available")
+            xvpAvailable = true
+        case RFBProtocol.XVP.codeFail:
+            log.notice("XVP action rejected by server")
+        default:
+            break
+        }
+    }
+
+    /// Send an XVP power action. No-op unless connected and the server
+    /// negotiated XVP.
+    public func sendPowerAction(_ action: VNCPowerAction) {
+        guard case .connected = state, xvpAvailable else { return }
+        enqueue(RFBProtocol.xvp(action: action.wireAction))
     }
 
     // MARK: - Clipboard
@@ -607,6 +658,7 @@ public final class VNCBackend: KVMBackend {
         RFBProtocol.Encoding.lastRect,
         RFBProtocol.Encoding.qemuExtendedKeyEvent,
         RFBProtocol.Encoding.extendedClipboard,
+        RFBProtocol.Encoding.xvp,
     ]
 
     private static func describe(_ error: VNCConnectionError) -> String {
