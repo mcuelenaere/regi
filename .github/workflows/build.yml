@@ -53,8 +53,5 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             build
 
-      - name: Test JetKVMProtocol
-        run: swift test --package-path Packages/JetKVMProtocol
-
-      - name: Test JetKVMTransport
-        run: swift test --package-path Packages/JetKVMTransport
+      - name: Test KVMKit
+        run: swift test --package-path Packages/KVMKit

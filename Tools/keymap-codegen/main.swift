@@ -16,7 +16,10 @@
 //
 //     swift Tools/keymap-codegen/main.swift \
 //         /path/to/jetkvm/ui/src/keyboardMappings.ts \
-//         > Packages/JetKVMProtocol/Sources/JetKVMProtocol/Codec/KeyMap.swift
+//         > Packages/KVMKit/Sources/JetKVMKit/KeyMap.swift
+//
+// The WebKeyMap (PiKVM) output lives at
+//     Packages/KVMKit/Sources/PiKVMKit/WebKeyMap.swift
 
 import Foundation
 
