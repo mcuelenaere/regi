@@ -67,6 +67,15 @@ final class VNCFramebuffer {
                 memcpy(dstBase.advanced(by: dstOffset),
                        srcBase.advanced(by: row * srcStride),
                        rowBytes)
+                // RFB's 32bpp/depth-24 pixels leave the 4th byte unused (0);
+                // force it opaque so the IOSurface doesn't composite the frame
+                // as transparent. (Raw / Zlib feed foreign bytes here; Tight's
+                // JPEG path already emits opaque alpha.)
+                var alpha = dstOffset + 3
+                for _ in 0..<w {
+                    dstBase.storeBytes(of: 0xFF, toByteOffset: alpha, as: UInt8.self)
+                    alpha += Self.bytesPerPixel
+                }
             }
         }
     }

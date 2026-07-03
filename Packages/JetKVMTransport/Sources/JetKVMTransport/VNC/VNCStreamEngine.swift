@@ -26,6 +26,9 @@ final class VNCStreamEngine: @unchecked Sendable {
     private let presenter: VideoFramePresenter
     private let framebuffer: VNCFramebuffer
     private let tight: TightDecoder
+    private let zlib = ZlibDecoder()
+    private let hextile = HextileDecoder()
+    private let zrle = ZRLEDecoder()
     private let stats: VNCStatsCollector
 
     /// Guards partial-update requests once a resize voids the framebuffer.
@@ -121,6 +124,18 @@ final class VNCStreamEngine: @unchecked Sendable {
             case RFBProtocol.Encoding.tight:
                 let jpeg = try await tight.decodeRect(header, channel: channel, framebuffer: framebuffer)
                 stats.record(encoding: header.encoding, jpeg: jpeg)
+                dirty = true
+            case RFBProtocol.Encoding.zlib:
+                try await zlib.decodeRect(header, channel: channel, framebuffer: framebuffer)
+                stats.record(encoding: header.encoding)
+                dirty = true
+            case RFBProtocol.Encoding.hextile:
+                try await hextile.decodeRect(header, channel: channel, framebuffer: framebuffer)
+                stats.record(encoding: header.encoding)
+                dirty = true
+            case RFBProtocol.Encoding.zrle:
+                try await zrle.decodeRect(header, channel: channel, framebuffer: framebuffer)
+                stats.record(encoding: header.encoding)
                 dirty = true
             default:
                 throw VNCConnectionError.protocolError("unsupported encoding \(header.encoding)")

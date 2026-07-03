@@ -24,6 +24,38 @@ in `TLSDelegate` / `TrustedHostStore`, keyed by host) before continuing the RFB
 sub-handshake. Then let the host form offer a "TLS" toggle for `.vnc` instead
 of forcing it off.
 
+## VNC: QEMU server features we don't implement yet
+
+**Where:** `VNCBackend.encodings` (the advertised `SetEncodings` list) and
+`VNCStreamEngine` for anything that arrives as a pseudo-encoding rect.
+
+Audited against QEMU's `ui/vnc.h` / `set_encodings()`. We now decode all of
+QEMU's efficient frame encodings (Tight preferred; ZRLE/Zlib/Hextile/CopyRect/Raw
+fallbacks). ZYWRLE (lossy wavelet ZRLE) and TightPNG are intentionally skipped —
+niche, and Tight+JPEG already covers the lossy case. The remaining unimplemented
+*features* QEMU exposes, roughly by value:
+
+- **XVP power control** (`VNC_ENCODING_XVP`, 0xFFFFFECB). Lets the client send
+  shutdown / reboot / reset to the VM — the direct analogue of JetKVM's ATX
+  power. Would map onto the existing `KVMCapabilities.atxPower` +
+  `setATXPowerAction` surface and light up the power section of the control
+  panel for VNC. Flow: advertise the pseudo-encoding, receive `XVP_INIT`, then
+  send XVP client messages. Best next feature if VNC power control is wanted.
+- **Cursor pseudo-encodings** (`RICH_CURSOR` 0xFFFFFF11, `ALPHA_CURSOR`,
+  `XCURSOR`). Server ships the cursor sprite so the client renders it locally
+  instead of it being baked into the framebuffer — removes the double-cursor
+  look and cuts perceived pointer latency. Needs a cursor overlay composited
+  over the presented IOSurface (track hotspot + alpha).
+- **LED state** (`VNC_ENCODING_LED_STATE`, 0xFFFFFEFB) — caps/num/scroll-lock
+  sync. Minor for a forward-only KVM.
+- **Desktop resize ext / ExtendedDesktopSize** (`DESKTOP_RESIZE_EXT`) —
+  *client-initiated* resize (ask the guest to match the window). We only handle
+  server-driven `DesktopSize` today.
+- **Audio** (`VNC_ENCODING_AUDIO`) — playback redirection. Large, separate feature.
+
+Not supported by QEMU's server (so not worth implementing for the QEMU target):
+Fence / ContinuousUpdates, RRE/CoRRE/TRLE/ZlibHex.
+
 ## VNC: Open H.264 encoding (RFB encoding 50)
 
 **Where:** `VNCStreamEngine.handleFramebufferUpdate` (the per-rect encoding

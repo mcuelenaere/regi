@@ -42,7 +42,10 @@ enum RFBProtocol {
     enum Encoding {
         static let raw: Int32 = 0
         static let copyRect: Int32 = 1
+        static let hextile: Int32 = 5
+        static let zlib: Int32 = 6
         static let tight: Int32 = 7
+        static let zrle: Int32 = 16
 
         // Pseudo-encodings.
         static let desktopSize: Int32 = -223

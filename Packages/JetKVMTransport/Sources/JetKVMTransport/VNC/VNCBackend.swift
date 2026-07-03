@@ -549,8 +549,14 @@ public final class VNCBackend: KVMBackend {
         let dCopy = snap.copyRects - anchor.snapshot.copyRects
         let dTight = snap.tightRects - anchor.snapshot.tightRects
         let dJPEG = snap.tightJPEGRects - anchor.snapshot.tightJPEGRects
+        let dZRLE = snap.zrleRects - anchor.snapshot.zrleRects
+        let dZlib = snap.zlibRects - anchor.snapshot.zlibRects
+        let dHextile = snap.hextileRects - anchor.snapshot.hextileRects
         let codecLabel: String?
         if dTight > 0 { codecLabel = dJPEG > 0 ? "Tight (JPEG)" : "Tight" }
+        else if dZRLE > 0 { codecLabel = "ZRLE" }
+        else if dZlib > 0 { codecLabel = "Zlib" }
+        else if dHextile > 0 { codecLabel = "Hextile" }
         else if dRaw > 0 { codecLabel = "Raw" }
         else if dCopy > 0 { codecLabel = "CopyRect" }
         else { codecLabel = latestStats?.codec }
@@ -583,11 +589,16 @@ public final class VNCBackend: KVMBackend {
 
     // MARK: - Config
 
-    /// Encodings we advertise, preference-first: Tight (with a mid
-    /// compression level and high JPEG quality), CopyRect for scrolls, Raw as
-    /// the mandatory fallback, then the pseudo-encodings.
+    /// Encodings we advertise, preference-first. Tight leads (it's QEMU's most
+    /// efficient encoder, and the server picks the first it supports), with
+    /// ZRLE / Zlib / Hextile as progressively simpler fallbacks for servers
+    /// that don't offer Tight, then CopyRect for scrolls and Raw as the
+    /// mandatory last resort, then the pseudo-encodings.
     private static let encodings: [Int32] = [
         RFBProtocol.Encoding.tight,
+        RFBProtocol.Encoding.zrle,
+        RFBProtocol.Encoding.zlib,
+        RFBProtocol.Encoding.hextile,
         RFBProtocol.Encoding.copyRect,
         RFBProtocol.Encoding.raw,
         RFBProtocol.Encoding.compressionLevel(2),

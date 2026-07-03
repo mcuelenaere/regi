@@ -11,6 +11,9 @@ final class VNCStatsCollector: @unchecked Sendable {
         var copyRects: Int = 0
         var tightRects: Int = 0
         var tightJPEGRects: Int = 0
+        var zlibRects: Int = 0
+        var hextileRects: Int = 0
+        var zrleRects: Int = 0
     }
 
     private let lock = NSLock()
@@ -35,6 +38,9 @@ final class VNCStatsCollector: @unchecked Sendable {
         case RFBProtocol.Encoding.tight:
             current.tightRects += 1
             if jpeg { current.tightJPEGRects += 1 }
+        case RFBProtocol.Encoding.zlib: current.zlibRects += 1
+        case RFBProtocol.Encoding.hextile: current.hextileRects += 1
+        case RFBProtocol.Encoding.zrle: current.zrleRects += 1
         default: break
         }
     }

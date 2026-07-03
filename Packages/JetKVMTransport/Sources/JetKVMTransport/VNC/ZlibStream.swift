@@ -69,6 +69,50 @@ final class ZlibInflateStream {
         }
         return output
     }
+
+    /// Inflate all of `data` through the persistent stream, returning every
+    /// byte produced. Unlike `inflate(_:expectedCount:)`, the caller doesn't
+    /// know the uncompressed size up front — ZRLE/Zlib rects carry a variable
+    /// amount, and the server `Z_SYNC_FLUSH`es per rect so all output for this
+    /// input is available. Bounded by `limit` against a decompression bomb.
+    func inflateAll(_ data: Data, limit: Int) throws -> [UInt8] {
+        if !initialized {
+            let rc = inflateInit2_(&stream, 15, zlibVersion(), Int32(MemoryLayout<z_stream>.size))
+            guard rc == Z_OK else { throw Error.initFailed(rc) }
+            initialized = true
+        }
+        guard !data.isEmpty else { return [] }
+
+        var output = [UInt8]()
+        var input = data
+        var chunk = [UInt8](repeating: 0, count: 64 * 1024)
+        let status: Int32 = input.withUnsafeMutableBytes { rawIn -> Int32 in
+            stream.next_in = rawIn.bindMemory(to: Bytef.self).baseAddress
+            stream.avail_in = UInt32(rawIn.count)
+            var rc: Int32 = Z_OK
+            while true {
+                let produced = chunk.withUnsafeMutableBytes { rawOut -> Int in
+                    stream.next_out = rawOut.bindMemory(to: Bytef.self).baseAddress
+                    stream.avail_out = UInt32(rawOut.count)
+                    rc = zlib.inflate(&stream, Z_SYNC_FLUSH)
+                    return rawOut.count - Int(stream.avail_out)
+                }
+                if produced > 0 { output.append(contentsOf: chunk.prefix(produced)) }
+                if output.count > limit { rc = Z_MEM_ERROR; break }
+                // Done when the input is drained and the last call didn't fill
+                // the output buffer (i.e. no more pending output).
+                if rc != Z_OK { break }
+                if stream.avail_in == 0 && produced < chunk.count { break }
+            }
+            return rc
+        }
+        stream.next_in = nil
+        stream.next_out = nil
+        guard status == Z_OK || status == Z_STREAM_END || status == Z_BUF_ERROR else {
+            throw Error.inflateFailed(status)
+        }
+        return output
+    }
 }
 
 /// One-shot zlib (RFC 1950, header + adler32) helpers for the Extended
