@@ -205,6 +205,11 @@ actor VNCConnection: VNCByteChannel {
             chosen = .none
         } else if offered.contains(RFBProtocol.SecurityType.vncAuth.rawValue) {
             chosen = .vncAuth
+        } else if offered.contains(RFBProtocol.SecurityType.veNCrypt.rawValue) {
+            // The server only offers VeNCrypt (TLS), but this host is configured
+            // for plain TCP. Point the user at the fix rather than a cryptic list.
+            throw VNCConnectionError.handshakeFailed(
+                "This VNC server requires TLS (VeNCrypt). Edit the host and turn on \u{201C}Encrypted (TLS)\u{201D}, then reconnect.")
         } else {
             throw VNCConnectionError.handshakeFailed("no supported security type (offered \(offered))")
         }

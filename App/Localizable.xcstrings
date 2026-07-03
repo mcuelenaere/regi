@@ -88,6 +88,9 @@
     "Edit…" : {
 
     },
+    "Encrypted (TLS / VeNCrypt)" : {
+
+    },
     "Enter a hostname or http(s) URL." : {
 
     },
@@ -193,6 +196,9 @@
     "Remember password" : {
 
     },
+    "Required for PiKVM's VNC server. The password is prompted on connect; a username enables user/password (VeNCrypt Plain) auth." : {
+
+    },
     "Reset" : {
 
     },
@@ -281,6 +287,9 @@
 
     },
     "Username" : {
+
+    },
+    "Username (optional)" : {
 
     },
     "UTF-8 clipboard" : {
