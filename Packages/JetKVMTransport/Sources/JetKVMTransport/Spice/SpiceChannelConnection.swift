@@ -147,7 +147,28 @@ actor SpiceChannelConnection {
         }
 
         log.debug("SPICE channel \(self.channelType.rawValue)/\(self.channelID) linked (mini=\(self.useMiniHeader))")
+        if channelType == .display {
+            // Log the server's display caps so codec negotiation is debuggable:
+            // if MULTI_CODEC / CODEC_H264 aren't here, the server can't encode
+            // H.264 no matter what the client prefers.
+            log.notice("SPICE display SERVER caps: \(Self.describeDisplayCaps(reply.channelCaps), privacy: .public)")
+        }
         return reply
+    }
+
+    /// Human-readable list of the display caps the server advertises, for
+    /// diagnosing video-codec negotiation.
+    private static func describeDisplayCaps(_ caps: SpiceCaps) -> String {
+        let named: [(SpiceProtocol.DisplayCap, String)] = [
+            (.sizedStream, "SIZED_STREAM"), (.streamReport, "STREAM_REPORT"),
+            (.multiCodec, "MULTI_CODEC"), (.codecMJPEG, "MJPEG"),
+            (.codecVP8, "VP8"), (.codecH264, "H264"),
+            (.prefVideoCodecType, "PREF_VIDEO_CODEC"),
+            (.codecVP9, "VP9"), (.codecH265, "H265"),
+        ]
+        let present = named.filter { caps.has($0.0.rawValue) }.map { $0.1 }
+        let words = caps.words.map { String(format: "0x%x", $0) }.joined(separator: ",")
+        return "words=[\(words)] [\(present.joined(separator: ","))]"
     }
 
     // MARK: - Data messages

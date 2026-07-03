@@ -241,6 +241,16 @@ public final class SPICEBackend: KVMBackend {
         let deltaDecoded = max(0, snap.streamFramesDecoded - prev.snapshot.streamFramesDecoded)
         let deltaDecodeSec = max(0, snap.streamDecodeTimeSec - prev.snapshot.streamDecodeTimeSec)
 
+        let fps = Double(deltaEmitted) / dt
+        // Latency is only meaningful while video is actually flowing.
+        let videoActive = deltaDecoded > 0
+        // Feedback cadence: you see the result of an action on the next frame,
+        // so a frame interval is the floor on felt latency. Add the buffering
+        // delay above best case to get the round-trip-to-screen estimate.
+        let frameIntervalMs = (videoActive && fps > 0) ? 1000.0 / fps : nil
+        let playbackDelay = videoActive ? snap.frameDelayMs : nil
+        let inputLatency = frameIntervalMs.map { $0 + (playbackDelay ?? 0) }
+
         let sample = ConnectionStats(
             timestamp: now,
             roundTripTimeMs: nil,
@@ -249,14 +259,14 @@ public final class SPICEBackend: KVMBackend {
             packetsLost: 0,
             bitrateBitsPerSecond: Double(deltaBytes) * 8 / dt,
             connectionType: nil,
-            framesPerSecond: Double(deltaEmitted) / dt,
+            framesPerSecond: fps,
             framesDropped: Int64(snap.streamFramesDropped),
             codec: snap.codec?.mimeType,
             freezeCount: 0,
             totalFreezesDurationSec: 0,
             decodeTimePerFrameMs: deltaDecoded > 0 ? (deltaDecodeSec / Double(deltaDecoded)) * 1000 : nil,
-            playbackDelayMs: nil,
-            endToEndLatencyMs: nil,
+            playbackDelayMs: playbackDelay,
+            endToEndLatencyMs: inputLatency,
             bytesReceivedTotal: Int64(bytes)
         )
         latestStats = sample

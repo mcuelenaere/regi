@@ -71,8 +71,17 @@ final class SpiceDisplayChannel: SpiceChannel {
         var streamFramesDropped = 0
         var streamDecodeTimeSec = 0.0
         var codec: SpiceProtocol.VideoCodec?
+        /// Latest stream-frame delivery delay (ms): how much later than the
+        /// server's own frame schedule the frame reached us — i.e. buffering /
+        /// network delay above the best case. 0 when no video is flowing.
+        var frameDelayMs = 0.0
     }
     private var stats = Stats()
+
+    /// Baseline `(localArrivalMs − serverFrameMMTimeMs)` — the minimum offset
+    /// seen, which cancels the unknown clock difference so `frameDelayMs` is
+    /// delay *above best case*. Guarded by `lock`.
+    private var mmOffsetBaselineMs: Double?
 
     /// Thread-safe snapshot of the cumulative display metrics.
     func statsSnapshot() -> Stats { lock.lock(); defer { lock.unlock() }; return stats }
@@ -130,6 +139,11 @@ final class SpiceDisplayChannel: SpiceChannel {
         stats.codec = codec
         stats.streamDecodeTimeSec += decodeSec
         if decodedFrame == nil { stats.streamFramesDropped += 1 } else { stats.streamFramesDecoded += 1 }
+        // Delivery delay: offset of local arrival from the server's frame clock,
+        // minus the running-minimum offset (which cancels the fixed clock skew).
+        let offsetMs = Double(now) / 1_000_000 - Double(mmTime)
+        if mmOffsetBaselineMs == nil || offsetMs < mmOffsetBaselineMs! { mmOffsetBaselineMs = offsetMs }
+        stats.frameDelayMs = offsetMs - (mmOffsetBaselineMs ?? offsetMs)
         if let frame = decodedFrame, let id = primaryID, let surface = surfaces[id] {
             surface.blit(src: frame.pixels, srcWidth: frame.width, srcHeight: frame.height,
                          srcArea: SpiceRect(top: 0, left: 0,
@@ -205,6 +219,7 @@ final class SpiceDisplayChannel: SpiceChannel {
         codecs.writeU8(UInt8(preferred.count))
         for c in preferred { codecs.writeU8(c.rawValue) }
         try? await send(type: SpiceMsg.DisplayClient.preferredVideoCodecType.rawValue, payload: codecs.data)
+        log.notice("SPICE sent preferred video codecs: \(preferred.map { String(describing: $0) }.joined(separator: ">"), privacy: .public)")
     }
 
     override func handle(type: UInt16, payload: Data) async {
@@ -246,6 +261,7 @@ final class SpiceDisplayChannel: SpiceChannel {
                 surfaces.removeAll()
                 streams.removeAll()
                 reportWindows.removeAll()
+                mmOffsetBaselineMs = nil
                 primaryID = nil
                 dirty = false
                 lock.unlock()
@@ -258,6 +274,7 @@ final class SpiceDisplayChannel: SpiceChannel {
                 streams[s.streamID] = Stream(codec: s.codec, dest: s.dest)
                 lock.unlock()
                 if s.codec == .h264 { h264Decoders[s.streamID] = SpiceH264Decoder() }
+                log.notice("SPICE stream \(s.streamID) created codec=\(String(describing: s.codec), privacy: .public) \(s.dest.width)x\(s.dest.height)")
 
             case .streamData:
                 let d = try SpiceMsgStreamData.parse(payload)
