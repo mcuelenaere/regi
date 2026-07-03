@@ -71,13 +71,19 @@ class SpiceChannel {
                 let wasAtAckWindow = lastMessageHitAckWindow
                 let blockStart = DispatchTime.now().uptimeNanoseconds
                 receiveBlockedSinceNanos = blockStart
-                let (type, payload) = try await connection.receive()
+                let header = try await connection.receiveMessageHeader()
+                // Header in hand: everything from here (body bytes, decode,
+                // blit) is mid-message — the rest of this frame is still in
+                // flight, so it must read as "busy", never as a boundary. A
+                // multi-packet body stalling on the network otherwise looks
+                // idle and gets presented half-applied.
                 receiveBlockedSinceNanos = 0
                 if wasAtAckWindow {
                     let idle = DispatchTime.now().uptimeNanoseconds &- blockStart
                     if idle > ackStallMaxNanos { ackStallMaxNanos = idle }
                 }
-                await dispatch(type: type, payload: payload)
+                let payload = try await connection.receiveMessageBody(header)
+                await dispatch(type: header.type, payload: payload)
             }
         } catch {
             if !Task.isCancelled {

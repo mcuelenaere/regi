@@ -188,19 +188,40 @@ actor SpiceChannelConnection {
         try await sendRaw(frame.data)
     }
 
-    /// Read one framed channel message.
-    func receive() async throws -> (type: UInt16, payload: Data) {
+    /// Header of the next framed message: type + body size.
+    struct MessageHeader {
+        let type: UInt16
+        let size: UInt32
+    }
+
+    /// Read just the next message's header. Split from the body read so the
+    /// channel can distinguish "waiting for the *next* message" (a potential
+    /// frame boundary) from "mid-message" (the rest of the current message is
+    /// still in flight — never a boundary).
+    func receiveMessageHeader() async throws -> MessageHeader {
         if useMiniHeader {
             let h = try SpiceMiniDataHeader.parse(try await receiveExactly(SpiceMiniDataHeader.byteCount))
-            let payload = h.size > 0 ? try await receiveExactly(Int(h.size)) : Data()
-            bytesReceived += SpiceMiniDataHeader.byteCount + payload.count
-            return (h.type, payload)
+            bytesReceived += SpiceMiniDataHeader.byteCount
+            return MessageHeader(type: h.type, size: h.size)
         } else {
             let h = try SpiceDataHeader.parse(try await receiveExactly(SpiceDataHeader.byteCount))
-            let payload = h.size > 0 ? try await receiveExactly(Int(h.size)) : Data()
-            bytesReceived += SpiceDataHeader.byteCount + payload.count
-            return (h.type, payload)
+            bytesReceived += SpiceDataHeader.byteCount
+            return MessageHeader(type: h.type, size: h.size)
         }
+    }
+
+    /// Read the body for a header returned by `receiveMessageHeader()`.
+    func receiveMessageBody(_ header: MessageHeader) async throws -> Data {
+        guard header.size > 0 else { return Data() }
+        let payload = try await receiveExactly(Int(header.size))
+        bytesReceived += payload.count
+        return payload
+    }
+
+    /// Read one framed channel message.
+    func receive() async throws -> (type: UInt16, payload: Data) {
+        let h = try await receiveMessageHeader()
+        return (h.type, try await receiveMessageBody(h))
     }
 
     func close() {

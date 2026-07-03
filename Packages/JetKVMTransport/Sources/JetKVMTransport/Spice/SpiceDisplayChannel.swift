@@ -34,13 +34,18 @@ final class SpiceDisplayChannel: SpiceChannel {
     private var primaryID: UInt32?
     private var dirty = false
     /// We snapshot the surface only once the read loop has been *blocked*
-    /// waiting for the server for `quietNanos` — i.e. the current batch of draw
-    /// ops is fully applied. Emitting on a blind clock while the read loop is
-    /// still mid-batch shows a half-drawn frame (the "window wipes in from the
-    /// left" artifact). `maxLatencyNanos` is a safety valve so a pathological
-    /// gapless stream still updates rather than freezing.
+    /// waiting for the next message for `quietNanos` — i.e. the current batch
+    /// of draw ops is fully applied. QEMU's spice display sends one batch of
+    /// 32px-wide column strips per GUI refresh tick (~30 ms) with no protocol
+    /// end-of-frame marker, so tick boundaries are reconstructed from timing:
+    /// the threshold must sit above normal network jitter *between* messages
+    /// of one batch (WiFi commonly gaps 5-10 ms) but below the ~30 ms tick
+    /// spacing. Too low ⇒ mid-batch presents (the left-to-right "wipe"); too
+    /// high ⇒ ticks coalesce (harmless, just fewer presents).
+    /// `maxLatencyNanos` is a safety valve so a pathological gapless stream
+    /// still updates rather than freezing.
     private var lastEmitNanos: UInt64 = 0
-    private static let quietNanos: UInt64 = 6_000_000          // read loop idle this long = batch done
+    private static let quietNanos: UInt64 = 12_000_000         // > WiFi jitter, < QEMU tick
     private static let maxLatencyNanos: UInt64 = 200_000_000   // freeze-avoidance floor only
     /// The server's ACK window is small (~20 msgs), so a large redraw is sent
     /// in chunks separated by ACK round-trip stalls. We coalesce across a stall
