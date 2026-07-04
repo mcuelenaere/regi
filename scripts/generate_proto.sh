@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Regenerate Swift bindings for the vendored agent.proto.
 #
-# Run after updating Packages/JetKVMProtocol/Sources/JetKVMProtocol/Clipboard/agent.proto
+# Run after updating Packages/KVMKit/Sources/JetKVMKit/Clipboard/agent.proto
 # (typically: re-pulling from the JetKVM firmware repo). Commits the result.
 #
 # Toolchain: `brew install swift-protobuf` provides protoc-gen-swift.
@@ -20,7 +20,7 @@ fi
 
 cd "$(dirname "$0")/.."
 
-PROTO_DIR="Packages/JetKVMProtocol/Sources/JetKVMProtocol/Clipboard"
+PROTO_DIR="Packages/KVMKit/Sources/JetKVMKit/Clipboard"
 OUT_DIR="$PROTO_DIR/generated"
 
 mkdir -p "$OUT_DIR"

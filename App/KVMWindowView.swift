@@ -1,6 +1,5 @@
 import SwiftUI
-import JetKVMTransport
-import WebRTC
+import KVMKit
 
 struct KVMWindowView: View {
     @Environment(Session.self) private var session
@@ -27,7 +26,8 @@ struct KVMWindowView: View {
     /// hides the Controls toolbar item entirely.
     private var hasControlCapabilities: Bool {
         let c = session.capabilities
-        return c.atxPower || c.videoCodecPreference || c.streamQuality || c.clipboardSync
+        return !session.availablePowerActions.isEmpty
+            || c.videoCodecPreference || c.streamQuality || c.clipboardSync
     }
 
     /// Whether the Controls popover should be openable. JetKVM's controls ride
@@ -163,9 +163,9 @@ struct KVMWindowView: View {
                 // Frames won't flow; show the placeholder instead of
                 // leaving the user staring at a black window.
                 NoSignalPlaceholder(error: err)
-            } else if let output = session.videoOutput {
+            } else if let renderer = session.videoRenderer {
                 KVMVideoRepresentable(
-                    output: output,
+                    renderer: renderer,
                     session: session,
                     pointerLocked: pointerLock.state == .enabled,
                     hideCursorOverVideo: hideCursorOverVideo
@@ -443,17 +443,14 @@ private struct NoSignalPlaceholder: View {
 }
 
 private struct KVMVideoRepresentable: NSViewRepresentable {
-    /// What to render, chosen by the backend (WebRTC track vs local output).
-    let output: KVMVideoOutput
+    /// The renderer to embed, built by the active backend.
+    let renderer: any KVMVideoRenderer
     let session: Session
     let pointerLocked: Bool
     let hideCursorOverVideo: Bool
 
     private func attach(to view: KVMVideoView) {
-        switch output {
-        case .webRTC(let track): view.attach(track: track)
-        case .local(let localOutput): view.attach(localVideo: localOutput)
-        }
+        view.attach(renderer: renderer)
     }
 
     func makeNSView(context: Context) -> KVMVideoView {

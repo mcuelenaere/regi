@@ -1,5 +1,5 @@
 import SwiftUI
-import JetKVMTransport
+import KVMKit
 
 extension Notification.Name {
     /// Posted by the File-menu "Add Host…" (⌘N) command. HostsView

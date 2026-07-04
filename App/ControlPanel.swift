@@ -1,6 +1,5 @@
 import SwiftUI
-import JetKVMProtocol
-import JetKVMTransport
+import KVMKit
 
 /// Popover content with ATX power buttons, codec preference, stream
 /// quality slider, and clipboard-sync toggle. Fed by Session's
@@ -8,10 +7,9 @@ import JetKVMTransport
 /// channel opens.
 struct ControlPanel: View {
     @Environment(Session.self) private var session
-    @State private var showResetConfirm = false
-    @State private var showPowerLongConfirm = false
-    @State private var showVNCShutdownConfirm = false
-    @State private var showVNCResetConfirm = false
+    /// The power action awaiting confirmation, if any. Drives the single
+    /// confirmation dialog shared by all destructive power buttons.
+    @State private var confirmAction: KVMPowerAction?
     @State private var pendingError: String?
     /// Persisted across launches; consumed by ClipboardSyncManager
     /// in KVMSessionWindow to decide whether to actually shuttle
@@ -22,8 +20,9 @@ struct ControlPanel: View {
     private var rpcDisabled: Bool { !session.rpcReady }
 
     private var caps: KVMCapabilities { session.capabilities }
+    private var hasPowerControls: Bool { !session.availablePowerActions.isEmpty }
     private var hasAnyControls: Bool {
-        caps.atxPower || caps.videoCodecPreference || caps.streamQuality || caps.clipboardSync
+        hasPowerControls || caps.videoCodecPreference || caps.streamQuality || caps.clipboardSync
     }
 
     var body: some View {
@@ -31,7 +30,7 @@ struct ControlPanel: View {
             // Sections are gated on device capabilities so a PiKVM
             // session (no control plane in v1) doesn't show JetKVM-only
             // controls. Each owns a trailing Divider except the last.
-            if caps.atxPower {
+            if hasPowerControls {
                 powerSection
                 Divider()
             }
@@ -63,104 +62,77 @@ struct ControlPanel: View {
 
     // MARK: - Power
 
-    @ViewBuilder
+    /// One backend-agnostic power section. The active backend advertises which
+    /// `KVMPowerAction`s it can perform (JetKVM ATX, VNC XVP); we render a
+    /// button per action and switch display copy on the case. No per-backend
+    /// branching — the section only appears when the backend has power control.
     private var powerSection: some View {
-        // VNC exposes XVP power control; JetKVM uses ATX. Only one is active.
-        if session.textClipboard != nil {
-            vncPowerSection
-        } else {
-            jetKVMPowerSection
-        }
-    }
-
-    private var vncPowerSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Power").font(.headline)
-            HStack(spacing: 8) {
-                Button("Shut Down…") { showVNCShutdownConfirm = true }
-                    .confirmationDialog(
-                        "Shut down the VM?",
-                        isPresented: $showVNCShutdownConfirm,
-                        titleVisibility: .visible
-                    ) {
-                        Button("Shut Down", role: .destructive) { session.sendVNCPowerAction(.shutdown) }
-                        Button("Cancel", role: .cancel) {}
-                    } message: {
-                        Text("Sends an ACPI shutdown request to the guest.")
-                    }
-
-                Button("Reset…") { showVNCResetConfirm = true }
-                    .confirmationDialog(
-                        "Reset the VM?",
-                        isPresented: $showVNCResetConfirm,
-                        titleVisibility: .visible
-                    ) {
-                        Button("Reset", role: .destructive) { session.sendVNCPowerAction(.reset) }
-                        Button("Cancel", role: .cancel) {}
-                    } message: {
-                        Text("Hard-resets the guest, like the reset button. Unsaved state is lost.")
-                    }
-            }
-            Text("Power control over VNC (XVP). Requires a server started with power control enabled; QEMU supports shutdown and reset.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    private var jetKVMPowerSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text("Power").font(.headline)
                 Spacer()
-                if let atx = session.atxState {
-                    Label(
-                        atx.power ? "On" : "Off",
-                        systemImage: atx.power ? "circle.fill" : "circle"
-                    )
-                    .font(.caption)
-                    .foregroundStyle(atx.power ? .green : .secondary)
+                if let on = session.powerIndicator {
+                    Label(on ? "On" : "Off", systemImage: on ? "circle.fill" : "circle")
+                        .font(.caption)
+                        .foregroundStyle(on ? .green : .secondary)
                 }
             }
             HStack(spacing: 8) {
-                Button("Power") {
-                    Task { await runAction { try await session.setATXPowerAction(.powerShort) } }
-                }
-                .disabled(rpcDisabled)
-
-                Button("Reset…") {
-                    showResetConfirm = true
-                }
-                .disabled(rpcDisabled)
-                .confirmationDialog(
-                    "Reset host?",
-                    isPresented: $showResetConfirm,
-                    titleVisibility: .visible
-                ) {
-                    Button("Reset", role: .destructive) {
-                        Task { await runAction { try await session.setATXPowerAction(.reset) } }
+                ForEach(session.availablePowerActions, id: \.self) { action in
+                    Button(Self.presentation(for: action).title) {
+                        if Self.presentation(for: action).isDestructive {
+                            confirmAction = action
+                        } else {
+                            perform(action)
+                        }
                     }
-                    Button("Cancel", role: .cancel) {}
-                } message: {
-                    Text("Sends the reset signal to the host.")
-                }
-
-                Button("Force Off…") {
-                    showPowerLongConfirm = true
-                }
-                .disabled(rpcDisabled)
-                .confirmationDialog(
-                    "Force-power off?",
-                    isPresented: $showPowerLongConfirm,
-                    titleVisibility: .visible
-                ) {
-                    Button("Force Off", role: .destructive) {
-                        Task { await runAction { try await session.setATXPowerAction(.powerLong) } }
-                    }
-                    Button("Cancel", role: .cancel) {}
-                } message: {
-                    Text("Holds the power button for 5 seconds.")
                 }
             }
+        }
+        .confirmationDialog(
+            confirmAction.map { Self.presentation(for: $0).confirmTitle } ?? "",
+            isPresented: Binding(
+                get: { confirmAction != nil },
+                set: { if !$0 { confirmAction = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: confirmAction
+        ) { action in
+            Button(Self.presentation(for: action).confirmButton, role: .destructive) {
+                perform(action)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { action in
+            Text(Self.presentation(for: action).confirmMessage)
+        }
+    }
+
+    private func perform(_ action: KVMPowerAction) {
+        Task { await runAction { try await session.sendPowerAction(action) } }
+    }
+
+    /// Display copy for a power action. Semantics live in `KVMPowerAction`
+    /// (KVMCore); the wording is a UI concern and stays here.
+    private struct PowerPresentation {
+        let title: LocalizedStringKey
+        let isDestructive: Bool
+        let confirmTitle: LocalizedStringKey
+        let confirmButton: LocalizedStringKey
+        let confirmMessage: LocalizedStringKey
+    }
+
+    private static func presentation(for action: KVMPowerAction) -> PowerPresentation {
+        switch action {
+        case .powerButtonShort:
+            return .init(title: "Power", isDestructive: false, confirmTitle: "", confirmButton: "", confirmMessage: "")
+        case .powerButtonLong:
+            return .init(title: "Force Off…", isDestructive: true, confirmTitle: "Force-power off?", confirmButton: "Force Off", confirmMessage: "Holds the power button for 5 seconds.")
+        case .reset:
+            return .init(title: "Reset…", isDestructive: true, confirmTitle: "Reset the machine?", confirmButton: "Reset", confirmMessage: "Sends a hard reset. Unsaved state is lost.")
+        case .shutdown:
+            return .init(title: "Shut Down…", isDestructive: true, confirmTitle: "Shut down?", confirmButton: "Shut Down", confirmMessage: "Sends an ACPI shutdown request to the guest.")
+        case .reboot:
+            return .init(title: "Reboot…", isDestructive: true, confirmTitle: "Reboot?", confirmButton: "Reboot", confirmMessage: "Reboots the guest.")
         }
     }
 

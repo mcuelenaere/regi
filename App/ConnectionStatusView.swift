@@ -1,5 +1,5 @@
 import SwiftUI
-import JetKVMTransport
+import KVMKit
 
 /// Inline connection-flow UI shown inside a KVMSessionWindow before
 /// the peer connection is up. Renders a centered card over a black
