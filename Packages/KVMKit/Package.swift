@@ -11,7 +11,7 @@ let package = Package(
     ],
     dependencies: [
         // Only JetKVMKit's clipboard uses protobuf (the agent.proto bindings).
-        .package(url: "https://github.com/apple/swift-protobuf.git", from: "1.27.0"),
+        .package(url: "https://github.com/apple/swift-protobuf.git", from: "1.38.1"),
         // Temporarily on AttilaTheFun's fork at 148.0.0 — fixes the
         // missing-headers bug on the macOS slice that's blocked us
         // since M141 (stasel/WebRTC#145, PR #147). Swap back to the
