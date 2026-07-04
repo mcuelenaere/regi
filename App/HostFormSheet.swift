@@ -28,6 +28,8 @@ struct HostFormSheet: View {
     @State private var urlText: String
     @State private var kind: DeviceKind
     @State private var username: String
+    /// VNC-over-TLS (VeNCrypt) opt-in. PiKVM's kvmd-vnc requires it.
+    @State private var vncTLS: Bool
     @State private var showDeleteConfirmation = false
 
     init(
@@ -44,11 +46,13 @@ struct HostFormSheet: View {
             _urlText = State(initialValue: "")
             _kind = State(initialValue: .jetKVM)
             _username = State(initialValue: "admin")
+            _vncTLS = State(initialValue: false)
         case .edit(let existing):
             _name = State(initialValue: existing.name)
             _urlText = State(initialValue: existing.urlString)
             _kind = State(initialValue: existing.kind)
             _username = State(initialValue: existing.username)
+            _vncTLS = State(initialValue: existing.kind == .vnc && existing.useTLS)
         }
     }
 
@@ -67,10 +71,27 @@ struct HostFormSheet: View {
     }
 
     private var parsed: (host: String, port: Int, useTLS: Bool)? {
-        SavedHost.parse(urlText, defaultScheme: kind == .piKVM ? "https" : "http")
+        switch kind {
+        case .jetKVM:
+            return SavedHost.parse(urlText)
+        case .piKVM:
+            return SavedHost.parse(urlText, defaultScheme: "https")
+        case .vnc:
+            // Plain RFB over TCP on the conventional 5900. TLS isn't supported
+            // (VeNCrypt is out of scope), so a typed https:// is dropped on save.
+            return SavedHost.parse(urlText, defaultPort: 5900)
+        }
     }
 
     private var canSave: Bool { parsed != nil }
+
+    private var addressPrompt: Text {
+        switch kind {
+        case .jetKVM: return Text(verbatim: "https://kvm.local or kvm.local")
+        case .piKVM: return Text(verbatim: "https://pikvm.local or pikvm.local")
+        case .vnc: return Text(verbatim: "vm-host.local:5900")
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -81,23 +102,33 @@ struct HostFormSheet: View {
                     // Brand names — not localizable.
                     Text(verbatim: "JetKVM").tag(DeviceKind.jetKVM)
                     Text(verbatim: "PiKVM").tag(DeviceKind.piKVM)
+                    Text(verbatim: "VNC").tag(DeviceKind.vnc)
                 }
                 .pickerStyle(.segmented)
                 TextField("Name (optional)", text: $name, prompt: Text("My desktop"))
                     .textFieldStyle(.roundedBorder)
-                TextField(
-                    "Address",
-                    text: $urlText,
-                    prompt: Text(kind == .piKVM ? "https://pikvm.local or pikvm.local" : "https://kvm.local or kvm.local")
-                )
-                .textFieldStyle(.roundedBorder)
-                .autocorrectionDisabled()
-                .textContentType(.URL)
+                TextField("Address", text: $urlText, prompt: addressPrompt)
+                    .textFieldStyle(.roundedBorder)
+                    .autocorrectionDisabled()
+                    .textContentType(.URL)
                 if kind == .piKVM {
                     TextField("Username", text: $username, prompt: Text(verbatim: "admin"))
                         .textFieldStyle(.roundedBorder)
                         .autocorrectionDisabled()
                 }
+                if kind == .vnc {
+                    Toggle("Encrypted (TLS / VeNCrypt)", isOn: $vncTLS)
+                    if vncTLS {
+                        TextField("Username (optional)", text: $username, prompt: Text(verbatim: "e.g. admin"))
+                            .textFieldStyle(.roundedBorder)
+                            .autocorrectionDisabled()
+                    }
+                }
+            }
+            if kind == .vnc, vncTLS {
+                Text("Required for PiKVM's VNC server. The password is prompted on connect; a username enables user/password (VeNCrypt Plain) auth.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             if !urlText.isEmpty, parsed == nil {
@@ -107,8 +138,11 @@ struct HostFormSheet: View {
             } else if let parsed {
                 // Tiny inline echo of how we parsed it. Helps the user
                 // notice if they typed "https://" but actually wanted
-                // plain http (or vice-versa).
-                Text(verbatim: "→ \(parsed.useTLS ? "https" : "http")://\(parsed.host):\(parsed.port)")
+                // plain http (or vice-versa). VNC has no scheme (plain TCP),
+                // so show bare host:port there.
+                Text(verbatim: kind == .vnc
+                     ? "→ \(parsed.host):\(parsed.port)"
+                     : "→ \(parsed.useTLS ? "https" : "http")://\(parsed.host):\(parsed.port)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -157,29 +191,22 @@ struct HostFormSheet: View {
         guard let parsed else { return }
         let trimmedName = name.trimmingCharacters(in: .whitespaces)
         let trimmedUser = username.trimmingCharacters(in: .whitespaces)
-        let resolvedUser = trimmedUser.isEmpty ? "admin" : trimmedUser
-        let saved: SavedHost
-        switch mode {
-        case .add:
-            saved = SavedHost(
-                name: trimmedName,
-                host: parsed.host,
-                port: parsed.port,
-                useTLS: parsed.useTLS,
-                kind: kind,
-                username: resolvedUser
-            )
-        case .edit(let existing):
-            saved = SavedHost(
-                id: existing.id,
-                name: trimmedName,
-                host: parsed.host,
-                port: parsed.port,
-                useTLS: parsed.useTLS,
-                kind: kind,
-                username: resolvedUser
-            )
-        }
+        // VNC keeps the username as typed (empty = no Plain auth); other kinds
+        // default to PiKVM's stock `admin`.
+        let resolvedUser = kind == .vnc ? trimmedUser : (trimmedUser.isEmpty ? "admin" : trimmedUser)
+        // VNC encryption is the explicit VeNCrypt/TLS toggle; other kinds take
+        // TLS from the parsed scheme.
+        let useTLS = kind == .vnc ? vncTLS : parsed.useTLS
+        let existingID: UUID? = { if case .edit(let e) = mode { return e.id } else { return nil } }()
+        let saved = SavedHost(
+            id: existingID ?? UUID(),
+            name: trimmedName,
+            host: parsed.host,
+            port: parsed.port,
+            useTLS: useTLS,
+            kind: kind,
+            username: resolvedUser
+        )
         onSave(saved)
         dismiss()
     }

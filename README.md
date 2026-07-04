@@ -6,7 +6,7 @@
 
 [![Build](https://github.com/mcuelenaere/regi/actions/workflows/build.yml/badge.svg)](https://github.com/mcuelenaere/regi/actions/workflows/build.yml)
 
-A native macOS client for [JetKVM](https://jetkvm.com) and [PiKVM](https://pikvm.org) hardware.
+A native macOS client for [JetKVM](https://jetkvm.com) and [PiKVM](https://pikvm.org) hardware, plus standalone VNC (RFB 3.8) servers — QEMU/libvirt consoles and Proxmox VMs reached over their VNC port.
 
 <p align="center">
   <img src="docs/screenshots/hero.jpg" alt="Regi hosts list and a connected session" width="820">
@@ -21,16 +21,33 @@ eaten by your Mac instead of reaching the host. Regi is a native macOS
 app that fixes this and a handful of other rough edges along the way.
 
 It talks each device's native protocol — JetKVM's WebRTC + JSON-RPC +
-HID-RPC, or PiKVM's Janus WebRTC video + `/api/ws` input — behind one
-unified UI; the difference is in the macOS integration around it.
+HID-RPC, PiKVM's Janus WebRTC video + `/api/ws` input, or RFB 3.8 over
+TCP for standalone VNC servers — behind one unified UI; the difference
+is in the macOS integration around it.
 
 ## Features
 
-- **JetKVM and PiKVM in one app.** Core remote control — video, keyboard,
-  mouse, and scroll — works on either family. JetKVM additionally exposes
+- **JetKVM, PiKVM and VNC in one app.** Core remote control — video, keyboard,
+  mouse, and scroll — works on every backend. JetKVM additionally exposes
   ATX power, codec/quality, and clipboard sync; those device-specific
   controls are hidden when they don't apply (PiKVM parity is on the
   roadmap).
+- **Standalone VNC (RFB 3.8).** Connect to any plain VNC server — QEMU/libvirt
+  `-vnc`, a Proxmox VM's QEMU VNC port, or PiKVM's `kvmd-vnc`. H.264 (RFB
+  encoding 50, via VideoToolbox — as used by PiKVM and TigerVNC 1.13+) is
+  preferred where offered, then Tight (JPEG via ImageIO), with
+  ZRLE / Zlib / Hextile / CopyRect / Raw fallbacks — all decoded off the main
+  thread, with each `FramebufferUpdate` presented atomically (no tearing or
+  per-strip shimmer);
+  dynamic resolution changes (virtio-gpu / DesktopSize), QEMU extended key
+  events for layout-independent typing, and UTF-8 clipboard sync via the
+  Extended Clipboard pseudo-encoding (falling back to Latin-1 cut text).
+  Power control (shutdown / reset) is offered when the server supports XVP
+  (QEMU started with `power-control=on`).
+  Security types **None**, **VNC Authentication**, and **VeNCrypt** (TLS —
+  as PiKVM's `kvmd-vnc` requires) are supported, with the same self-signed
+  trust prompt as the other backends. Enable "Encrypted (TLS)" when adding a
+  VNC host to connect to a VeNCrypt server.
 - **Real keyboard capture.** System shortcuts — ⌘Tab, ⌘Space (Spotlight),
   ⌘Q, ⌘H, Mission Control, function keys — route to the remote host via
   `CGEventTap`. Engages automatically when the session window is
@@ -50,10 +67,11 @@ unified UI; the difference is in the macOS integration around it.
   with the actual failure reason instead of a generic browser warning,
   and remembers your choice per host.
 - **Keychain-backed passwords.** Per-host, scoped to the app.
-- **Bandwidth gate** *(JetKVM)*. When the session window is minimised or
-  fully covered, Regi tells the device to pause its encoder (after a 5 s
-  debounce). Saves device CPU and LAN bandwidth while the window's
-  hidden; resumes instantly when you bring it back.
+- **Bandwidth gate** *(JetKVM, VNC)*. When the session window is minimised or
+  fully covered, Regi pauses the video feed after a 5 s debounce — the device
+  stops encoding (JetKVM) or Regi stops requesting framebuffer updates (VNC).
+  Saves device CPU and LAN bandwidth while the window's hidden; resumes
+  instantly when you bring it back.
 - **First-class native UI.** SwiftUI, Mission Control thumbnails,
   Window menu entries with each host's display name, native
   fullscreen, real app icon in the Dock.

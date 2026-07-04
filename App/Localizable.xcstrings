@@ -28,6 +28,9 @@
     "Auto" : {
 
     },
+    "Basic clipboard" : {
+
+    },
     "Cancel" : {
 
     },
@@ -50,6 +53,9 @@
 
     },
     "Connect" : {
+
+    },
+    "Connect to sync the clipboard." : {
 
     },
     "Connection lost — reconnecting (attempt %lld)…" : {
@@ -82,6 +88,9 @@
     "Edit…" : {
 
     },
+    "Encrypted (TLS / VeNCrypt)" : {
+
+    },
     "Enter a hostname or http(s) URL." : {
 
     },
@@ -106,6 +115,9 @@
     "H.265" : {
 
     },
+    "Hard-resets the guest, like the reset button. Unsaved state is lost." : {
+
+    },
     "HDMI signal error detected." : {
 
     },
@@ -116,12 +128,6 @@
 
     },
     "Hosts" : {
-
-    },
-    "https://kvm.local or kvm.local" : {
-
-    },
-    "https://pikvm.local or pikvm.local" : {
 
     },
     "Incompatible resolution or refresh rate settings" : {
@@ -178,6 +184,9 @@
     "Power" : {
 
     },
+    "Power control over VNC (XVP). Requires a server started with power control enabled; QEMU supports shutdown and reset." : {
+
+    },
     "Power, codec, and quality controls." : {
 
     },
@@ -187,10 +196,16 @@
     "Remember password" : {
 
     },
+    "Required for PiKVM's VNC server. The password is prompted on connect; a username enables user/password (VeNCrypt Plain) auth." : {
+
+    },
     "Reset" : {
 
     },
     "Reset host?" : {
+
+    },
+    "Reset the VM?" : {
 
     },
     "Reset…" : {
@@ -203,6 +218,9 @@
 
     },
     "Save the password to the macOS Keychain so it auto-fills next time you connect to this host." : {
+
+    },
+    "Sends an ACPI shutdown request to the guest." : {
 
     },
     "Sends the reset signal to the host." : {
@@ -220,6 +238,15 @@
     "Show Hosts" : {
 
     },
+    "Shut Down" : {
+
+    },
+    "Shut down the VM?" : {
+
+    },
+    "Shut Down…" : {
+
+    },
     "Sign In" : {
 
     },
@@ -232,10 +259,16 @@
     "Sync local clipboard with host" : {
 
     },
+    "Sync text clipboard with guest" : {
+
+    },
     "t" : {
 
     },
     "Takes effect on next reconnect." : {
+
+    },
+    "Text-only sync, both directions. UTF-8 needs a guest clipboard agent (e.g. spice-vdagent with `-vga …,clipboard=vnc`); otherwise Latin-1 only. Password-manager copies marked transient are skipped." : {
 
     },
     "The connected computer is powered off or asleep" : {
@@ -254,6 +287,12 @@
 
     },
     "Username" : {
+
+    },
+    "Username (optional)" : {
+
+    },
+    "UTF-8 clipboard" : {
 
     },
     "v" : {

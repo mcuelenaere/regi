@@ -30,6 +30,16 @@ struct KVMWindowView: View {
         return c.atxPower || c.videoCodecPreference || c.streamQuality || c.clipboardSync
     }
 
+    /// Whether the Controls popover should be openable. JetKVM's controls ride
+    /// its JSON-RPC channel (and self-disable inside the panel until it's
+    /// ready), so gate on `rpcReady` there; VNC/PiKVM have no RPC channel, so a
+    /// live connection is enough. `videoCodecPreference` is JetKVM-only, so it
+    /// distinguishes the two without a device-kind check.
+    private var controlsReady: Bool {
+        guard case .connected = session.state else { return false }
+        return session.rpcReady || !session.capabilities.videoCodecPreference
+    }
+
     private var keyboardCaptureBinding: Binding<Bool> {
         Binding(
             // Only show as checked when capture is actually doing
@@ -153,9 +163,9 @@ struct KVMWindowView: View {
                 // Frames won't flow; show the placeholder instead of
                 // leaving the user staring at a black window.
                 NoSignalPlaceholder(error: err)
-            } else if let track = session.videoTrack {
+            } else if let output = session.videoOutput {
                 KVMVideoRepresentable(
-                    track: track,
+                    output: output,
                     session: session,
                     pointerLocked: pointerLock.state == .enabled,
                     hideCursorOverVideo: hideCursorOverVideo
@@ -232,7 +242,7 @@ struct KVMWindowView: View {
                         ControlPanel()
                             .environment(session)
                     }
-                    .disabled(!session.rpcReady)
+                    .disabled(!controlsReady)
                     .help("Power, codec, and quality controls.")
                 }
             }
@@ -257,7 +267,7 @@ struct KVMWindowView: View {
         // the session down via .onDisappear, so no explicit
         // Disconnect entry is needed.
         .focusedSceneValue(\.sessionActions, SessionActions(
-            canShowControls: hasControlCapabilities && session.rpcReady,
+            canShowControls: hasControlCapabilities && controlsReady,
             toggleControls: { showControls.toggle() },
             toggleStats: { showStats.toggle() }
         ))
@@ -433,17 +443,25 @@ private struct NoSignalPlaceholder: View {
 }
 
 private struct KVMVideoRepresentable: NSViewRepresentable {
-    let track: RTCVideoTrack
+    /// What to render, chosen by the backend (WebRTC track vs local output).
+    let output: KVMVideoOutput
     let session: Session
     let pointerLocked: Bool
     let hideCursorOverVideo: Bool
+
+    private func attach(to view: KVMVideoView) {
+        switch output {
+        case .webRTC(let track): view.attach(track: track)
+        case .local(let localOutput): view.attach(localVideo: localOutput)
+        }
+    }
 
     func makeNSView(context: Context) -> KVMVideoView {
         let view = KVMVideoView()
         view.setSession(session)
         view.pointerLocked = pointerLocked
         view.hideCursorOverVideo = hideCursorOverVideo
-        view.attach(track: track)
+        attach(to: view)
         return view
     }
 
@@ -451,7 +469,7 @@ private struct KVMVideoRepresentable: NSViewRepresentable {
         nsView.setSession(session)
         nsView.pointerLocked = pointerLocked
         nsView.hideCursorOverVideo = hideCursorOverVideo
-        nsView.attach(track: track)
+        attach(to: nsView)
         // SwiftUI re-runs updateNSView whenever observed Session
         // state changes. Tell the NSView to reconsider its
         // cursor-rect hide condition (videoState.error may have

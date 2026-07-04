@@ -14,8 +14,11 @@ struct KVMSessionWindow: View {
     let sessionID: KVMSessionWindowID
     @State private var session = Session()
     @State private var clipboardSync: ClipboardSyncManager?
-    /// Mirror of the ControlPanel toggle so we can drive
-    /// ClipboardSyncManager from this view's lifecycle.
+    /// VNC's text-only clipboard sync. Inert unless the active backend is a
+    /// `VNCBackend` (only one of the two managers finds its surface non-nil).
+    @State private var vncClipboardSync: VNCClipboardSyncManager?
+    /// Mirror of the ControlPanel toggle so we can drive the clipboard sync
+    /// managers from this view's lifecycle.
     @AppStorage("RegiClipboardSyncEnabled") private var clipboardSyncEnabled: Bool = false
     @State private var ownWindow: NSWindow?
     /// True between this window's didEnterFullScreen and
@@ -49,7 +52,7 @@ struct KVMSessionWindow: View {
                     ConnectionStatusView(
                         displayName: sessionID.displayName,
                         urlString: sessionID.urlString,
-                        host: sessionID.host,
+                        host: passwordVaultKey,
                         endpoint: currentEndpoint,
                         onCancel: { dismissWindow() },
                         onRetry: { Task { await connect() } },
@@ -75,13 +78,24 @@ struct KVMSessionWindow: View {
                     initialEnabled: clipboardSyncEnabled
                 )
             }
+            if vncClipboardSync == nil {
+                vncClipboardSync = VNCClipboardSyncManager(
+                    session: session,
+                    initialEnabled: clipboardSyncEnabled
+                )
+            }
             await connect()
         }
         .onChange(of: clipboardSyncEnabled) { _, newValue in
             clipboardSync?.setEnabled(newValue)
+            vncClipboardSync?.setEnabled(newValue)
         }
         .onChange(of: session.clipboardAgentState) { _, _ in
             clipboardSync?.sessionStateChanged()
+        }
+        .onChange(of: session.state) { _, _ in
+            // VNC clipboard availability tracks connection state.
+            vncClipboardSync?.sessionStateChanged()
         }
         .onDisappear {
             // Session.disconnect is async; fire-and-forget so the
@@ -192,12 +206,20 @@ struct KVMSessionWindow: View {
             useTLS: sessionID.useTLS,
             allowSelfSignedCertificate: trustStore.isTrusted(sessionID.host),
             kind: sessionID.kind,
-            username: sessionID.kind == .piKVM ? sessionID.username : nil
+            username: (sessionID.kind == .piKVM || sessionID.kind == .vnc) ? sessionID.username : nil
         )
     }
 
+    /// Keychain key for this session's password. VNC servers commonly run
+    /// several displays on one host (5900, 5901, …) with different passwords,
+    /// so key `.vnc` by host:port; other kinds stay keyed by host alone (so
+    /// TLS-trust and mDNS flows keep matching).
+    private var passwordVaultKey: String {
+        sessionID.kind == .vnc ? "\(sessionID.host):\(sessionID.port)" : sessionID.host
+    }
+
     private func connect() async {
-        let saved = PasswordVault.load(for: sessionID.host)
+        let saved = PasswordVault.load(for: passwordVaultKey)
         await session.connect(endpoint: currentEndpoint, password: saved)
     }
 
@@ -245,8 +267,10 @@ struct KVMSessionWindow: View {
 
 extension KVMSessionWindowID {
     /// Round-trippable URL string for the connect-overlay's subtitle.
-    /// Drops the port suffix when it matches the scheme default.
+    /// Drops the port suffix when it matches the scheme default. VNC is plain
+    /// TCP (no scheme), so it shows bare host:port.
     var urlString: String {
+        if kind == .vnc { return "\(host):\(port)" }
         let scheme = useTLS ? "https" : "http"
         let usingDefaultPort = (useTLS && port == 443) || (!useTLS && port == 80)
         return usingDefaultPort ? "\(scheme)://\(host)" : "\(scheme)://\(host):\(port)"

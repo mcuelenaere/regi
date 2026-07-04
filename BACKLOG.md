@@ -5,6 +5,80 @@ to be picked up cold without re-litigating the original investigation.
 
 ---
 
+## VNC: VeNCrypt / TLS — remaining nuances
+
+**Where:** `VNCVeNCryptFramer.swift`, `VNCConnection` (`makeTLSOptions` verify
+block), `VeNCryptTests`.
+
+**What's implemented:** VeNCrypt (security type 19) with an in-band TLS upgrade.
+An `NWProtocolFramer` below `NWProtocolTLS` runs the plaintext RFB version +
+security + VeNCrypt subtype negotiation, then goes transparent so TLS wraps the
+rest (inner auth + session). We prefer X509→anonymous-TLS subtypes with Plain →
+VncAuth → None inner auth, and refuse the unencrypted `plain` subtype. Cert
+trust reuses the self-signed override (`TrustedHostStore` / `awaitingTrustOverride`).
+The host form has an "Encrypted (TLS)" toggle + username for `.vnc`.
+
+**Nuances / possible follow-ups:**
+- We accept **anonymous TLS** subtypes (TLSNone/Vnc/Plain) when offered — these
+  encrypt but give no server authentication. Could restrict to X509 only.
+- Trust is system-eval + self-signed override; there's no per-host **cert
+  pinning** (accept-this-exact-cert). The override trusts any cert for the host
+  once accepted, like the HTTPS backends.
+- The VeNCrypt framer path can't be exercised by the loopback `FakeRFBServer`
+  (no TLS there) — the negotiation logic is unit-tested (`VeNCryptTests`) but
+  the end-to-end TLS path is validated manually against PiKVM.
+- A server that offers VeNCrypt but no subtype we accept (or rejects our
+  version) makes the framer stop without `markReady()`; there's no framer API
+  to fail the connection, so the error only surfaces after the 8 s connect
+  timeout instead of immediately. Acceptable for a misconfiguration path.
+
+## VNC: QEMU server features we don't implement yet
+
+**Where:** `VNCBackend.encodings` (the advertised `SetEncodings` list) and
+`VNCStreamEngine` for anything that arrives as a pseudo-encoding rect.
+
+Audited against QEMU's `ui/vnc.h` / `set_encodings()`. We now decode all of
+QEMU's efficient frame encodings (Tight preferred; ZRLE/Zlib/Hextile/CopyRect/Raw
+fallbacks) and implement XVP power control. ZYWRLE (lossy wavelet ZRLE) and
+TightPNG are intentionally skipped — niche, and Tight+JPEG already covers the
+lossy case. The remaining unimplemented *features* QEMU exposes, roughly by value:
+
+- **Cursor pseudo-encodings** (`RICH_CURSOR` 0xFFFFFF11, `ALPHA_CURSOR`,
+  `XCURSOR`). Server ships the cursor sprite so the client renders it locally
+  instead of it being baked into the framebuffer — removes the double-cursor
+  look and cuts perceived pointer latency. Needs a cursor overlay composited
+  over the presented IOSurface (track hotspot + alpha).
+- **LED state** (`VNC_ENCODING_LED_STATE`, 0xFFFFFEFB) — caps/num/scroll-lock
+  sync. Minor for a forward-only KVM.
+- **Desktop resize ext / ExtendedDesktopSize** (`DESKTOP_RESIZE_EXT`) —
+  *client-initiated* resize (ask the guest to match the window). We only handle
+  server-driven `DesktopSize` today.
+- **Audio** (`VNC_ENCODING_AUDIO`) — playback redirection. Large, separate feature.
+
+Not supported by QEMU's server (so not worth implementing for the QEMU target):
+Fence / ContinuousUpdates, RRE/CoRRE/TRLE/ZlibHex.
+
+## VNC: H.264 decoder — single-context limitation
+
+**Where:** `Packages/JetKVMTransport/Sources/JetKVMTransport/VNC/H264Decoder.swift`.
+
+**What's there now:** the RFB "Open H.264" encoding (50) is decoded via
+VideoToolbox (PiKVM `kvmd-vnc` and TigerVNC 1.13+ interoperate on it, as does
+the still-unmerged QEMU GStreamer patch). We keep **one** decoder context, which
+is correct for the way PiKVM/QEMU stream H.264 (a single full-frame rect per
+update). TigerVNC keys contexts per rectangle geometry and can run several
+concurrent H.264 regions; a server doing that would make us reset our single
+context on every geometry switch (functional but wasteful — each switch drops
+the reference frames and forces a keyframe wait).
+
+**What "better" looks like:** a small context cache keyed by rect geometry
+(mirroring TigerVNC's `contexts` deque), each with its own
+`VTDecompressionSession`, honouring the per-rect `resetContext` (0x1) vs
+`resetAllContexts` (0x2) flags independently instead of collapsing both to a
+full reset. Only worth it if a real server multiplexes H.264 regions.
+
+---
+
 ## Move WebRTC pin back to upstream `stasel/WebRTC` once M148+ releases
 
 **Where:** `Packages/JetKVMTransport/Package.swift` and

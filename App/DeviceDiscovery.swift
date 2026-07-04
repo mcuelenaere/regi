@@ -187,6 +187,12 @@ extension DeviceDiscovery: NetServiceDelegate {
             deviceID = txt["serial"]
             version = nil
             isSetup = true
+        case .vnc:
+            // VNC servers aren't discovered over mDNS (this parser only sees
+            // JetKVM/PiKVM service types); handle for exhaustiveness.
+            deviceID = nil
+            version = nil
+            isSetup = true
         }
 
         let entry = DiscoveredHost(

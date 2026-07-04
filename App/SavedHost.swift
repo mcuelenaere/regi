@@ -68,7 +68,9 @@ struct SavedHost: Codable, Identifiable, Hashable {
             port: port,
             useTLS: useTLS,
             kind: kind,
-            username: kind == .piKVM ? username : nil
+            // PiKVM always needs a login; VNC uses it for VeNCrypt "Plain" auth
+            // when present (empty → the backend picks a no-username subtype).
+            username: (kind == .piKVM || kind == .vnc) ? username : nil
         )
     }
 
@@ -77,6 +79,11 @@ struct SavedHost: Codable, Identifiable, Hashable {
     /// "jetkvm.local" comes back as "http://jetkvm.local" rather than
     /// "http://jetkvm.local:80".
     var urlString: String {
+        // VNC is plain RFB over TCP (no scheme). Show bare host:port; the form
+        // re-parses it with the 5900 default.
+        if kind == .vnc {
+            return port == 5900 ? host : "\(host):\(port)"
+        }
         let scheme = useTLS ? "https" : "http"
         let usingDefaultPort = (useTLS && port == 443) || (!useTLS && port == 80)
         return usingDefaultPort ? "\(scheme)://\(host)" : "\(scheme)://\(host):\(port)"
@@ -87,7 +94,11 @@ struct SavedHost: Codable, Identifiable, Hashable {
     /// "kvm.local:8080"). Bare hostnames default to `defaultScheme`
     /// (http for JetKVM, https for PiKVM since KVMD is TLS by default).
     /// Returns nil for unparseable / non-http(s) input.
-    static func parse(_ raw: String, defaultScheme: String = "http") -> (host: String, port: Int, useTLS: Bool)? {
+    static func parse(
+        _ raw: String,
+        defaultScheme: String = "http",
+        defaultPort: Int? = nil
+    ) -> (host: String, port: Int, useTLS: Bool)? {
         let trimmed = raw.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return nil }
         // URL needs a scheme to parse host/port reliably; prepend the
@@ -101,7 +112,9 @@ struct SavedHost: Codable, Identifiable, Hashable {
             scheme == "http" || scheme == "https"
         else { return nil }
         let useTLS = scheme == "https"
-        let port = url.port ?? (useTLS ? 443 : 80)
+        // Bare "host" (no explicit port) falls back to `defaultPort` when
+        // given — VNC's 5900 — otherwise the scheme default.
+        let port = url.port ?? defaultPort ?? (useTLS ? 443 : 80)
         guard port > 0, port < 65_536 else { return nil }
         return (host, port, useTLS)
     }
