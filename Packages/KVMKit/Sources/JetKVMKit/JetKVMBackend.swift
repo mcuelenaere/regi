@@ -136,6 +136,10 @@ public final class JetKVMBackend: KVMBackend {
     private var http: HTTPClient?
     private var signaling: SignalingClient?
     private var webrtc: WebRTCFacade?
+    /// FIFO bridge between synchronous AppKit keyboard callbacks and the
+    /// actor-isolated WebRTC transport.  The SCTP channel is ordered, but
+    /// that only helps after messages have been submitted in the right order.
+    private var reliableHIDQueue: ReliableHIDQueue?
     private var pumpTasks: [Task<Void, Never>] = []
     private var modifierTracker = ModifierTracker()
     private var pointerThrottler = InputThrottler(interval: .milliseconds(8))
@@ -298,7 +302,7 @@ public final class JetKVMBackend: KVMBackend {
     /// Drops if the HID channel isn't ready yet, or if the keyCode
     /// isn't in the keymap.
     public func sendKeypress(virtualKeyCode keyCode: UInt16, pressed: Bool) {
-        guard hidReady, let webrtc else { return }
+        guard hidReady, reliableHIDQueue != nil else { return }
         guard let usbHID = KeyMap.virtualKeyToHIDUsageID[keyCode] else { return }
 
         // Cmd-shortcut path: AppKit doesn't deliver keyUp for keys
@@ -314,10 +318,7 @@ public final class JetKVMBackend: KVMBackend {
         if pressed, !ModifierBits.anyMeta.intersection(modifierTracker.currentState).isEmpty {
             let down = HIDRPCMessage.keypressReport(key: usbHID, pressed: true)
             let up = HIDRPCMessage.keypressReport(key: usbHID, pressed: false)
-            Task {
-                await webrtc.sendHID(down, on: .reliable)
-                await webrtc.sendHID(up, on: .reliable)
-            }
+            reliableHIDQueue?.enqueueBatch([down, up])
             return
         }
 
@@ -327,7 +328,7 @@ public final class JetKVMBackend: KVMBackend {
             heldNonModifierKeys.remove(usbHID)
         }
         let message = HIDRPCMessage.keypressReport(key: usbHID, pressed: pressed)
-        Task { await webrtc.sendHID(message, on: .reliable) }
+        reliableHIDQueue?.enqueue(message)
     }
 
     /// Forward a `flagsChanged` event from the KVM view. Two distinct
@@ -345,7 +346,7 @@ public final class JetKVMBackend: KVMBackend {
     ///   press + release back-to-back. Looking up via `KeyMap`
     ///   (kVK_CapsLock 0x39 → USB HID 0x39).
     public func handleFlagsChanged(virtualKeyCode keyCode: UInt16) {
-        guard hidReady, let webrtc else { return }
+        guard hidReady, reliableHIDQueue != nil else { return }
 
         if keyCode == 0x39, let usbHID = KeyMap.virtualKeyToHIDUsageID[keyCode] {
             // Caps Lock toggle. macOS hosts apply a debounce/minimum-hold
@@ -357,18 +358,17 @@ public final class JetKVMBackend: KVMBackend {
             // safe across hosts.
             let down = HIDRPCMessage.keypressReport(key: usbHID, pressed: true)
             let up = HIDRPCMessage.keypressReport(key: usbHID, pressed: false)
-            Task {
-                await webrtc.sendHID(down, on: .reliable)
-                try? await Task.sleep(for: .milliseconds(200))
-                await webrtc.sendHID(up, on: .reliable)
-            }
+            reliableHIDQueue?.enqueueBatch(
+                [down, up],
+                interMessageDelay: .milliseconds(200)
+            )
             return
         }
 
         guard let transition = modifierTracker.handle(modifierKeyCode: keyCode) else { return }
         guard let usbHID = transition.modifier.usbHIDUsageID else { return }
         let message = HIDRPCMessage.keypressReport(key: usbHID, pressed: transition.pressed)
-        Task { await webrtc.sendHID(message, on: .reliable) }
+        reliableHIDQueue?.enqueue(message)
 
         // Without CGEventTap-based capture, AppKit swallows the keyUp
         // for Cmd+<letter> shortcuts that match a menu item (Cmd+C,
@@ -385,12 +385,9 @@ public final class JetKVMBackend: KVMBackend {
            !heldNonModifierKeys.isEmpty {
             let stuck = heldNonModifierKeys
             heldNonModifierKeys.removeAll()
-            Task {
-                for key in stuck {
-                    let release = HIDRPCMessage.keypressReport(key: key, pressed: false)
-                    await webrtc.sendHID(release, on: .reliable)
-                }
-            }
+            reliableHIDQueue?.enqueueBatch(stuck.map {
+                HIDRPCMessage.keypressReport(key: $0, pressed: false)
+            })
         }
     }
 
@@ -399,7 +396,7 @@ public final class JetKVMBackend: KVMBackend {
     /// our app lost focus mid-keystroke) so the host doesn't end up
     /// with stuck modifiers we'll never explicitly release.
     public func releaseAllHeldModifiers() {
-        guard let webrtc else {
+        guard reliableHIDQueue != nil else {
             modifierTracker.reset()
             heldNonModifierKeys.removeAll()
             return
@@ -409,12 +406,12 @@ public final class JetKVMBackend: KVMBackend {
             .rightControl, .rightShift, .rightAlt, .rightMeta,
         ]
         let held = modifierTracker.currentState
-        for bit in allBits where held.contains(bit) {
-            guard let usbHID = bit.usbHIDUsageID else { continue }
-            let message = HIDRPCMessage.keypressReport(key: usbHID, pressed: false)
-            if hidReady {
-                Task { await webrtc.sendHID(message, on: .reliable) }
-            }
+        let releases = allBits.compactMap { bit -> HIDRPCMessage? in
+            guard held.contains(bit), let usbHID = bit.usbHIDUsageID else { return nil }
+            return .keypressReport(key: usbHID, pressed: false)
+        }
+        if hidReady {
+            reliableHIDQueue?.enqueueBatch(releases)
         }
         modifierTracker.reset()
         // Note: heldNonModifierKeys are intentionally NOT released
@@ -536,6 +533,12 @@ public final class JetKVMBackend: KVMBackend {
         incoming: AsyncThrowingStream<SignalingMessage, Error>,
         rpc: JSONRPCClient
     ) {
+        // Synchronous UI callbacks enqueue here; one consumer submits every
+        // keyboard frame to the actor-isolated WebRTC facade in FIFO order.
+        reliableHIDQueue = ReliableHIDQueue { [weak webrtc] message in
+            await webrtc?.sendHID(message, on: .reliable)
+        }
+
         // 0. Stand up the clipboard bridge. Lives for the session
         //    lifetime; the App layer wires a NSPasteboard-backed
         //    `ClipboardSource` into `bridge.source` and consumes
@@ -907,6 +910,8 @@ public final class JetKVMBackend: KVMBackend {
     }
 
     private func teardown() async {
+        reliableHIDQueue?.cancel()
+        reliableHIDQueue = nil
         for task in pumpTasks { task.cancel() }
         pumpTasks = []
         if let rpc = self.rpc {
