@@ -236,12 +236,26 @@ final class KVMVideoView: NSView {
     // Suppress the system's "beep on unhandled keys" sound — we forward
     // every key, so to NSResponder there's no such thing as unhandled.
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        // Only swallow when we have a session and the key has a
-        // mapping; otherwise let it bubble (Cmd+Q etc. should still
-        // close the app when input forwarding is off).
-        guard session != nil else { return false }
-        return false  // CGEventTap "Capture Keyboard" mode in M4 will
-                      // be the path that swallows these.
+        guard let session else { return false }
+
+        // AppKit reserves Control-Tab and Control-Shift-Tab for moving
+        // focus through the local key-view loop.  If we let that happen,
+        // Tab never reaches the host and the video view can lose first
+        // responder before Control-up arrives, leaving Control stuck on
+        // the remote machine.  Claim this one local key equivalent and
+        // emit a complete Tab tap; modifier transitions continue through
+        // flagsChanged.  Keyboard-lock's CGEventTap handles all broader
+        // system shortcuts when the user opts into it.
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let isControlTab = event.keyCode == 0x30
+            && flags.contains(.control)
+            && !flags.contains(.command)
+            && !flags.contains(.option)
+        guard isControlTab, event.type == .keyDown else { return false }
+
+        session.sendKeypress(virtualKeyCode: event.keyCode, pressed: true)
+        session.sendKeypress(virtualKeyCode: event.keyCode, pressed: false)
+        return true
     }
 
     // MARK: - Mouse events
