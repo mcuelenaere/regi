@@ -56,6 +56,8 @@ public final class Session {
     public var streamQualityFactor: Double? { jetKVM?.streamQualityFactor }
     public var videoCodecPreference: VideoCodecPreference? { jetKVM?.videoCodecPreference }
     public var failsafe: FailsafeModeNotification? { jetKVM?.failsafe }
+    public var takeoverPeer: TakeoverPeer? { jetKVM?.takeoverPeer }
+    public var takeoverPeerLookupComplete: Bool { jetKVM?.takeoverPeerLookupComplete ?? false }
     public var clipboardAgentState: ClipboardAgentState { jetKVM?.clipboardAgentState ?? .absent }
     public var clipboardBridge: ClipboardBridge? { jetKVM?.clipboardBridge }
 

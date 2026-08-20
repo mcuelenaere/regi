@@ -25,7 +25,22 @@
     "Agent disconnected" : {
 
     },
-    "Another peer connected to this device — your session was taken over." : {
+    "Another peer connected to this device and took over your session. Looking up peer details…" : {
+
+    },
+    "Another peer connected to this device and took over your session. Most recently reported cloud gateway: %@; the end user's IP is not exposed." : {
+
+    },
+    "Another peer connected to this device and took over your session. Most recently reported local source: %@" : {
+
+    },
+    "Another peer connected to this device and took over your session. Most recently reported source: %@" : {
+
+    },
+    "Another peer connected to this device and took over your session. The device did not expose its identity." : {
+
+    },
+    "Another peer connected to this device and took over your session. The most recently reported session used the cloud route; the end user's IP is not exposed." : {
 
     },
     "Auto" : {
