@@ -11,7 +11,7 @@ let package = Package(
     ],
     dependencies: [
         // Only JetKVMKit's clipboard uses protobuf (the agent.proto bindings).
-        .package(url: "https://github.com/apple/swift-protobuf.git", from: "1.27.0"),
+        .package(url: "https://github.com/apple/swift-protobuf.git", from: "1.38.1"),
         // Pinned to a specific milestone: WebRTC ships breaking API
         // changes between them. M150 was the first upstream release with
         // the macOS-slice headers fixed (stasel/WebRTC#145), which got us
