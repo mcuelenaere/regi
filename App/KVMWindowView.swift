@@ -205,6 +205,13 @@ struct KVMWindowView: View {
                         foreground: .black
                     )
                 }
+                if case .blockedBySecureInput(let holder) = capturer.state {
+                    banner(
+                        "Keyboard lock is blocked: macOS Secure Input is active (held by \(holder)), which stops any app from capturing keys. If no password field is focused, it's stuck — log out and back in to clear it.",
+                        background: .yellow,
+                        foreground: .black
+                    )
+                }
                 Spacer()
             }
             .padding()

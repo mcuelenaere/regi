@@ -1,6 +1,8 @@
 import AppKit
 import ApplicationServices
 import CoreGraphics
+import Darwin
+import IOKit
 import OSLog
 
 private let log = Logger(subsystem: "app.regi.mac", category: "tap")
@@ -29,15 +31,25 @@ private let log = Logger(subsystem: "app.regi.mac", category: "tap")
 /// — the user has to grant manually in System Settings → Privacy &
 /// Security → Accessibility, then call `enable()` again.
 ///
+/// Also blocked by macOS **Secure Input** (`.blockedBySecureInput`).
+/// See `secureInputHolder()` — that condition is invisible from the tap
+/// API itself, so we probe for it explicitly rather than install a tap
+/// that would silently receive nothing.
+///
 /// **The app must be unsandboxed** for CGEventTap to work; App Sandbox
-/// blocks session-level taps outright. Our build is unsandboxed for
-/// this reason (commit 1: ENABLE_HARDENED_RUNTIME stays off in debug).
+/// blocks session-level taps outright. Our build has no App Sandbox
+/// entitlement for this reason (hardened runtime is on, which is fine —
+/// it's the sandbox specifically that kills session taps).
 @MainActor
 @Observable
 final class KeyboardCapturer {
     enum State: Equatable {
         case disabled
         case awaitingAccessibility
+        /// Secure Input is engaged session-wide, so no event tap can
+        /// receive keys. `holder` is a human-readable name for the
+        /// process holding it (or "pid N" if we can't resolve one).
+        case blockedBySecureInput(holder: String)
         case enabled    // tap installed AND user intends capture
         case suspended  // user intends capture, tap removed (app not active)
         case failed(String)
@@ -136,9 +148,10 @@ final class KeyboardCapturer {
     }
 
     /// Express "user wants capture on". If the app is currently
-    /// active and Accessibility is granted, the tap installs and
-    /// `state` becomes `.enabled`. Otherwise `state` reflects the
-    /// blocking condition (`.awaitingAccessibility` or `.suspended`).
+    /// active, Accessibility is granted and Secure Input is off, the
+    /// tap installs and `state` becomes `.enabled`. Otherwise `state`
+    /// reflects the blocking condition (`.awaitingAccessibility`,
+    /// `.blockedBySecureInput` or `.suspended`).
     func enable() {
         log.info("user enabled capture")
         userIntent = true
@@ -229,6 +242,16 @@ final class KeyboardCapturer {
     }
 
     private func installTap() {
+        // Secure Input blocks key delivery to every tap in the
+        // session, and `tapCreate` gives no hint of it — see
+        // `secureInputHolder()`. Check before installing a tap that
+        // would look healthy and silently receive nothing.
+        if let holder = secureInputHolder() {
+            log.notice("Secure Input active (held by \(holder, privacy: .public)) — not installing tap")
+            state = .blockedBySecureInput(holder: holder)
+            return
+        }
+
         let mask: CGEventMask = CGEventMask(
             (1 << CGEventType.keyDown.rawValue) |
             (1 << CGEventType.keyUp.rawValue) |
@@ -265,6 +288,65 @@ final class KeyboardCapturer {
         eventTap = tap
         runLoopSource = source
         state = .enabled
+    }
+
+    // MARK: - Secure Input
+
+    /// Name of the process holding macOS Secure Input, or nil when
+    /// Secure Input isn't engaged.
+    ///
+    /// While it is engaged the window server stops delivering key
+    /// events to *every* event tap in the session. `tapCreate` still
+    /// succeeds and the tap still reports enabled, so a capture that
+    /// hits this looks on while doing nothing at all. Normally it's
+    /// transient (a password field has focus), but a process that
+    /// calls `EnableSecureEventInput` without balancing it — we've
+    /// seen `loginwindow` do this — leaves it stuck until the user
+    /// logs out and back in.
+    ///
+    /// The flag lives in the IORegistry root's `IOConsoleUsers`
+    /// property, an array of per-session dictionaries — the same thing
+    /// `ioreg -l -d 1 -k IOConsoleUsers` prints. Depth 1 there is the
+    /// hint that this is a root property, so no plane walk is needed.
+    private func secureInputHolder() -> String? {
+        let root = IORegistryGetRootEntry(kIOMainPortDefault)
+        guard root != 0 else { return nil }
+        defer { IOObjectRelease(root) }
+        guard let sessions = IORegistryEntryCreateCFProperty(
+            root,
+            "IOConsoleUsers" as CFString,
+            kCFAllocatorDefault,
+            0
+        )?.takeRetainedValue() as? [[String: Any]] else { return nil }
+
+        for session in sessions {
+            // Ignore sessions switched away from: another logged-in
+            // user typing a password can't affect our taps.
+            if let onConsole = session["kCGSSessionOnConsoleKey"] as? Bool, !onConsole {
+                continue
+            }
+            guard let pid = (session["kCGSSessionSecureInputPID"] as? NSNumber)?.int32Value,
+                  pid != 0 else { continue }
+            return Self.processName(for: pid)
+        }
+        return nil
+    }
+
+    /// Best-effort display name for a pid. The holder is often not a
+    /// regular app (`loginwindow`, a daemon), so fall back to the
+    /// executable name and finally to the raw pid.
+    private static func processName(for pid: pid_t) -> String {
+        if let name = NSRunningApplication(processIdentifier: pid)?.localizedName {
+            return name
+        }
+        var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+        if proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 {
+            let path = String(cString: buffer)
+            if !path.isEmpty {
+                return (path as NSString).lastPathComponent
+            }
+        }
+        return "pid \(pid)"
     }
 
     /// Tap callback. Marked `nonisolated` so it can be called from the
