@@ -12,12 +12,12 @@ let package = Package(
     dependencies: [
         // Only JetKVMKit's clipboard uses protobuf (the agent.proto bindings).
         .package(url: "https://github.com/apple/swift-protobuf.git", from: "1.27.0"),
-        // Temporarily on AttilaTheFun's fork at 148.0.0 — fixes the
-        // missing-headers bug on the macOS slice that's blocked us
-        // since M141 (stasel/WebRTC#145, PR #147). Swap back to the
-        // upstream `stasel/WebRTC` tag once #147 merges and a real
-        // release ships from there. Only the WebRTC-backed targets pull it in.
-        .package(url: "https://github.com/AttilaTheFun/WebRTC.git", exact: "148.0.0"),
+        // Pinned to a specific milestone: WebRTC ships breaking API
+        // changes between them. M150 was the first upstream release with
+        // the macOS-slice headers fixed (stasel/WebRTC#145), which got us
+        // off the fork; M152 is current. Only the WebRTC-backed targets
+        // pull it in.
+        .package(url: "https://github.com/stasel/WebRTC.git", exact: "152.0.0"),
     ],
     targets: [
         // Shared abstraction with zero external dependencies: the KVMBackend

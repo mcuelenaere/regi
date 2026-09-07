@@ -79,45 +79,6 @@ full reset. Only worth it if a real server multiplexes H.264 regions.
 
 ---
 
-## Move WebRTC pin back to upstream `stasel/WebRTC` once M148+ releases
-
-**Where:** `Packages/KVMKit/Package.swift` (the app no longer
-references WebRTC directly — it's a transitive dependency of the
-`KVMWebRTC` target, embedded into the app bundle through the KVMKit
-package, so there's a single pin to bump).
-
-**What's there now:** the pin points at
-`https://github.com/AttilaTheFun/WebRTC.git` at `148.0.0`. That's
-a personal fork carrying the fix from
-[stasel/WebRTC#147](https://github.com/stasel/WebRTC/pull/147) —
-the missing per-class headers on the macOS slice that broke every
-release from M141 to M147 (see stasel/WebRTC#145). The fork
-builds clean, runtime smoke test against real hardware works.
-
-**Why move back:** depending on a personal fork is a supply-chain
-wart — no guarantee `AttilaTheFun` keeps publishing future
-milestones, repo could disappear, no community review of any
-behavioral changes vs. upstream. Cleanest fix is for #147 to
-merge upstream and `stasel/WebRTC` to ship M148 (or higher) from
-the merged tree.
-
-**What "fixed" looks like:**
-
-1. Track stasel/WebRTC tags. When 148.0.0 (or 149+) lands on
-   `stasel/WebRTC`, swap the pin back in
-   `Packages/KVMKit/Package.swift` — restore the
-   `https://github.com/stasel/WebRTC.git` URL.
-2. Delete the `Package.resolved` files (the workspace one under
-   `.../swiftpm/Package.resolved` and the package-level one under
-   `Packages/KVMKit/`) and re-resolve so the new revision hash is
-   recorded.
-3. Build + run the same smoke test (status → device → login →
-   WS → ICE → video) to confirm parity.
-4. Drop the "Temporarily on AttilaTheFun's fork" TODO comment
-   in `Packages/KVMKit/Package.swift`.
-
----
-
 ## Fine-grained trackpad gestures (pinch-zoom, rotate) aren't forwarded
 
 **Where:** `App/KVMVideoView.swift` — `scrollWheel(with:)` and its two paths
