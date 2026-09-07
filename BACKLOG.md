@@ -115,3 +115,56 @@ the merged tree.
    WS → ICE → video) to confirm parity.
 4. Drop the "Temporarily on AttilaTheFun's fork" TODO comment
    in `Packages/KVMKit/Package.swift`.
+
+---
+
+## Fine-grained trackpad gestures (pinch-zoom, rotate) aren't forwarded
+
+**Where:** `App/KVMVideoView.swift` — `scrollWheel(with:)` and its two paths
+(`handleTrackpadScroll` / `handleWheelScroll`), plus `WheelAccumulator`. The
+wire path is `Session.sendWheelReport(wheelY:wheelX:)` →
+`KVMBackend.sendWheelReport` (`KVMCore/KVMBackend.swift`) →
+`JetKVMBackend.sendWheelReport` (binary HID-RPC opcode `0x04` on firmware
+≥ 0.5.9, JSON-RPC `wheelReport` below that).
+
+**What's there now:** only *scroll* is forwarded, and everything collapses into
+a pair of `Int8` wheel detents. The trackpad path is reasonably careful about it
+— fractional `scrollingDelta` accumulation, throttled emit, momentum/inertia
+phases, flush-on-gesture-end, `.cancelled` discards — but the vocabulary at the
+end is still just "wheel up/down/left/right".
+
+macOS delivers the richer gestures as *separate* `NSEvent`s that
+`KVMVideoView` does not override at all, so they're dropped on the floor:
+
+- `magnify(with:)` — pinch zoom (`event.magnification`)
+- `smartMagnify(with:)` — two-finger double-tap zoom
+- `rotate(with:)` — two-finger rotate (`event.rotation`)
+
+**Repro:** open Figma (or any zoomable app) on the target host, pinch-zoom on
+the Mac trackpad — nothing reaches the guest. Physically holding ⌃ and
+two-finger scrolling *does* zoom, because that goes out as a real modifier via
+the keyboard path plus ordinary wheel detents.
+
+**Why it isn't purely a client fix:** a USB HID boot-protocol mouse has no zoom
+or rotate axis, so there's nothing to put a magnification value into. Two tiers:
+
+1. **Client-only, no firmware change:** translate `magnify(with:)` into
+   ⌃+wheel detents — the de-facto cross-platform zoom idiom (Figma, browsers,
+   VS Code, most editors on Windows/Linux honour it). Accumulate
+   `event.magnification` the way `WheelAccumulator` accumulates scroll, then
+   emit `Ctrl` down → wheel detents → `Ctrl` up. The fiddly part is not
+   corrupting real modifier state: `handleFlagsChanged` / the held-key tracking
+   own the keyboard's view of ⌃, so a synthetic press has to be reconciled with
+   a ⌃ the user may already be holding (and must not leave it stuck if the
+   gesture is cancelled or the window loses focus mid-pinch). Rotate has no
+   comparable universal idiom — probably leave it unmapped.
+2. **Proper, needs JetKVM-side work (tracked separately):** expose a richer HID
+   device from the firmware — a digitizer / Windows Precision Touchpad
+   descriptor — so the guest OS interprets real multi-touch contacts natively
+   and per-app gesture handling works the way it does locally. That needs the
+   USB gadget + report descriptor on the device, a new HID-RPC opcode carrying
+   touch contacts, and a client path that sends contact points instead of
+   synthesised wheel ticks.
+
+Tier 1 is worth doing on its own — it fixes the common "zoom in Figma" case
+without waiting on firmware.
