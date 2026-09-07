@@ -219,18 +219,18 @@ final class KVMVideoView: NSView {
     override func keyDown(with event: NSEvent) {
         // NSEvent fires keyDown repeatedly on auto-repeat — we forward
         // each one. The host's HID stack handles repeat semantics.
-        session?.sendKeypress(virtualKeyCode: event.keyCode, pressed: true)
+        session?.sendKeypress(virtualKeyCode: event.keyCode, pressed: true, source: .appKit)
     }
 
     override func keyUp(with event: NSEvent) {
-        session?.sendKeypress(virtualKeyCode: event.keyCode, pressed: false)
+        session?.sendKeypress(virtualKeyCode: event.keyCode, pressed: false, source: .appKit)
     }
 
     override func flagsChanged(with event: NSEvent) {
         // Modifier press/release. We use event.keyCode (the specific
         // modifier key that toggled) rather than event.modifierFlags
         // (the combined union) so we can distinguish left vs right.
-        session?.handleFlagsChanged(virtualKeyCode: event.keyCode)
+        session?.handleFlagsChanged(virtualKeyCode: event.keyCode, source: .appKit)
     }
 
     // Suppress the system's "beep on unhandled keys" sound — we forward

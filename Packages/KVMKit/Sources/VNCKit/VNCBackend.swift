@@ -459,7 +459,12 @@ public final class VNCBackend: KVMBackend {
         inputContinuation?.yield(.motionTick)
     }
 
-    public func sendKeypress(virtualKeyCode keyCode: UInt16, pressed: Bool) {
+    // `source` is unused here: this backend has no Cmd-shortcut
+    // workaround to gate. It drops OS auto-repeat and leans on the
+    // guest's typematic repeat instead, which means an AppKit-swallowed
+    // keyUp strands the key on the guest — a gap worth closing, but a
+    // different fix than the one `KeyEventSource` enables.
+    public func sendKeypress(virtualKeyCode keyCode: UInt16, pressed: Bool, source _: KeyEventSource) {
         if pressed {
             // Drop OS auto-repeat: one held key is enough — the guest does its
             // own typematic repeat.
@@ -471,7 +476,7 @@ public final class VNCBackend: KVMBackend {
         enqueueKey(virtualKeyCode: keyCode, down: pressed)
     }
 
-    public func handleFlagsChanged(virtualKeyCode keyCode: UInt16) {
+    public func handleFlagsChanged(virtualKeyCode keyCode: UInt16, source _: KeyEventSource) {
         let pressed = !heldModifiers.contains(keyCode)
         if pressed { heldModifiers.insert(keyCode) } else { heldModifiers.remove(keyCode) }
         enqueueKey(virtualKeyCode: keyCode, down: pressed)

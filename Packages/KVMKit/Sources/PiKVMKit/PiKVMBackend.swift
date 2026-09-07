@@ -210,11 +210,15 @@ public final class PiKVMBackend: KVMBackend {
 
     // MARK: - Input
 
-    public func sendKeypress(virtualKeyCode keyCode: UInt16, pressed: Bool) {
+    public func sendKeypress(virtualKeyCode keyCode: UInt16, pressed: Bool, source: KeyEventSource) {
         guard isConnected, let code = WebKeyMap.virtualKeyToWebCode[keyCode] else { return }
         // Cmd-shortcut path: AppKit swallows keyUp for Cmd+<letter>, so
-        // emit press+release atomically (mirrors the JetKVM backend).
-        if pressed, !ModifierBits.anyMeta.intersection(modifierTracker.currentState).isEmpty {
+        // emit press+release atomically (mirrors the JetKVM backend,
+        // including skipping it when the tap is feeding us real
+        // releases — see `KeyEventSource`).
+        if pressed,
+           source.needsSynthesizedCmdRelease,
+           !ModifierBits.anyMeta.intersection(modifierTracker.currentState).isEmpty {
             emit(try? PiKVMEvent.key(code: code, pressed: true))
             emit(try? PiKVMEvent.key(code: code, pressed: false))
             return
@@ -222,7 +226,7 @@ public final class PiKVMBackend: KVMBackend {
         emit(try? PiKVMEvent.key(code: code, pressed: pressed))
     }
 
-    public func handleFlagsChanged(virtualKeyCode keyCode: UInt16) {
+    public func handleFlagsChanged(virtualKeyCode keyCode: UInt16, source _: KeyEventSource) {
         guard isConnected, let code = WebKeyMap.virtualKeyToWebCode[keyCode] else { return }
 
         // Caps Lock: macOS fires once per toggle; emit a momentary

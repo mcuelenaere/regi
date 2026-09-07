@@ -297,21 +297,29 @@ public final class JetKVMBackend: KVMBackend {
     /// (`NSEvent.keyCode`); we translate via `KeyMap`.
     /// Drops if the HID channel isn't ready yet, or if the keyCode
     /// isn't in the keymap.
-    public func sendKeypress(virtualKeyCode keyCode: UInt16, pressed: Bool) {
+    public func sendKeypress(virtualKeyCode keyCode: UInt16, pressed: Bool, source: KeyEventSource) {
         guard hidReady, let webrtc else { return }
         guard let usbHID = KeyMap.virtualKeyToHIDUsageID[keyCode] else { return }
 
-        // Cmd-shortcut path: AppKit doesn't deliver keyUp for keys
-        // pressed while Cmd is held — the menu-shortcut routing
-        // swallows it. If we treated this as a regular press and
-        // tracked it in `heldNonModifierKeys`, the host would see the
-        // key held until Cmd is released, which trips its own
+        // Cmd-shortcut path, AppKit only: AppKit doesn't deliver
+        // keyUp for keys pressed while Cmd is held — the menu-shortcut
+        // routing swallows it. If we treated this as a regular press
+        // and tracked it in `heldNonModifierKeys`, the host would see
+        // the key held until Cmd is released, which trips its own
         // key-repeat (e.g. multiple Cmd+C invocations from one tap).
-        // Without CGEventTap-based capture this is unavoidable, so
-        // emit press+release atomically: the host sees a brief tap
+        // So emit press+release atomically: the host sees a brief tap
         // regardless of how long the user holds the key. Don't track
         // in `heldNonModifierKeys` — there's no real "held" state.
-        if pressed, !ModifierBits.anyMeta.intersection(modifierTracker.currentState).isEmpty {
+        //
+        // With the CGEventTap installed the real keyUp does arrive, so
+        // this must NOT apply: faking the release there would deny the
+        // host any held state at all, and Cmd-shortcuts would be the
+        // one class of key whose repeat comes from the Mac instead of
+        // the host's own typematic repeat. Falling through treats them
+        // like every other key.
+        if pressed,
+           source.needsSynthesizedCmdRelease,
+           !ModifierBits.anyMeta.intersection(modifierTracker.currentState).isEmpty {
             let down = HIDRPCMessage.keypressReport(key: usbHID, pressed: true)
             let up = HIDRPCMessage.keypressReport(key: usbHID, pressed: false)
             Task {
@@ -344,7 +352,7 @@ public final class JetKVMBackend: KVMBackend {
     ///   momentary press to flip its own CapsLock state, so we emit
     ///   press + release back-to-back. Looking up via `KeyMap`
     ///   (kVK_CapsLock 0x39 → USB HID 0x39).
-    public func handleFlagsChanged(virtualKeyCode keyCode: UInt16) {
+    public func handleFlagsChanged(virtualKeyCode keyCode: UInt16, source: KeyEventSource) {
         guard hidReady, let webrtc else { return }
 
         if keyCode == 0x39, let usbHID = KeyMap.virtualKeyToHIDUsageID[keyCode] {
@@ -370,17 +378,23 @@ public final class JetKVMBackend: KVMBackend {
         let message = HIDRPCMessage.keypressReport(key: usbHID, pressed: transition.pressed)
         Task { await webrtc.sendHID(message, on: .reliable) }
 
-        // Without CGEventTap-based capture, AppKit swallows the keyUp
-        // for Cmd+<letter> shortcuts that match a menu item (Cmd+C,
-        // Cmd+V, Cmd+W, …), so `heldNonModifierKeys` accumulates a
-        // phantom hold for the letter. The keepalive heartbeat keeps
-        // the gadget driver from auto-releasing it on the host, so
-        // the host sees the letter pressed indefinitely and the OS
-        // key-repeat fires forever. Sweep those holds when Cmd is
-        // released — the user finishing the shortcut is our cue that
-        // any non-modifier we still think is down was almost certainly
-        // already up on the local side.
+        // Same AppKit-only caveat as the Cmd path in `sendKeypress`:
+        // AppKit swallows the keyUp for Cmd+<letter> shortcuts that
+        // match a menu item (Cmd+C, Cmd+V, Cmd+W, …), so
+        // `heldNonModifierKeys` accumulates a phantom hold for the
+        // letter. The keepalive heartbeat keeps the gadget driver from
+        // auto-releasing it on the host, so the host sees the letter
+        // pressed indefinitely and the OS key-repeat fires forever.
+        // Sweep those holds when Cmd is released — the user finishing
+        // the shortcut is our cue that any non-modifier we still think
+        // is down was almost certainly already up on the local side.
+        //
+        // That cue is wrong once the tap is feeding us real releases:
+        // then `heldNonModifierKeys` only holds keys that genuinely
+        // are down, and releasing Cmd first (⌘Z, ⌘+arrow) is ordinary
+        // — sweeping would cut the still-held key short on the host.
         if !transition.pressed,
+           source.needsSynthesizedCmdRelease,
            ModifierBits.anyMeta.contains(transition.modifier),
            !heldNonModifierKeys.isEmpty {
             let stuck = heldNonModifierKeys

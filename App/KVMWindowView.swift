@@ -288,14 +288,14 @@ struct KVMWindowView: View {
             // pointer-lock via Cmd+Tab → focus loss → auto-suspend).
             capturer.onKeyDown = { [session, hostKey] keyCode in
                 hostKey.didKeyDown(keyCode)
-                session.sendKeypress(virtualKeyCode: keyCode, pressed: true)
+                session.sendKeypress(virtualKeyCode: keyCode, pressed: true, source: .eventTap)
             }
             capturer.onKeyUp = { [session, hostKey] keyCode in
                 hostKey.didKeyUp(keyCode)
-                session.sendKeypress(virtualKeyCode: keyCode, pressed: false)
+                session.sendKeypress(virtualKeyCode: keyCode, pressed: false, source: .eventTap)
             }
             capturer.onFlagsChanged = { [session] keyCode in
-                session.handleFlagsChanged(virtualKeyCode: keyCode)
+                session.handleFlagsChanged(virtualKeyCode: keyCode, source: .eventTap)
             }
             capturer.onModifierFlagsChanged = { [hostKey] flags in
                 hostKey.didChangeFlags(flags)

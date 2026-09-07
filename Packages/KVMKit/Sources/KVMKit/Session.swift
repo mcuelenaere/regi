@@ -121,12 +121,12 @@ public final class Session {
 
     // MARK: - Input (forwarded)
 
-    public func sendKeypress(virtualKeyCode keyCode: UInt16, pressed: Bool) {
-        backend?.sendKeypress(virtualKeyCode: keyCode, pressed: pressed)
+    public func sendKeypress(virtualKeyCode keyCode: UInt16, pressed: Bool, source: KeyEventSource) {
+        backend?.sendKeypress(virtualKeyCode: keyCode, pressed: pressed, source: source)
     }
 
-    public func handleFlagsChanged(virtualKeyCode keyCode: UInt16) {
-        backend?.handleFlagsChanged(virtualKeyCode: keyCode)
+    public func handleFlagsChanged(virtualKeyCode keyCode: UInt16, source: KeyEventSource) {
+        backend?.handleFlagsChanged(virtualKeyCode: keyCode, source: source)
     }
 
     public func releaseAllHeldModifiers() {

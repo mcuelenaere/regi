@@ -194,8 +194,11 @@ public protocol KVMBackend: AnyObject {
     // Input — the App layer's normalized contract (virtual keycodes,
     // 0..32767 absolute coords, signed-byte relative deltas). Each
     // backend translates to its own wire format.
-    func sendKeypress(virtualKeyCode: UInt16, pressed: Bool)
-    func handleFlagsChanged(virtualKeyCode: UInt16)
+    // `source` says which App path the event came by; see
+    // `KeyEventSource` for why the distinction has to travel with the
+    // event rather than be tracked as backend state.
+    func sendKeypress(virtualKeyCode: UInt16, pressed: Bool, source: KeyEventSource)
+    func handleFlagsChanged(virtualKeyCode: UInt16, source: KeyEventSource)
     func releaseAllHeldModifiers()
     func sendPointerMotion(normalizedX: Int32, normalizedY: Int32, buttons: MouseButtons)
     func sendPointerButtonChange(normalizedX: Int32, normalizedY: Int32, buttons: MouseButtons)
