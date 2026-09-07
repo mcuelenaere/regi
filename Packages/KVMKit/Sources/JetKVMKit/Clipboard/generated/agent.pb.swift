@@ -8,30 +8,39 @@
 // For information on using the generated types, please see the documentation:
 //   https://github.com/apple/swift-protobuf/
 
-// JetKVM host-agent ↔ client wire protocol — VENDORED.
+// tinypipe host-agent ↔ client wire protocol — VENDORED.
 //
-// Upstream: jetkvm/jetkvm repo, branch claude/affectionate-lederberg-d93701,
-// path ui/src/utils/agentProtocol/agent.proto. Last vendored at firmware
-// commit 0c0a023cbe75e930778e371fce8396afe9cf251e. When updating, re-pull
-// from upstream, refresh that SHA, and re-run scripts/generate_proto.sh.
+// Upstream: github.com/mcuelenaere/tinypipe, branch main, path
+// crates/tinypipe-protocol/proto/agent.proto. Last vendored at commit
+// db92695866b41330e7ac165b98a9904cb3ceac59. Companion prose (streaming
+// layer, compression negotiation, flow control, drag lifecycle) lives
+// upstream at crates/tinypipe-protocol/docs/transfer.md.
+//
+// When updating: re-copy from upstream, refresh that SHA, and re-run
+// scripts/generate_proto.sh.
 //
 // ---- BEGIN VERBATIM COPY ----
+
+// tinypipe host-agent ↔ client wire protocol.
 //
-// Each WebSocket binary frame relayed between the host-side clipboard agent
-// and the JetKVM client (web UI today; native clients later) is one
-// serialized `Envelope`. The Go relay in internal/clipboard does NOT decode
-// these messages — it forwards opaque bytes. Both endpoints (this repo's
-// frontend and any third-party agent) implement this schema directly.
+// Each WebSocket binary frame relayed between the host-side agent (tinypipe)
+// and the KVM client (the device's web UI, or a native client such as Regi)
+// is one serialized `Envelope`. The relay on the KVM device forwards these
+// frames opaquely — it never decodes them. Both endpoints implement this
+// schema directly.
 //
-// Versioning:
-//   - Envelope.version is the wire version. v1 = 1. A v2 wire will use a
-//     different value so v1 endpoints fast-fail rather than mis-decode.
-//   - Per-feature versions live in the Feature enum (e.g. FEATURE_CLIPBOARD_-
-//     WRITE_V1); v2 of an existing feature is a new enum value, never a
-//     reuse.
-//   - Compression and Status enums use proto3's standard forward-compat:
-//     unknown numeric values are preserved by readers and simply not
-//     selected by writers.
+// Two features share one transport:
+//   - FEATURE_CLIPBOARD_V1 — clipboard sync (ClipboardOffer).
+//   - FEATURE_DRAG_V1      — drag-and-drop (DragOffer / DragEnd).
+// Both announce a `Payload` (a list of representations of one object) and
+// pull the bytes over a shared forward-only streaming layer (StreamOpen →
+// StreamData… → StreamClose). A representation with `file_name` set is a
+// file; without one it's a content form (text/html/image/…).
+//
+// Framing: the relay caps each WS frame at 64 KiB (it forwards each frame as
+// one WebRTC `host_bridge` data-channel send; 64 KiB is the RFC 8841
+// universal SCTP max-message-size). Payloads larger than a frame are carried
+// by the streaming layer, not a single message. See docs/transfer.md.
 
 #if canImport(FoundationEssentials)
 import FoundationEssentials
@@ -50,11 +59,15 @@ fileprivate nonisolated struct _GeneratedWithProtocGenSwiftVersion: SwiftProtobu
   typealias Version = _2
 }
 
-/// Compression algorithm for a representation's bytes. Aligned with IANA's
-/// HTTP Content-Encoding registry. v1 ships exactly these two values; future
-/// versions add new enum values without removing or repurposing existing
-/// ones.
-public nonisolated enum Jetkvm_Agent_V1_Compression: SwiftProtobuf.Enum, Swift.CaseIterable {
+/// Compression algorithm for a representation's bytes (inline or streamed).
+/// Negotiated: each side advertises in `Hello.supported_compressions` what it
+/// can DECODE; a sender picks the best mutually-supported algorithm per
+/// representation and stores already-incompressible data uncompressed. NONE and
+/// DEFLATE are universal; ZSTD and BROTLI ride only when the peer advertises
+/// them (ZSTD favours speed, BROTLI favours ratio on text). New algorithms get
+/// new enum values. proto3 forward-compat: a receiver MUST treat an unknown
+/// numeric value as a decode failure for that stream.
+public nonisolated enum Tinypipe_V1_Compression: SwiftProtobuf.Enum, Swift.CaseIterable {
   public typealias RawValue = Int
 
   /// proto3 default; never sent on the wire
@@ -65,6 +78,12 @@ public nonisolated enum Jetkvm_Agent_V1_Compression: SwiftProtobuf.Enum, Swift.C
 
   /// raw RFC 1951 (no zlib wrapper, no gzip header)
   case deflate // = 2
+
+  /// RFC 8878
+  case zstd // = 3
+
+  /// RFC 7932
+  case brotli // = 4
   case UNRECOGNIZED(Int)
 
   public init() {
@@ -76,6 +95,8 @@ public nonisolated enum Jetkvm_Agent_V1_Compression: SwiftProtobuf.Enum, Swift.C
     case 0: self = .unspecified
     case 1: self = .none
     case 2: self = .deflate
+    case 3: self = .zstd
+    case 4: self = .brotli
     default: self = .UNRECOGNIZED(rawValue)
     }
   }
@@ -85,27 +106,34 @@ public nonisolated enum Jetkvm_Agent_V1_Compression: SwiftProtobuf.Enum, Swift.C
     case .unspecified: return 0
     case .none: return 1
     case .deflate: return 2
+    case .zstd: return 3
+    case .brotli: return 4
     case .UNRECOGNIZED(let i): return i
     }
   }
 
   // The compiler won't synthesize support with the UNRECOGNIZED case.
-  public static let allCases: [Jetkvm_Agent_V1_Compression] = [
+  public static let allCases: [Tinypipe_V1_Compression] = [
     .unspecified,
     .none,
     .deflate,
+    .zstd,
+    .brotli,
   ]
 
 }
 
-/// Versioned feature an endpoint supports. Each enum value is one specific
-/// version of one feature; v2 of an existing feature gets its own value.
-public nonisolated enum Jetkvm_Agent_V1_Feature: SwiftProtobuf.Enum, Swift.CaseIterable {
+/// Versioned feature an endpoint supports. Each value is one specific version
+/// of one feature; v2 of a feature gets its own value, never a reuse.
+public nonisolated enum Tinypipe_V1_Feature: SwiftProtobuf.Enum, Swift.CaseIterable {
   public typealias RawValue = Int
   case unspecified // = 0
 
-  /// enables ClipboardOfferV1 / RequestV1 / ResponseV1
-  case clipboardWriteV1 // = 1
+  /// enables ClipboardOffer + the streaming layer
+  case clipboardV1 // = 1
+
+  /// enables DragOffer / DragEnd + the streaming layer
+  case dragV1 // = 2
   case UNRECOGNIZED(Int)
 
   public init() {
@@ -115,7 +143,8 @@ public nonisolated enum Jetkvm_Agent_V1_Feature: SwiftProtobuf.Enum, Swift.CaseI
   public init?(rawValue: Int) {
     switch rawValue {
     case 0: self = .unspecified
-    case 1: self = .clipboardWriteV1
+    case 1: self = .clipboardV1
+    case 2: self = .dragV1
     default: self = .UNRECOGNIZED(rawValue)
     }
   }
@@ -123,22 +152,24 @@ public nonisolated enum Jetkvm_Agent_V1_Feature: SwiftProtobuf.Enum, Swift.CaseI
   public var rawValue: Int {
     switch self {
     case .unspecified: return 0
-    case .clipboardWriteV1: return 1
+    case .clipboardV1: return 1
+    case .dragV1: return 2
     case .UNRECOGNIZED(let i): return i
     }
   }
 
   // The compiler won't synthesize support with the UNRECOGNIZED case.
-  public static let allCases: [Jetkvm_Agent_V1_Feature] = [
+  public static let allCases: [Tinypipe_V1_Feature] = [
     .unspecified,
-    .clipboardWriteV1,
+    .clipboardV1,
+    .dragV1,
   ]
 
 }
 
 /// Envelope is the single proto message written into each WS binary frame.
 /// Receivers MUST reject any envelope whose `version` is not 1.
-public nonisolated struct Jetkvm_Agent_V1_Envelope: Sendable {
+public nonisolated struct Tinypipe_V1_Envelope: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -146,246 +177,293 @@ public nonisolated struct Jetkvm_Agent_V1_Envelope: Sendable {
   /// = 1 for v1
   public var version: UInt32 = 0
 
-  public var message: Jetkvm_Agent_V1_Envelope.OneOf_Message? = nil
+  public var message: Tinypipe_V1_Envelope.OneOf_Message? = nil
 
-  public var hello: Jetkvm_Agent_V1_Hello {
+  public var hello: Tinypipe_V1_Hello {
     get {
       if case .hello(let v)? = message {return v}
-      return Jetkvm_Agent_V1_Hello()
+      return Tinypipe_V1_Hello()
     }
     set {message = .hello(newValue)}
   }
 
-  public var offer: Jetkvm_Agent_V1_ClipboardOfferV1 {
+  public var clipboardOffer: Tinypipe_V1_ClipboardOffer {
     get {
-      if case .offer(let v)? = message {return v}
-      return Jetkvm_Agent_V1_ClipboardOfferV1()
+      if case .clipboardOffer(let v)? = message {return v}
+      return Tinypipe_V1_ClipboardOffer()
     }
-    set {message = .offer(newValue)}
+    set {message = .clipboardOffer(newValue)}
   }
 
-  public var request: Jetkvm_Agent_V1_ClipboardRequestV1 {
+  public var dragOffer: Tinypipe_V1_DragOffer {
     get {
-      if case .request(let v)? = message {return v}
-      return Jetkvm_Agent_V1_ClipboardRequestV1()
+      if case .dragOffer(let v)? = message {return v}
+      return Tinypipe_V1_DragOffer()
     }
-    set {message = .request(newValue)}
+    set {message = .dragOffer(newValue)}
   }
 
-  public var response: Jetkvm_Agent_V1_ClipboardResponseV1 {
+  public var dragEnd: Tinypipe_V1_DragEnd {
     get {
-      if case .response(let v)? = message {return v}
-      return Jetkvm_Agent_V1_ClipboardResponseV1()
+      if case .dragEnd(let v)? = message {return v}
+      return Tinypipe_V1_DragEnd()
     }
-    set {message = .response(newValue)}
+    set {message = .dragEnd(newValue)}
+  }
+
+  public var streamOpen: Tinypipe_V1_StreamOpen {
+    get {
+      if case .streamOpen(let v)? = message {return v}
+      return Tinypipe_V1_StreamOpen()
+    }
+    set {message = .streamOpen(newValue)}
+  }
+
+  public var streamData: Tinypipe_V1_StreamData {
+    get {
+      if case .streamData(let v)? = message {return v}
+      return Tinypipe_V1_StreamData()
+    }
+    set {message = .streamData(newValue)}
+  }
+
+  public var streamClose: Tinypipe_V1_StreamClose {
+    get {
+      if case .streamClose(let v)? = message {return v}
+      return Tinypipe_V1_StreamClose()
+    }
+    set {message = .streamClose(newValue)}
+  }
+
+  public var streamCancel: Tinypipe_V1_StreamCancel {
+    get {
+      if case .streamCancel(let v)? = message {return v}
+      return Tinypipe_V1_StreamCancel()
+    }
+    set {message = .streamCancel(newValue)}
   }
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public nonisolated enum OneOf_Message: Equatable, Sendable {
-    case hello(Jetkvm_Agent_V1_Hello)
-    case offer(Jetkvm_Agent_V1_ClipboardOfferV1)
-    case request(Jetkvm_Agent_V1_ClipboardRequestV1)
-    case response(Jetkvm_Agent_V1_ClipboardResponseV1)
+    case hello(Tinypipe_V1_Hello)
+    case clipboardOffer(Tinypipe_V1_ClipboardOffer)
+    case dragOffer(Tinypipe_V1_DragOffer)
+    case dragEnd(Tinypipe_V1_DragEnd)
+    case streamOpen(Tinypipe_V1_StreamOpen)
+    case streamData(Tinypipe_V1_StreamData)
+    case streamClose(Tinypipe_V1_StreamClose)
+    case streamCancel(Tinypipe_V1_StreamCancel)
 
   }
 
   public init() {}
 }
 
-/// Hello is the first envelope each side sends after the WS upgrade. Until
-/// the peer's Hello is parsed, the sender MUST NOT use any compression the
-/// peer did not advertise, and MUST NOT send messages gated by a feature
-/// the peer did not advertise.
-public nonisolated struct Jetkvm_Agent_V1_Hello: Sendable {
-  // SwiftProtobuf.Message conformance is added in an extension below. See the
-  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
-  // methods supported on all messages.
-
-  /// = 1 in v1
-  public var protocolVersion: UInt32 = 0
-
-  /// sender can DECODE these
-  public var compressions: [Jetkvm_Agent_V1_Compression] = []
-
-  public var supportedFeatures: [Jetkvm_Agent_V1_Feature] = []
-
-  public var unknownFields = SwiftProtobuf.UnknownStorage()
-
-  public init() {}
-}
-
-/// ClipboardOfferV1 announces one clipboard event (one user copy) and lists
-/// all available representations. A new offer implicitly invalidates any
-/// outstanding earlier offer from the same sender on this connection.
+/// Hello is the first envelope each side sends. The handshake is
+/// client-initiated: the client sends its Hello first; the agent MUST reply
+/// with its own Hello on the same WS and MUST NOT send Hello on WS-open.
 ///
-/// Inline policy: a sender SHOULD inline a Format (via InlineData) when the
-/// post-compression byte count is ≤ 64 KiB. Larger representations advertise
-/// only size_hint; the peer fetches them with ClipboardRequestV1.
-public nonisolated struct Jetkvm_Agent_V1_ClipboardOfferV1: Sendable {
+/// Receiving a Hello RESETS all per-connection state — in-flight streams,
+/// outstanding offers, and the peer's negotiated compressions/features — and
+/// re-adopts the values from this Hello. The relay forwards bytes opaquely and
+/// never signals connect/disconnect, so a fresh Hello means a fresh peer (the
+/// client reconnected). Senders MUST NOT use a compression or send a
+/// feature-gated message the peer's latest Hello did not advertise.
+public nonisolated struct Tinypipe_V1_Hello: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
-  /// monotonic per sender; starts at 1
-  public var offerID: UInt32 = 0
+  /// informational only, like an HTTP User-Agent ("tinypipe/0.1", "regi/1.2")
+  public var userAgent: String = String()
 
-  /// ≥ 1
-  public var formats: [Jetkvm_Agent_V1_ClipboardOfferV1.Format] = []
+  /// algorithms the sender can DECODE; MUST include COMPRESSION_NONE
+  public var supportedCompressions: [Tinypipe_V1_Compression] = []
+
+  /// features the sender supports
+  public var supportedFeatures: [Tinypipe_V1_Feature] = []
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
-
-  public nonisolated struct Format: Sendable {
-    // SwiftProtobuf.Message conformance is added in an extension below. See the
-    // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
-    // methods supported on all messages.
-
-    /// Wire MIME (e.g. "text/plain;charset=utf-8", "text/html", "image/png").
-    /// Senders MUST normalize to a MIME the Web Clipboard API accepts:
-    /// mandatory (text/plain, text/html, image/png), optional (text/uri-list,
-    /// image/svg+xml), or "web "-prefixed custom MIMEs.
-    public var mime: String = String()
-
-    public var body: Jetkvm_Agent_V1_ClipboardOfferV1.Format.OneOf_Body? = nil
-
-    public var inline: Jetkvm_Agent_V1_ClipboardOfferV1.InlineData {
-      get {
-        if case .inline(let v)? = body {return v}
-        return Jetkvm_Agent_V1_ClipboardOfferV1.InlineData()
-      }
-      set {body = .inline(newValue)}
-    }
-
-    /// uncompressed-byte estimate; advisory
-    public var sizeHint: UInt64 {
-      get {
-        if case .sizeHint(let v)? = body {return v}
-        return 0
-      }
-      set {body = .sizeHint(newValue)}
-    }
-
-    public var unknownFields = SwiftProtobuf.UnknownStorage()
-
-    public nonisolated enum OneOf_Body: Equatable, Sendable {
-      case inline(Jetkvm_Agent_V1_ClipboardOfferV1.InlineData)
-      /// uncompressed-byte estimate; advisory
-      case sizeHint(UInt64)
-
-    }
-
-    public init() {}
-  }
-
-  public nonisolated struct InlineData: Sendable {
-    // SwiftProtobuf.Message conformance is added in an extension below. See the
-    // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
-    // methods supported on all messages.
-
-    public var compression: Jetkvm_Agent_V1_Compression = .unspecified
-
-    /// bytes encoded per `compression`
-    public var data: Data = Data()
-
-    public var unknownFields = SwiftProtobuf.UnknownStorage()
-
-    public init() {}
-  }
 
   public init() {}
 }
 
-/// ClipboardRequestV1 pulls one representation of a previously-announced
-/// offer. MUST NOT be sent for a representation that was already inlined.
-public nonisolated struct Jetkvm_Agent_V1_ClipboardRequestV1: Sendable {
+/// Payload is the content of one clipboard event or one drag — a list of
+/// representations of a single object. A representation with `file_name` set
+/// IS a file (a file is just a named representation); without it, it's a
+/// content form. The receiver is target-driven: a content target (text field,
+/// document) picks an unnamed representation by `mime`; a file target (Finder,
+/// Explorer) takes all named representations.
+public nonisolated struct Tinypipe_V1_Payload: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
-  public var offerID: UInt32 = 0
+  /// >= 1
+  public var representations: [Tinypipe_V1_Representation] = []
 
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
+}
+
+public nonisolated struct Tinypipe_V1_Representation: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  /// pull handle within this offer; referenced by StreamOpen
+  public var index: UInt32 = 0
+
+  /// present ⇒ this representation is a file; absent ⇒ a content form
+  public var fileName: String {
+    get {_fileName ?? String()}
+    set {_fileName = newValue}
+  }
+  /// Returns true if `fileName` has been explicitly set.
+  public var hasFileName: Bool {self._fileName != nil}
+  /// Clears the value of `fileName`. Subsequent reads from it will return its default value.
+  public mutating func clearFileName() {self._fileName = nil}
+
+  /// wire MIME (e.g. "text/plain;charset=utf-8", "image/png")
   public var mime: String = String()
 
+  /// uncompressed byte length (progress + completeness check)
+  public var size: UInt64 = 0
+
+  /// applies to `inline` here and to every StreamData frame of this representation
+  public var compression: Tinypipe_V1_Compression = .unspecified
+
+  /// Small representations ride inline to save a round-trip; larger ones are
+  /// pulled with StreamOpen. `inline` present (even empty) ⇒ apply directly;
+  /// absent ⇒ open a stream. Files normally stream, but a tiny one may inline.
+  public var inline: Data {
+    get {_inline ?? Data()}
+    set {_inline = newValue}
+  }
+  /// Returns true if `inline` has been explicitly set.
+  public var hasInline: Bool {self._inline != nil}
+  /// Clears the value of `inline`. Subsequent reads from it will return its default value.
+  public mutating func clearInline() {self._inline = nil}
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
+
+  fileprivate var _fileName: String? = nil
+  fileprivate var _inline: Data? = nil
 }
 
-/// ClipboardResponseV1 answers exactly one ClipboardRequestV1. If the request
-/// can't be honored, status is non-OK and compression/data are absent.
-///
-/// Senders MUST NOT produce a response whose serialized size would exceed
-/// the relay's 8 MiB WS frame cap — for oversized representations the sender
-/// returns status = STATUS_TOO_LARGE without data instead.
-public nonisolated struct Jetkvm_Agent_V1_ClipboardResponseV1: Sendable {
+/// ClipboardOffer announces one clipboard event. A new offer from a sender
+/// supersedes its previous one: the receiver MUST drop pending pulls and
+/// stale frames for the prior `clipboard_id`.
+public nonisolated struct Tinypipe_V1_ClipboardOffer: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
-  public var offerID: UInt32 = 0
+  /// monotonic per sender per WS; starts at 1
+  public var clipboardID: UInt32 = 0
 
-  public var mime: String = String()
+  public var payload: Tinypipe_V1_Payload {
+    get {_payload ?? Tinypipe_V1_Payload()}
+    set {_payload = newValue}
+  }
+  /// Returns true if `payload` has been explicitly set.
+  public var hasPayload: Bool {self._payload != nil}
+  /// Clears the value of `payload`. Subsequent reads from it will return its default value.
+  public mutating func clearPayload() {self._payload = nil}
 
-  public var status: Jetkvm_Agent_V1_ClipboardResponseV1.Status = .unspecified
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
 
-  /// meaningful only when status == STATUS_OK
-  public var compression: Jetkvm_Agent_V1_Compression = .unspecified
+  public init() {}
 
-  /// present only when status == STATUS_OK
-  public var data: Data = Data()
+  fileprivate var _payload: Tinypipe_V1_Payload? = nil
+}
+
+/// DragOffer announces a live drag entering the remote surface. Unlike
+/// clipboard offers, drags are concurrent (not superseding) and are ended
+/// explicitly by DragEnd. The side the operator picked the drag up on (the
+/// origin) sends it; the other side engages its local OS drag machinery.
+public nonisolated struct Tinypipe_V1_DragOffer: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  /// monotonic per sender per WS; starts at 1
+  public var dragID: UInt32 = 0
+
+  public var payload: Tinypipe_V1_Payload {
+    get {_payload ?? Tinypipe_V1_Payload()}
+    set {_payload = newValue}
+  }
+  /// Returns true if `payload` has been explicitly set.
+  public var hasPayload: Bool {self._payload != nil}
+  /// Clears the value of `payload`. Subsequent reads from it will return its default value.
+  public mutating func clearPayload() {self._payload = nil}
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
+
+  fileprivate var _payload: Tinypipe_V1_Payload? = nil
+}
+
+/// DragEnd reports the end of a drag gesture. It is sent by the client (where
+/// the operator physically releases). DROPPED means the drop completed (the
+/// receiver's streams then carry the bytes); CANCELLED means it was aborted
+/// (no streams open). Per-representation delivery success lives on the
+/// streams' StreamClose status, not here.
+public nonisolated struct Tinypipe_V1_DragEnd: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  public var dragID: UInt32 = 0
+
+  public var status: Tinypipe_V1_DragEnd.Status = .dragStatusUnspecified
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public nonisolated enum Status: SwiftProtobuf.Enum, Swift.CaseIterable {
     public typealias RawValue = Int
+    case dragStatusUnspecified // = 0
 
-    /// proto3 default; never sent on the wire
-    case unspecified // = 0
-    case ok // = 1
+    /// operator completed the drop
+    case dragStatusDropped // = 1
 
-    /// offer expired / format gone
-    case unavailable // = 2
-
-    /// payload would exceed relay's 8 MiB frame cap
-    case tooLarge // = 3
-
-    /// sender-side failure (opaque)
-    case error // = 4
+    /// operator aborted (Esc / no valid target)
+    case dragStatusCancelled // = 2
     case UNRECOGNIZED(Int)
 
     public init() {
-      self = .unspecified
+      self = .dragStatusUnspecified
     }
 
     public init?(rawValue: Int) {
       switch rawValue {
-      case 0: self = .unspecified
-      case 1: self = .ok
-      case 2: self = .unavailable
-      case 3: self = .tooLarge
-      case 4: self = .error
+      case 0: self = .dragStatusUnspecified
+      case 1: self = .dragStatusDropped
+      case 2: self = .dragStatusCancelled
       default: self = .UNRECOGNIZED(rawValue)
       }
     }
 
     public var rawValue: Int {
       switch self {
-      case .unspecified: return 0
-      case .ok: return 1
-      case .unavailable: return 2
-      case .tooLarge: return 3
-      case .error: return 4
+      case .dragStatusUnspecified: return 0
+      case .dragStatusDropped: return 1
+      case .dragStatusCancelled: return 2
       case .UNRECOGNIZED(let i): return i
       }
     }
 
     // The compiler won't synthesize support with the UNRECOGNIZED case.
-    public static let allCases: [Jetkvm_Agent_V1_ClipboardResponseV1.Status] = [
-      .unspecified,
-      .ok,
-      .unavailable,
-      .tooLarge,
-      .error,
+    public static let allCases: [Tinypipe_V1_DragEnd.Status] = [
+      .dragStatusUnspecified,
+      .dragStatusDropped,
+      .dragStatusCancelled,
     ]
 
   }
@@ -393,21 +471,208 @@ public nonisolated struct Jetkvm_Agent_V1_ClipboardResponseV1: Sendable {
   public init() {}
 }
 
+/// StreamOpen asks the sender to start a forward-only stream of one
+/// representation's bytes. `source` selects which feature's offer + which
+/// representation; it is a oneof so future features can reuse the streaming
+/// layer. The opener allocates `stream_id` (monotonic per opener per WS).
+public nonisolated struct Tinypipe_V1_StreamOpen: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  public var streamID: UInt32 = 0
+
+  public var source: Tinypipe_V1_StreamOpen.OneOf_Source? = nil
+
+  public var clipboardItem: Tinypipe_V1_StreamOpen.ClipboardItem {
+    get {
+      if case .clipboardItem(let v)? = source {return v}
+      return Tinypipe_V1_StreamOpen.ClipboardItem()
+    }
+    set {source = .clipboardItem(newValue)}
+  }
+
+  public var dragItem: Tinypipe_V1_StreamOpen.DragItem {
+    get {
+      if case .dragItem(let v)? = source {return v}
+      return Tinypipe_V1_StreamOpen.DragItem()
+    }
+    set {source = .dragItem(newValue)}
+  }
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public nonisolated enum OneOf_Source: Equatable, Sendable {
+    case clipboardItem(Tinypipe_V1_StreamOpen.ClipboardItem)
+    case dragItem(Tinypipe_V1_StreamOpen.DragItem)
+
+  }
+
+  public nonisolated struct ClipboardItem: Sendable {
+    // SwiftProtobuf.Message conformance is added in an extension below. See the
+    // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+    // methods supported on all messages.
+
+    public var clipboardID: UInt32 = 0
+
+    public var index: UInt32 = 0
+
+    public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+    public init() {}
+  }
+
+  public nonisolated struct DragItem: Sendable {
+    // SwiftProtobuf.Message conformance is added in an extension below. See the
+    // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+    // methods supported on all messages.
+
+    public var dragID: UInt32 = 0
+
+    public var index: UInt32 = 0
+
+    public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+    public init() {}
+  }
+
+  public init() {}
+}
+
+/// StreamData carries one frame of a stream's bytes. The sender compresses the
+/// whole representation as a single stream (per the representation's
+/// `compression`) and slices the compressed output into frames that each fill
+/// the 64 KiB envelope; the receiver appends them in order (the transport is
+/// reliable + ordered) and decompresses. There is no per-frame status and no
+/// `last` flag — the stream ends with StreamClose.
+public nonisolated struct Tinypipe_V1_StreamData: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  public var streamID: UInt32 = 0
+
+  public var data: Data = Data()
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
+}
+
+/// StreamClose terminates a stream. Sent by the data sender. Exactly one per
+/// stream: COMPLETE on success (the receiver verifies decompressed length ==
+/// the representation's `size`), CANCELLED to confirm a peer's StreamCancel,
+/// or an error.
+public nonisolated struct Tinypipe_V1_StreamClose: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  public var streamID: UInt32 = 0
+
+  public var status: Tinypipe_V1_StreamClose.Status = .streamStatusUnspecified
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public nonisolated enum Status: SwiftProtobuf.Enum, Swift.CaseIterable {
+    public typealias RawValue = Int
+    case streamStatusUnspecified // = 0
+
+    /// all bytes sent
+    case streamStatusComplete // = 1
+
+    /// confirms the receiver's StreamCancel
+    case streamStatusCancelled // = 2
+
+    /// offer/representation gone (e.g. superseded clipboard offer)
+    case streamStatusUnavailable // = 3
+
+    /// backing file vanished
+    case streamStatusNotFound // = 4
+
+    /// read failed mid-stream
+    case streamStatusIoError // = 5
+
+    /// generic sender-side failure
+    case streamStatusError // = 6
+    case UNRECOGNIZED(Int)
+
+    public init() {
+      self = .streamStatusUnspecified
+    }
+
+    public init?(rawValue: Int) {
+      switch rawValue {
+      case 0: self = .streamStatusUnspecified
+      case 1: self = .streamStatusComplete
+      case 2: self = .streamStatusCancelled
+      case 3: self = .streamStatusUnavailable
+      case 4: self = .streamStatusNotFound
+      case 5: self = .streamStatusIoError
+      case 6: self = .streamStatusError
+      default: self = .UNRECOGNIZED(rawValue)
+      }
+    }
+
+    public var rawValue: Int {
+      switch self {
+      case .streamStatusUnspecified: return 0
+      case .streamStatusComplete: return 1
+      case .streamStatusCancelled: return 2
+      case .streamStatusUnavailable: return 3
+      case .streamStatusNotFound: return 4
+      case .streamStatusIoError: return 5
+      case .streamStatusError: return 6
+      case .UNRECOGNIZED(let i): return i
+      }
+    }
+
+    // The compiler won't synthesize support with the UNRECOGNIZED case.
+    public static let allCases: [Tinypipe_V1_StreamClose.Status] = [
+      .streamStatusUnspecified,
+      .streamStatusComplete,
+      .streamStatusCancelled,
+      .streamStatusUnavailable,
+      .streamStatusNotFound,
+      .streamStatusIoError,
+      .streamStatusError,
+    ]
+
+  }
+
+  public init() {}
+}
+
+/// StreamCancel asks the sender to abort a stream the receiver opened (user
+/// cancel, disk full, no longer needed). The sender stops and replies with a
+/// StreamClose carrying STREAM_STATUS_CANCELLED.
+public nonisolated struct Tinypipe_V1_StreamCancel: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  public var streamID: UInt32 = 0
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
+}
+
 // MARK: - Code below here is support for the SwiftProtobuf runtime.
 
-fileprivate nonisolated let _protobuf_package = "jetkvm.agent.v1"
+fileprivate nonisolated let _protobuf_package = "tinypipe.v1"
 
-nonisolated extension Jetkvm_Agent_V1_Compression: SwiftProtobuf._ProtoNameProviding {
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0COMPRESSION_UNSPECIFIED\0\u{1}COMPRESSION_NONE\0\u{1}COMPRESSION_DEFLATE\0")
+nonisolated extension Tinypipe_V1_Compression: SwiftProtobuf._ProtoNameProviding {
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0COMPRESSION_UNSPECIFIED\0\u{1}COMPRESSION_NONE\0\u{1}COMPRESSION_DEFLATE\0\u{1}COMPRESSION_ZSTD\0\u{1}COMPRESSION_BROTLI\0")
 }
 
-nonisolated extension Jetkvm_Agent_V1_Feature: SwiftProtobuf._ProtoNameProviding {
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0FEATURE_UNSPECIFIED\0\u{1}FEATURE_CLIPBOARD_WRITE_V1\0")
+nonisolated extension Tinypipe_V1_Feature: SwiftProtobuf._ProtoNameProviding {
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0FEATURE_UNSPECIFIED\0\u{1}FEATURE_CLIPBOARD_V1\0\u{1}FEATURE_DRAG_V1\0")
 }
 
-nonisolated extension Jetkvm_Agent_V1_Envelope: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Tinypipe_V1_Envelope: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".Envelope"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}version\0\u{1}hello\0\u{1}offer\0\u{1}request\0\u{1}response\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}version\0\u{1}hello\0\u{3}clipboard_offer\0\u{3}drag_offer\0\u{3}drag_end\0\u{3}stream_open\0\u{3}stream_data\0\u{3}stream_close\0\u{3}stream_cancel\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -417,7 +682,7 @@ nonisolated extension Jetkvm_Agent_V1_Envelope: SwiftProtobuf.Message, SwiftProt
       switch fieldNumber {
       case 1: try { try decoder.decodeSingularUInt32Field(value: &self.version) }()
       case 2: try {
-        var v: Jetkvm_Agent_V1_Hello?
+        var v: Tinypipe_V1_Hello?
         var hadOneofValue = false
         if let current = self.message {
           hadOneofValue = true
@@ -430,42 +695,94 @@ nonisolated extension Jetkvm_Agent_V1_Envelope: SwiftProtobuf.Message, SwiftProt
         }
       }()
       case 3: try {
-        var v: Jetkvm_Agent_V1_ClipboardOfferV1?
+        var v: Tinypipe_V1_ClipboardOffer?
         var hadOneofValue = false
         if let current = self.message {
           hadOneofValue = true
-          if case .offer(let m) = current {v = m}
+          if case .clipboardOffer(let m) = current {v = m}
         }
         try decoder.decodeSingularMessageField(value: &v)
         if let v = v {
           if hadOneofValue {try decoder.handleConflictingOneOf()}
-          self.message = .offer(v)
+          self.message = .clipboardOffer(v)
         }
       }()
       case 4: try {
-        var v: Jetkvm_Agent_V1_ClipboardRequestV1?
+        var v: Tinypipe_V1_DragOffer?
         var hadOneofValue = false
         if let current = self.message {
           hadOneofValue = true
-          if case .request(let m) = current {v = m}
+          if case .dragOffer(let m) = current {v = m}
         }
         try decoder.decodeSingularMessageField(value: &v)
         if let v = v {
           if hadOneofValue {try decoder.handleConflictingOneOf()}
-          self.message = .request(v)
+          self.message = .dragOffer(v)
         }
       }()
       case 5: try {
-        var v: Jetkvm_Agent_V1_ClipboardResponseV1?
+        var v: Tinypipe_V1_DragEnd?
         var hadOneofValue = false
         if let current = self.message {
           hadOneofValue = true
-          if case .response(let m) = current {v = m}
+          if case .dragEnd(let m) = current {v = m}
         }
         try decoder.decodeSingularMessageField(value: &v)
         if let v = v {
           if hadOneofValue {try decoder.handleConflictingOneOf()}
-          self.message = .response(v)
+          self.message = .dragEnd(v)
+        }
+      }()
+      case 6: try {
+        var v: Tinypipe_V1_StreamOpen?
+        var hadOneofValue = false
+        if let current = self.message {
+          hadOneofValue = true
+          if case .streamOpen(let m) = current {v = m}
+        }
+        try decoder.decodeSingularMessageField(value: &v)
+        if let v = v {
+          if hadOneofValue {try decoder.handleConflictingOneOf()}
+          self.message = .streamOpen(v)
+        }
+      }()
+      case 7: try {
+        var v: Tinypipe_V1_StreamData?
+        var hadOneofValue = false
+        if let current = self.message {
+          hadOneofValue = true
+          if case .streamData(let m) = current {v = m}
+        }
+        try decoder.decodeSingularMessageField(value: &v)
+        if let v = v {
+          if hadOneofValue {try decoder.handleConflictingOneOf()}
+          self.message = .streamData(v)
+        }
+      }()
+      case 8: try {
+        var v: Tinypipe_V1_StreamClose?
+        var hadOneofValue = false
+        if let current = self.message {
+          hadOneofValue = true
+          if case .streamClose(let m) = current {v = m}
+        }
+        try decoder.decodeSingularMessageField(value: &v)
+        if let v = v {
+          if hadOneofValue {try decoder.handleConflictingOneOf()}
+          self.message = .streamClose(v)
+        }
+      }()
+      case 9: try {
+        var v: Tinypipe_V1_StreamCancel?
+        var hadOneofValue = false
+        if let current = self.message {
+          hadOneofValue = true
+          if case .streamCancel(let m) = current {v = m}
+        }
+        try decoder.decodeSingularMessageField(value: &v)
+        if let v = v {
+          if hadOneofValue {try decoder.handleConflictingOneOf()}
+          self.message = .streamCancel(v)
         }
       }()
       default: break
@@ -486,24 +803,40 @@ nonisolated extension Jetkvm_Agent_V1_Envelope: SwiftProtobuf.Message, SwiftProt
       guard case .hello(let v)? = self.message else { preconditionFailure() }
       try visitor.visitSingularMessageField(value: v, fieldNumber: 2)
     }()
-    case .offer?: try {
-      guard case .offer(let v)? = self.message else { preconditionFailure() }
+    case .clipboardOffer?: try {
+      guard case .clipboardOffer(let v)? = self.message else { preconditionFailure() }
       try visitor.visitSingularMessageField(value: v, fieldNumber: 3)
     }()
-    case .request?: try {
-      guard case .request(let v)? = self.message else { preconditionFailure() }
+    case .dragOffer?: try {
+      guard case .dragOffer(let v)? = self.message else { preconditionFailure() }
       try visitor.visitSingularMessageField(value: v, fieldNumber: 4)
     }()
-    case .response?: try {
-      guard case .response(let v)? = self.message else { preconditionFailure() }
+    case .dragEnd?: try {
+      guard case .dragEnd(let v)? = self.message else { preconditionFailure() }
       try visitor.visitSingularMessageField(value: v, fieldNumber: 5)
+    }()
+    case .streamOpen?: try {
+      guard case .streamOpen(let v)? = self.message else { preconditionFailure() }
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 6)
+    }()
+    case .streamData?: try {
+      guard case .streamData(let v)? = self.message else { preconditionFailure() }
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 7)
+    }()
+    case .streamClose?: try {
+      guard case .streamClose(let v)? = self.message else { preconditionFailure() }
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 8)
+    }()
+    case .streamCancel?: try {
+      guard case .streamCancel(let v)? = self.message else { preconditionFailure() }
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 9)
     }()
     case nil: break
     }
     try unknownFields.traverse(visitor: &visitor)
   }
 
-  public static func ==(lhs: Jetkvm_Agent_V1_Envelope, rhs: Jetkvm_Agent_V1_Envelope) -> Bool {
+  public static func ==(lhs: Tinypipe_V1_Envelope, rhs: Tinypipe_V1_Envelope) -> Bool {
     if lhs.version != rhs.version {return false}
     if lhs.message != rhs.message {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
@@ -511,9 +844,9 @@ nonisolated extension Jetkvm_Agent_V1_Envelope: SwiftProtobuf.Message, SwiftProt
   }
 }
 
-nonisolated extension Jetkvm_Agent_V1_Hello: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Tinypipe_V1_Hello: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".Hello"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}protocol_version\0\u{1}compressions\0\u{3}supported_features\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}user_agent\0\u{3}supported_compressions\0\u{3}supported_features\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -521,8 +854,8 @@ nonisolated extension Jetkvm_Agent_V1_Hello: SwiftProtobuf.Message, SwiftProtobu
       // allocates stack space for every case branch when no optimizations are
       // enabled. https://github.com/apple/swift-protobuf/issues/1034
       switch fieldNumber {
-      case 1: try { try decoder.decodeSingularUInt32Field(value: &self.protocolVersion) }()
-      case 2: try { try decoder.decodeRepeatedEnumField(value: &self.compressions) }()
+      case 1: try { try decoder.decodeSingularStringField(value: &self.userAgent) }()
+      case 2: try { try decoder.decodeRepeatedEnumField(value: &self.supportedCompressions) }()
       case 3: try { try decoder.decodeRepeatedEnumField(value: &self.supportedFeatures) }()
       default: break
       }
@@ -530,11 +863,11 @@ nonisolated extension Jetkvm_Agent_V1_Hello: SwiftProtobuf.Message, SwiftProtobu
   }
 
   public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
-    if self.protocolVersion != 0 {
-      try visitor.visitSingularUInt32Field(value: self.protocolVersion, fieldNumber: 1)
+    if !self.userAgent.isEmpty {
+      try visitor.visitSingularStringField(value: self.userAgent, fieldNumber: 1)
     }
-    if !self.compressions.isEmpty {
-      try visitor.visitPackedEnumField(value: self.compressions, fieldNumber: 2)
+    if !self.supportedCompressions.isEmpty {
+      try visitor.visitPackedEnumField(value: self.supportedCompressions, fieldNumber: 2)
     }
     if !self.supportedFeatures.isEmpty {
       try visitor.visitPackedEnumField(value: self.supportedFeatures, fieldNumber: 3)
@@ -542,18 +875,18 @@ nonisolated extension Jetkvm_Agent_V1_Hello: SwiftProtobuf.Message, SwiftProtobu
     try unknownFields.traverse(visitor: &visitor)
   }
 
-  public static func ==(lhs: Jetkvm_Agent_V1_Hello, rhs: Jetkvm_Agent_V1_Hello) -> Bool {
-    if lhs.protocolVersion != rhs.protocolVersion {return false}
-    if lhs.compressions != rhs.compressions {return false}
+  public static func ==(lhs: Tinypipe_V1_Hello, rhs: Tinypipe_V1_Hello) -> Bool {
+    if lhs.userAgent != rhs.userAgent {return false}
+    if lhs.supportedCompressions != rhs.supportedCompressions {return false}
     if lhs.supportedFeatures != rhs.supportedFeatures {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
 }
 
-nonisolated extension Jetkvm_Agent_V1_ClipboardOfferV1: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
-  public static let protoMessageName: String = _protobuf_package + ".ClipboardOfferV1"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}offer_id\0\u{1}formats\0")
+nonisolated extension Tinypipe_V1_Payload: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".Payload"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}representations\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -561,34 +894,29 @@ nonisolated extension Jetkvm_Agent_V1_ClipboardOfferV1: SwiftProtobuf.Message, S
       // allocates stack space for every case branch when no optimizations are
       // enabled. https://github.com/apple/swift-protobuf/issues/1034
       switch fieldNumber {
-      case 1: try { try decoder.decodeSingularUInt32Field(value: &self.offerID) }()
-      case 2: try { try decoder.decodeRepeatedMessageField(value: &self.formats) }()
+      case 1: try { try decoder.decodeRepeatedMessageField(value: &self.representations) }()
       default: break
       }
     }
   }
 
   public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
-    if self.offerID != 0 {
-      try visitor.visitSingularUInt32Field(value: self.offerID, fieldNumber: 1)
-    }
-    if !self.formats.isEmpty {
-      try visitor.visitRepeatedMessageField(value: self.formats, fieldNumber: 2)
+    if !self.representations.isEmpty {
+      try visitor.visitRepeatedMessageField(value: self.representations, fieldNumber: 1)
     }
     try unknownFields.traverse(visitor: &visitor)
   }
 
-  public static func ==(lhs: Jetkvm_Agent_V1_ClipboardOfferV1, rhs: Jetkvm_Agent_V1_ClipboardOfferV1) -> Bool {
-    if lhs.offerID != rhs.offerID {return false}
-    if lhs.formats != rhs.formats {return false}
+  public static func ==(lhs: Tinypipe_V1_Payload, rhs: Tinypipe_V1_Payload) -> Bool {
+    if lhs.representations != rhs.representations {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
 }
 
-nonisolated extension Jetkvm_Agent_V1_ClipboardOfferV1.Format: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
-  public static let protoMessageName: String = Jetkvm_Agent_V1_ClipboardOfferV1.protoMessageName + ".Format"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}mime\0\u{1}inline\0\u{3}size_hint\0")
+nonisolated extension Tinypipe_V1_Representation: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".Representation"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}index\0\u{3}file_name\0\u{1}mime\0\u{1}size\0\u{1}compression\0\u{1}inline\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -596,26 +924,207 @@ nonisolated extension Jetkvm_Agent_V1_ClipboardOfferV1.Format: SwiftProtobuf.Mes
       // allocates stack space for every case branch when no optimizations are
       // enabled. https://github.com/apple/swift-protobuf/issues/1034
       switch fieldNumber {
-      case 1: try { try decoder.decodeSingularStringField(value: &self.mime) }()
+      case 1: try { try decoder.decodeSingularUInt32Field(value: &self.index) }()
+      case 2: try { try decoder.decodeSingularStringField(value: &self._fileName) }()
+      case 3: try { try decoder.decodeSingularStringField(value: &self.mime) }()
+      case 4: try { try decoder.decodeSingularUInt64Field(value: &self.size) }()
+      case 5: try { try decoder.decodeSingularEnumField(value: &self.compression) }()
+      case 6: try { try decoder.decodeSingularBytesField(value: &self._inline) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    // The use of inline closures is to circumvent an issue where the compiler
+    // allocates stack space for every if/case branch local when no optimizations
+    // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
+    // https://github.com/apple/swift-protobuf/issues/1182
+    if self.index != 0 {
+      try visitor.visitSingularUInt32Field(value: self.index, fieldNumber: 1)
+    }
+    try { if let v = self._fileName {
+      try visitor.visitSingularStringField(value: v, fieldNumber: 2)
+    } }()
+    if !self.mime.isEmpty {
+      try visitor.visitSingularStringField(value: self.mime, fieldNumber: 3)
+    }
+    if self.size != 0 {
+      try visitor.visitSingularUInt64Field(value: self.size, fieldNumber: 4)
+    }
+    if self.compression != .unspecified {
+      try visitor.visitSingularEnumField(value: self.compression, fieldNumber: 5)
+    }
+    try { if let v = self._inline {
+      try visitor.visitSingularBytesField(value: v, fieldNumber: 6)
+    } }()
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Tinypipe_V1_Representation, rhs: Tinypipe_V1_Representation) -> Bool {
+    if lhs.index != rhs.index {return false}
+    if lhs._fileName != rhs._fileName {return false}
+    if lhs.mime != rhs.mime {return false}
+    if lhs.size != rhs.size {return false}
+    if lhs.compression != rhs.compression {return false}
+    if lhs._inline != rhs._inline {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+nonisolated extension Tinypipe_V1_ClipboardOffer: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".ClipboardOffer"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}clipboard_id\0\u{1}payload\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularUInt32Field(value: &self.clipboardID) }()
+      case 2: try { try decoder.decodeSingularMessageField(value: &self._payload) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    // The use of inline closures is to circumvent an issue where the compiler
+    // allocates stack space for every if/case branch local when no optimizations
+    // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
+    // https://github.com/apple/swift-protobuf/issues/1182
+    if self.clipboardID != 0 {
+      try visitor.visitSingularUInt32Field(value: self.clipboardID, fieldNumber: 1)
+    }
+    try { if let v = self._payload {
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 2)
+    } }()
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Tinypipe_V1_ClipboardOffer, rhs: Tinypipe_V1_ClipboardOffer) -> Bool {
+    if lhs.clipboardID != rhs.clipboardID {return false}
+    if lhs._payload != rhs._payload {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+nonisolated extension Tinypipe_V1_DragOffer: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".DragOffer"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}drag_id\0\u{1}payload\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularUInt32Field(value: &self.dragID) }()
+      case 2: try { try decoder.decodeSingularMessageField(value: &self._payload) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    // The use of inline closures is to circumvent an issue where the compiler
+    // allocates stack space for every if/case branch local when no optimizations
+    // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
+    // https://github.com/apple/swift-protobuf/issues/1182
+    if self.dragID != 0 {
+      try visitor.visitSingularUInt32Field(value: self.dragID, fieldNumber: 1)
+    }
+    try { if let v = self._payload {
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 2)
+    } }()
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Tinypipe_V1_DragOffer, rhs: Tinypipe_V1_DragOffer) -> Bool {
+    if lhs.dragID != rhs.dragID {return false}
+    if lhs._payload != rhs._payload {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+nonisolated extension Tinypipe_V1_DragEnd: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".DragEnd"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}drag_id\0\u{1}status\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularUInt32Field(value: &self.dragID) }()
+      case 2: try { try decoder.decodeSingularEnumField(value: &self.status) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if self.dragID != 0 {
+      try visitor.visitSingularUInt32Field(value: self.dragID, fieldNumber: 1)
+    }
+    if self.status != .dragStatusUnspecified {
+      try visitor.visitSingularEnumField(value: self.status, fieldNumber: 2)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Tinypipe_V1_DragEnd, rhs: Tinypipe_V1_DragEnd) -> Bool {
+    if lhs.dragID != rhs.dragID {return false}
+    if lhs.status != rhs.status {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+nonisolated extension Tinypipe_V1_DragEnd.Status: SwiftProtobuf._ProtoNameProviding {
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0DRAG_STATUS_UNSPECIFIED\0\u{1}DRAG_STATUS_DROPPED\0\u{1}DRAG_STATUS_CANCELLED\0")
+}
+
+nonisolated extension Tinypipe_V1_StreamOpen: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".StreamOpen"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}stream_id\0\u{3}clipboard_item\0\u{3}drag_item\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularUInt32Field(value: &self.streamID) }()
       case 2: try {
-        var v: Jetkvm_Agent_V1_ClipboardOfferV1.InlineData?
+        var v: Tinypipe_V1_StreamOpen.ClipboardItem?
         var hadOneofValue = false
-        if let current = self.body {
+        if let current = self.source {
           hadOneofValue = true
-          if case .inline(let m) = current {v = m}
+          if case .clipboardItem(let m) = current {v = m}
         }
         try decoder.decodeSingularMessageField(value: &v)
         if let v = v {
           if hadOneofValue {try decoder.handleConflictingOneOf()}
-          self.body = .inline(v)
+          self.source = .clipboardItem(v)
         }
       }()
       case 3: try {
-        var v: UInt64?
-        try decoder.decodeSingularUInt64Field(value: &v)
+        var v: Tinypipe_V1_StreamOpen.DragItem?
+        var hadOneofValue = false
+        if let current = self.source {
+          hadOneofValue = true
+          if case .dragItem(let m) = current {v = m}
+        }
+        try decoder.decodeSingularMessageField(value: &v)
         if let v = v {
-          if self.body != nil {try decoder.handleConflictingOneOf()}
-          self.body = .sizeHint(v)
+          if hadOneofValue {try decoder.handleConflictingOneOf()}
+          self.source = .dragItem(v)
         }
       }()
       default: break
@@ -628,34 +1137,34 @@ nonisolated extension Jetkvm_Agent_V1_ClipboardOfferV1.Format: SwiftProtobuf.Mes
     // allocates stack space for every if/case branch local when no optimizations
     // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
     // https://github.com/apple/swift-protobuf/issues/1182
-    if !self.mime.isEmpty {
-      try visitor.visitSingularStringField(value: self.mime, fieldNumber: 1)
+    if self.streamID != 0 {
+      try visitor.visitSingularUInt32Field(value: self.streamID, fieldNumber: 1)
     }
-    switch self.body {
-    case .inline?: try {
-      guard case .inline(let v)? = self.body else { preconditionFailure() }
+    switch self.source {
+    case .clipboardItem?: try {
+      guard case .clipboardItem(let v)? = self.source else { preconditionFailure() }
       try visitor.visitSingularMessageField(value: v, fieldNumber: 2)
     }()
-    case .sizeHint?: try {
-      guard case .sizeHint(let v)? = self.body else { preconditionFailure() }
-      try visitor.visitSingularUInt64Field(value: v, fieldNumber: 3)
+    case .dragItem?: try {
+      guard case .dragItem(let v)? = self.source else { preconditionFailure() }
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 3)
     }()
     case nil: break
     }
     try unknownFields.traverse(visitor: &visitor)
   }
 
-  public static func ==(lhs: Jetkvm_Agent_V1_ClipboardOfferV1.Format, rhs: Jetkvm_Agent_V1_ClipboardOfferV1.Format) -> Bool {
-    if lhs.mime != rhs.mime {return false}
-    if lhs.body != rhs.body {return false}
+  public static func ==(lhs: Tinypipe_V1_StreamOpen, rhs: Tinypipe_V1_StreamOpen) -> Bool {
+    if lhs.streamID != rhs.streamID {return false}
+    if lhs.source != rhs.source {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
 }
 
-nonisolated extension Jetkvm_Agent_V1_ClipboardOfferV1.InlineData: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
-  public static let protoMessageName: String = Jetkvm_Agent_V1_ClipboardOfferV1.protoMessageName + ".InlineData"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}compression\0\u{1}data\0")
+nonisolated extension Tinypipe_V1_StreamOpen.ClipboardItem: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = Tinypipe_V1_StreamOpen.protoMessageName + ".ClipboardItem"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}clipboard_id\0\u{1}index\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -663,7 +1172,77 @@ nonisolated extension Jetkvm_Agent_V1_ClipboardOfferV1.InlineData: SwiftProtobuf
       // allocates stack space for every case branch when no optimizations are
       // enabled. https://github.com/apple/swift-protobuf/issues/1034
       switch fieldNumber {
-      case 1: try { try decoder.decodeSingularEnumField(value: &self.compression) }()
+      case 1: try { try decoder.decodeSingularUInt32Field(value: &self.clipboardID) }()
+      case 2: try { try decoder.decodeSingularUInt32Field(value: &self.index) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if self.clipboardID != 0 {
+      try visitor.visitSingularUInt32Field(value: self.clipboardID, fieldNumber: 1)
+    }
+    if self.index != 0 {
+      try visitor.visitSingularUInt32Field(value: self.index, fieldNumber: 2)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Tinypipe_V1_StreamOpen.ClipboardItem, rhs: Tinypipe_V1_StreamOpen.ClipboardItem) -> Bool {
+    if lhs.clipboardID != rhs.clipboardID {return false}
+    if lhs.index != rhs.index {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+nonisolated extension Tinypipe_V1_StreamOpen.DragItem: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = Tinypipe_V1_StreamOpen.protoMessageName + ".DragItem"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}drag_id\0\u{1}index\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularUInt32Field(value: &self.dragID) }()
+      case 2: try { try decoder.decodeSingularUInt32Field(value: &self.index) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if self.dragID != 0 {
+      try visitor.visitSingularUInt32Field(value: self.dragID, fieldNumber: 1)
+    }
+    if self.index != 0 {
+      try visitor.visitSingularUInt32Field(value: self.index, fieldNumber: 2)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Tinypipe_V1_StreamOpen.DragItem, rhs: Tinypipe_V1_StreamOpen.DragItem) -> Bool {
+    if lhs.dragID != rhs.dragID {return false}
+    if lhs.index != rhs.index {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+nonisolated extension Tinypipe_V1_StreamData: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".StreamData"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}stream_id\0\u{1}data\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularUInt32Field(value: &self.streamID) }()
       case 2: try { try decoder.decodeSingularBytesField(value: &self.data) }()
       default: break
       }
@@ -671,8 +1250,8 @@ nonisolated extension Jetkvm_Agent_V1_ClipboardOfferV1.InlineData: SwiftProtobuf
   }
 
   public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
-    if self.compression != .unspecified {
-      try visitor.visitSingularEnumField(value: self.compression, fieldNumber: 1)
+    if self.streamID != 0 {
+      try visitor.visitSingularUInt32Field(value: self.streamID, fieldNumber: 1)
     }
     if !self.data.isEmpty {
       try visitor.visitSingularBytesField(value: self.data, fieldNumber: 2)
@@ -680,17 +1259,17 @@ nonisolated extension Jetkvm_Agent_V1_ClipboardOfferV1.InlineData: SwiftProtobuf
     try unknownFields.traverse(visitor: &visitor)
   }
 
-  public static func ==(lhs: Jetkvm_Agent_V1_ClipboardOfferV1.InlineData, rhs: Jetkvm_Agent_V1_ClipboardOfferV1.InlineData) -> Bool {
-    if lhs.compression != rhs.compression {return false}
+  public static func ==(lhs: Tinypipe_V1_StreamData, rhs: Tinypipe_V1_StreamData) -> Bool {
+    if lhs.streamID != rhs.streamID {return false}
     if lhs.data != rhs.data {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
 }
 
-nonisolated extension Jetkvm_Agent_V1_ClipboardRequestV1: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
-  public static let protoMessageName: String = _protobuf_package + ".ClipboardRequestV1"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}offer_id\0\u{1}mime\0")
+nonisolated extension Tinypipe_V1_StreamClose: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".StreamClose"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}stream_id\0\u{1}status\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -698,81 +1277,61 @@ nonisolated extension Jetkvm_Agent_V1_ClipboardRequestV1: SwiftProtobuf.Message,
       // allocates stack space for every case branch when no optimizations are
       // enabled. https://github.com/apple/swift-protobuf/issues/1034
       switch fieldNumber {
-      case 1: try { try decoder.decodeSingularUInt32Field(value: &self.offerID) }()
-      case 2: try { try decoder.decodeSingularStringField(value: &self.mime) }()
+      case 1: try { try decoder.decodeSingularUInt32Field(value: &self.streamID) }()
+      case 2: try { try decoder.decodeSingularEnumField(value: &self.status) }()
       default: break
       }
     }
   }
 
   public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
-    if self.offerID != 0 {
-      try visitor.visitSingularUInt32Field(value: self.offerID, fieldNumber: 1)
+    if self.streamID != 0 {
+      try visitor.visitSingularUInt32Field(value: self.streamID, fieldNumber: 1)
     }
-    if !self.mime.isEmpty {
-      try visitor.visitSingularStringField(value: self.mime, fieldNumber: 2)
-    }
-    try unknownFields.traverse(visitor: &visitor)
-  }
-
-  public static func ==(lhs: Jetkvm_Agent_V1_ClipboardRequestV1, rhs: Jetkvm_Agent_V1_ClipboardRequestV1) -> Bool {
-    if lhs.offerID != rhs.offerID {return false}
-    if lhs.mime != rhs.mime {return false}
-    if lhs.unknownFields != rhs.unknownFields {return false}
-    return true
-  }
-}
-
-nonisolated extension Jetkvm_Agent_V1_ClipboardResponseV1: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
-  public static let protoMessageName: String = _protobuf_package + ".ClipboardResponseV1"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}offer_id\0\u{1}mime\0\u{1}status\0\u{1}compression\0\u{1}data\0")
-
-  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
-    while let fieldNumber = try decoder.nextFieldNumber() {
-      // The use of inline closures is to circumvent an issue where the compiler
-      // allocates stack space for every case branch when no optimizations are
-      // enabled. https://github.com/apple/swift-protobuf/issues/1034
-      switch fieldNumber {
-      case 1: try { try decoder.decodeSingularUInt32Field(value: &self.offerID) }()
-      case 2: try { try decoder.decodeSingularStringField(value: &self.mime) }()
-      case 3: try { try decoder.decodeSingularEnumField(value: &self.status) }()
-      case 4: try { try decoder.decodeSingularEnumField(value: &self.compression) }()
-      case 5: try { try decoder.decodeSingularBytesField(value: &self.data) }()
-      default: break
-      }
-    }
-  }
-
-  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
-    if self.offerID != 0 {
-      try visitor.visitSingularUInt32Field(value: self.offerID, fieldNumber: 1)
-    }
-    if !self.mime.isEmpty {
-      try visitor.visitSingularStringField(value: self.mime, fieldNumber: 2)
-    }
-    if self.status != .unspecified {
-      try visitor.visitSingularEnumField(value: self.status, fieldNumber: 3)
-    }
-    if self.compression != .unspecified {
-      try visitor.visitSingularEnumField(value: self.compression, fieldNumber: 4)
-    }
-    if !self.data.isEmpty {
-      try visitor.visitSingularBytesField(value: self.data, fieldNumber: 5)
+    if self.status != .streamStatusUnspecified {
+      try visitor.visitSingularEnumField(value: self.status, fieldNumber: 2)
     }
     try unknownFields.traverse(visitor: &visitor)
   }
 
-  public static func ==(lhs: Jetkvm_Agent_V1_ClipboardResponseV1, rhs: Jetkvm_Agent_V1_ClipboardResponseV1) -> Bool {
-    if lhs.offerID != rhs.offerID {return false}
-    if lhs.mime != rhs.mime {return false}
+  public static func ==(lhs: Tinypipe_V1_StreamClose, rhs: Tinypipe_V1_StreamClose) -> Bool {
+    if lhs.streamID != rhs.streamID {return false}
     if lhs.status != rhs.status {return false}
-    if lhs.compression != rhs.compression {return false}
-    if lhs.data != rhs.data {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
 }
 
-nonisolated extension Jetkvm_Agent_V1_ClipboardResponseV1.Status: SwiftProtobuf._ProtoNameProviding {
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0STATUS_UNSPECIFIED\0\u{1}STATUS_OK\0\u{1}STATUS_UNAVAILABLE\0\u{1}STATUS_TOO_LARGE\0\u{1}STATUS_ERROR\0")
+nonisolated extension Tinypipe_V1_StreamClose.Status: SwiftProtobuf._ProtoNameProviding {
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0STREAM_STATUS_UNSPECIFIED\0\u{1}STREAM_STATUS_COMPLETE\0\u{1}STREAM_STATUS_CANCELLED\0\u{1}STREAM_STATUS_UNAVAILABLE\0\u{1}STREAM_STATUS_NOT_FOUND\0\u{1}STREAM_STATUS_IO_ERROR\0\u{1}STREAM_STATUS_ERROR\0")
+}
+
+nonisolated extension Tinypipe_V1_StreamCancel: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".StreamCancel"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}stream_id\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularUInt32Field(value: &self.streamID) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if self.streamID != 0 {
+      try visitor.visitSingularUInt32Field(value: self.streamID, fieldNumber: 1)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Tinypipe_V1_StreamCancel, rhs: Tinypipe_V1_StreamCancel) -> Bool {
+    if lhs.streamID != rhs.streamID {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
 }

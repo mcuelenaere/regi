@@ -39,6 +39,11 @@ public struct NSPasteboardClipboardSource: ClipboardSource {
                 log.debug("[SOURCE] snapshot: type=\(type.rawValue, privacy: .public) → no data (skipping)")
                 continue
             }
+            // Never ship a local file path — see `wireMime`.
+            if mime == "text/uri-list", Self.isFileURIList(data) {
+                skipped.append("\(type.rawValue) (file: URI)")
+                continue
+            }
             descriptors.append(
                 ClipboardFormatDescriptor(mime: mime, size: UInt64(data.count))
             )
@@ -61,6 +66,12 @@ public struct NSPasteboardClipboardSource: ClipboardSource {
             return nil
         }
         let data = pb.data(forType: type)
+        // Mirror the snapshot-side filter, so a representation we never
+        // advertised can't be served through a stream open either.
+        if let data, mime == "text/uri-list", Self.isFileURIList(data) {
+            log.debug("[SOURCE] fetchData mime='\(mime, privacy: .public)': file: URI; withholding local path")
+            return nil
+        }
         log.debug("[SOURCE] fetchData mime='\(mime, privacy: .public)' type=\(type.rawValue, privacy: .public): \(data?.count ?? -1, privacy: .public) bytes")
         return data
     }
@@ -70,14 +81,36 @@ public struct NSPasteboardClipboardSource: ClipboardSource {
     /// Map a macOS pasteboard type to a wire MIME we ship. Returns
     /// nil for anything outside the accepted set so unknown types
     /// silently drop.
+    ///
+    /// `.fileURL` is deliberately absent. A copied file's URL is a path
+    /// in *our* filesystem: it means nothing on the host and needlessly
+    /// discloses our directory layout. The protocol carries files as
+    /// named representations streamed from disk instead — which Regi
+    /// doesn't implement yet — so a file copy contributes no
+    /// `text/uri-list` at all rather than a broken one.
     public static func wireMime(for type: NSPasteboard.PasteboardType) -> String? {
         switch type {
         case .string: return "text/plain;charset=utf-8"
         case .html: return "text/html"
         case .png: return "image/png"
-        case .URL, .fileURL: return "text/uri-list"
+        case .URL: return "text/uri-list"
         default: return nil
         }
+    }
+
+    /// True when a `text/uri-list` body is (or begins with) a `file:`
+    /// URI. `.URL` and `.fileURL` overlap on the pasteboard — Finder
+    /// populates both for a copied file — so filtering by type alone
+    /// isn't enough; we check the bytes too. Comment lines (`#`) are
+    /// skipped per RFC 2483.
+    static func isFileURIList(_ data: Data) -> Bool {
+        guard let text = String(data: data, encoding: .utf8) else { return false }
+        for line in text.split(whereSeparator: \.isNewline) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
+            return trimmed.lowercased().hasPrefix("file:")
+        }
+        return false
     }
 
     /// Inverse of `wireMime` — used by ClipboardSyncManager when

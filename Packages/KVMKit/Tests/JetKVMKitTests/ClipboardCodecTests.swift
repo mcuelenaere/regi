@@ -7,9 +7,9 @@ final class ClipboardCodecTests: XCTestCase {
 
     func testRoundTripHello() throws {
         var hello = Hello()
-        hello.protocolVersion = 1
-        hello.compressions = [.none, .deflate]
-        hello.supportedFeatures = [.clipboardWriteV1]
+        hello.userAgent = "regi/test"
+        hello.supportedCompressions = [.none, .deflate]
+        hello.supportedFeatures = [.clipboardV1]
 
         let frame = try ClipboardCodec.encode(.hello(hello))
         let decoded = try ClipboardCodec.decode(frame)
@@ -21,114 +21,178 @@ final class ClipboardCodecTests: XCTestCase {
 
     func testEncodeHelloConvenience() throws {
         let frame = try ClipboardCodec.encodeHello(
+            userAgent: "regi/1.2",
             compressions: [.none, .deflate],
-            features: [.clipboardWriteV1]
+            features: [.clipboardV1]
         )
         let decoded = try ClipboardCodec.decode(frame)
         guard case .hello(let h) = decoded else {
             return XCTFail("expected .hello, got \(decoded)")
         }
-        XCTAssertEqual(h.protocolVersion, 1)
-        XCTAssertEqual(h.compressions, [.none, .deflate])
-        XCTAssertEqual(h.supportedFeatures, [.clipboardWriteV1])
+        XCTAssertEqual(h.userAgent, "regi/1.2")
+        XCTAssertEqual(h.supportedCompressions, [.none, .deflate])
+        XCTAssertEqual(h.supportedFeatures, [.clipboardV1])
     }
 
-    // MARK: - Offer
+    // MARK: - Clipboard offer
 
     func testRoundTripOfferInline() throws {
-        var inline = ClipboardOfferV1.InlineData()
-        inline.compression = .none
-        inline.data = Data("hello".utf8)
+        var rep = Representation()
+        rep.index = 0
+        rep.mime = "text/plain;charset=utf-8"
+        rep.size = 5
+        rep.compression = .none
+        rep.inline = Data("hello".utf8)
 
-        var format = ClipboardOfferV1.Format()
-        format.mime = "text/plain;charset=utf-8"
-        format.inline = inline
+        var payload = Payload()
+        payload.representations = [rep]
+        var offer = ClipboardOffer()
+        offer.clipboardID = 1
+        offer.payload = payload
 
-        var offer = ClipboardOfferV1()
-        offer.offerID = 1
-        offer.formats = [format]
-
-        let frame = try ClipboardCodec.encodeOffer(offer)
+        let frame = try ClipboardCodec.encodeClipboardOffer(offer)
         let decoded = try ClipboardCodec.decode(frame)
-        guard case .offer(let o) = decoded else {
-            return XCTFail("expected .offer, got \(decoded)")
+        guard case .clipboardOffer(let o) = decoded else {
+            return XCTFail("expected .clipboardOffer, got \(decoded)")
         }
         XCTAssertEqual(o, offer)
+        XCTAssertTrue(o.payload.representations[0].hasInline)
     }
 
-    func testRoundTripOfferSizeHint() throws {
-        var format = ClipboardOfferV1.Format()
-        format.mime = "image/png"
-        format.sizeHint = 1_500_000
+    /// `inline` absent is the signal to stream — it must survive the
+    /// round-trip as *absent*, not as empty bytes (which would mean
+    /// "apply an empty representation directly").
+    func testRoundTripOfferStreamedRepresentationOmitsInline() throws {
+        var rep = Representation()
+        rep.index = 0
+        rep.mime = "image/png"
+        rep.size = 1_500_000
+        rep.compression = .none
 
-        var offer = ClipboardOfferV1()
-        offer.offerID = 42
-        offer.formats = [format]
+        var payload = Payload()
+        payload.representations = [rep]
+        var offer = ClipboardOffer()
+        offer.clipboardID = 42
+        offer.payload = payload
 
-        let frame = try ClipboardCodec.encodeOffer(offer)
+        let frame = try ClipboardCodec.encodeClipboardOffer(offer)
         let decoded = try ClipboardCodec.decode(frame)
-        guard case .offer(let o) = decoded,
-              o.formats.first?.body == .sizeHint(1_500_000) else {
-            return XCTFail("size_hint did not round-trip: \(decoded)")
+        guard case .clipboardOffer(let o) = decoded else {
+            return XCTFail("expected .clipboardOffer, got \(decoded)")
         }
-        XCTAssertEqual(o, offer)
+        XCTAssertFalse(o.payload.representations[0].hasInline)
+        XCTAssertEqual(o.payload.representations[0].size, 1_500_000)
     }
 
-    // MARK: - Request
+    /// An empty inline body is distinct from an absent one.
+    func testEmptyInlineIsDistinctFromAbsent() throws {
+        var rep = Representation()
+        rep.index = 0
+        rep.mime = "text/plain"
+        rep.size = 0
+        rep.compression = .none
+        rep.inline = Data()
 
-    func testRoundTripRequest() throws {
-        let frame = try ClipboardCodec.encodeRequest(offerId: 7, mime: "image/png")
-        let decoded = try ClipboardCodec.decode(frame)
-        guard case .request(let r) = decoded else {
-            return XCTFail("expected .request, got \(decoded)")
+        var payload = Payload()
+        payload.representations = [rep]
+        var offer = ClipboardOffer()
+        offer.clipboardID = 3
+        offer.payload = payload
+
+        let frame = try ClipboardCodec.encodeClipboardOffer(offer)
+        guard case .clipboardOffer(let o) = try ClipboardCodec.decode(frame) else {
+            return XCTFail("expected .clipboardOffer")
         }
-        XCTAssertEqual(r.offerID, 7)
-        XCTAssertEqual(r.mime, "image/png")
+        XCTAssertTrue(o.payload.representations[0].hasInline)
+        XCTAssertTrue(o.payload.representations[0].inline.isEmpty)
     }
 
-    // MARK: - Response
+    func testRoundTripFileRepresentation() throws {
+        var rep = Representation()
+        rep.index = 1
+        rep.fileName = "note.txt"
+        rep.mime = "text/plain"
+        rep.size = 12
+        rep.compression = .none
 
-    func testRoundTripResponseOK() throws {
-        var resp = ClipboardResponseV1()
-        resp.offerID = 5
-        resp.mime = "text/plain;charset=utf-8"
-        resp.status = .ok
-        resp.compression = .deflate
-        resp.data = Data([0xde, 0xad, 0xbe, 0xef])
+        var payload = Payload()
+        payload.representations = [rep]
+        var offer = ClipboardOffer()
+        offer.clipboardID = 8
+        offer.payload = payload
 
-        let frame = try ClipboardCodec.encodeResponse(resp)
-        let decoded = try ClipboardCodec.decode(frame)
-        guard case .response(let r) = decoded else {
-            return XCTFail("expected .response, got \(decoded)")
+        let frame = try ClipboardCodec.encodeClipboardOffer(offer)
+        guard case .clipboardOffer(let o) = try ClipboardCodec.decode(frame) else {
+            return XCTFail("expected .clipboardOffer")
         }
-        XCTAssertEqual(r, resp)
+        XCTAssertTrue(o.payload.representations[0].hasFileName)
+        XCTAssertEqual(o.payload.representations[0].fileName, "note.txt")
     }
 
-    func testRoundTripResponseTooLarge() throws {
-        var resp = ClipboardResponseV1()
-        resp.offerID = 5
-        resp.mime = "image/png"
-        resp.status = .tooLarge
-        // Spec: no compression / data when status is non-OK.
+    // MARK: - Streaming layer
 
-        let frame = try ClipboardCodec.encodeResponse(resp)
+    func testRoundTripStreamOpenClipboardItem() throws {
+        let frame = try ClipboardCodec.encodeClipboardStreamOpen(
+            streamId: 7,
+            clipboardId: 42,
+            index: 3
+        )
         let decoded = try ClipboardCodec.decode(frame)
-        guard case .response(let r) = decoded else {
-            return XCTFail("expected .response, got \(decoded)")
+        guard case .streamOpen(let open) = decoded else {
+            return XCTFail("expected .streamOpen, got \(decoded)")
         }
-        XCTAssertEqual(r.status, .tooLarge)
-        XCTAssertTrue(r.data.isEmpty)
+        XCTAssertEqual(open.streamID, 7)
+        guard case .clipboardItem(let item) = open.source else {
+            return XCTFail("expected clipboardItem source")
+        }
+        XCTAssertEqual(item.clipboardID, 42)
+        XCTAssertEqual(item.index, 3)
+    }
+
+    func testRoundTripStreamData() throws {
+        let payload = Data([0x01, 0x02, 0x03])
+        let frame = try ClipboardCodec.encodeStreamData(streamId: 9, data: payload)
+        guard case .streamData(let d) = try ClipboardCodec.decode(frame) else {
+            return XCTFail("expected .streamData")
+        }
+        XCTAssertEqual(d.streamID, 9)
+        XCTAssertEqual(d.data, payload)
+    }
+
+    func testRoundTripStreamClose() throws {
+        let frame = try ClipboardCodec.encodeStreamClose(
+            streamId: 4,
+            status: .streamStatusComplete
+        )
+        guard case .streamClose(let c) = try ClipboardCodec.decode(frame) else {
+            return XCTFail("expected .streamClose")
+        }
+        XCTAssertEqual(c.streamID, 4)
+        XCTAssertEqual(c.status, .streamStatusComplete)
+    }
+
+    func testRoundTripStreamCancel() throws {
+        let frame = try ClipboardCodec.encodeStreamCancel(streamId: 11)
+        guard case .streamCancel(let c) = try ClipboardCodec.decode(frame) else {
+            return XCTFail("expected .streamCancel")
+        }
+        XCTAssertEqual(c.streamID, 11)
+    }
+
+    /// A full-size StreamData frame must stay under the relay's hard
+    /// 64 KiB cap once the envelope is wrapped around it.
+    func testMaxChunkStreamDataFitsFrameCap() throws {
+        let chunk = Data(repeating: 0xAB, count: ClipboardBridge.streamChunkBytes)
+        let frame = try ClipboardCodec.encodeStreamData(streamId: 65_535, data: chunk)
+        XCTAssertLessThanOrEqual(frame.count, ClipboardCodec.maxFrameBytes)
     }
 
     // MARK: - Error paths
 
     func testDecodeUnsupportedVersionThrows() throws {
-        // Hand-build an envelope with version=2 to confirm fast-fail.
         var envelope = Envelope()
         envelope.version = 2
-        var hello = Hello()
-        hello.protocolVersion = 2
-        envelope.message = .hello(hello)
+        envelope.message = .hello(Hello())
         let bogus: Data = try envelope.serializedBytes()
 
         XCTAssertThrowsError(try ClipboardCodec.decode(bogus)) { error in
@@ -148,41 +212,35 @@ final class ClipboardCodecTests: XCTestCase {
     }
 
     func testEncodeAlwaysSetsWireVersion() throws {
-        // No matter what message we encode, the envelope's version must be
-        // 1. Otherwise a buggy encoder could ship version=0 envelopes
-        // that the firmware would reject as malformed.
-        let frame = try ClipboardCodec.encodeRequest(offerId: 1, mime: "x")
+        // No matter what message we encode, the envelope's version must
+        // be 1 — a version=0 envelope would be rejected by the peer.
+        let frame = try ClipboardCodec.encodeStreamCancel(streamId: 1)
         let envelope = try Envelope(serializedBytes: frame)
         XCTAssertEqual(envelope.version, 1)
     }
 
     func testUnknownCompressionEnumPreserved() throws {
-        // Proto3 preserves unrecognised enum numerics. Construct a frame
-        // with compression=99 (unknown) and verify our decoder doesn't
-        // crash; SwiftProtobuf surfaces unknown values via
-        // `.UNRECOGNIZED(99)`. Callers handle the unknown case by
-        // dropping the representation.
-        var inline = ClipboardOfferV1.InlineData()
-        inline.compression = Compression(rawValue: 99) ?? .unspecified
-        inline.data = Data([0x01])
+        // Proto3 preserves unrecognised enum numerics. The spec says a
+        // receiver MUST treat an unknown value as a decode failure for
+        // that stream; here we just assert the codec doesn't crash and
+        // surfaces something that isn't a codec we'd act on.
+        var rep = Representation()
+        rep.index = 0
+        rep.mime = "text/plain"
+        rep.compression = Compression(rawValue: 99) ?? .unspecified
+        rep.inline = Data([0x01])
 
-        var format = ClipboardOfferV1.Format()
-        format.mime = "text/plain"
-        format.inline = inline
+        var payload = Payload()
+        payload.representations = [rep]
+        var offer = ClipboardOffer()
+        offer.clipboardID = 1
+        offer.payload = payload
 
-        var offer = ClipboardOfferV1()
-        offer.offerID = 1
-        offer.formats = [format]
-
-        let frame = try ClipboardCodec.encodeOffer(offer)
-        let decoded = try ClipboardCodec.decode(frame)
-        guard case .offer(let o) = decoded else {
-            return XCTFail("expected .offer, got \(decoded)")
+        let frame = try ClipboardCodec.encodeClipboardOffer(offer)
+        guard case .clipboardOffer(let o) = try ClipboardCodec.decode(frame) else {
+            return XCTFail("expected .clipboardOffer")
         }
-        // Either the unknown value round-trips as UNRECOGNIZED(99) or
-        // (on older swift-protobuf) it falls back to .unspecified. Both
-        // are acceptable — the point is "no crash."
-        let comp = o.formats.first?.inline.compression
+        let comp = o.payload.representations.first?.compression
         XCTAssertNotEqual(comp, .deflate)
         XCTAssertNotEqual(comp, .none)
     }

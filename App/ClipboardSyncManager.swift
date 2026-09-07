@@ -103,7 +103,7 @@ final class ClipboardSyncManager {
             guard let bridge else { return }
             log.info("[MANAGER] inboundOffers consumer task starting (new bridge)")
             for await offer in bridge.inboundOffers {
-                log.debug("[MANAGER] inboundOffers received offer_id=\(offer.offerId, privacy: .public) formats=\(offer.formats.count, privacy: .public)")
+                log.debug("[MANAGER] inboundOffers received offer_id=\(offer.clipboardId, privacy: .public) formats=\(offer.formats.count, privacy: .public)")
                 self?.applyInboundOffer(offer)
             }
             log.info("[MANAGER] inboundOffers consumer task ended (bridge gone)")
@@ -200,11 +200,11 @@ final class ClipboardSyncManager {
 
     private func applyInboundOffer(_ offer: ResolvedOffer) {
         guard isActive else {
-            log.debug("[MANAGER] applyInboundOffer offer=\(offer.offerId, privacy: .public): not active; dropping (toggle off?)")
+            log.debug("[MANAGER] applyInboundOffer offer=\(offer.clipboardId, privacy: .public): not active; dropping (toggle off?)")
             return
         }
         guard !offer.formats.isEmpty else {
-            log.debug("[MANAGER] applyInboundOffer offer=\(offer.offerId, privacy: .public): no formats to apply")
+            log.debug("[MANAGER] applyInboundOffer offer=\(offer.clipboardId, privacy: .public): no formats to apply")
             return
         }
 
@@ -226,6 +226,6 @@ final class ClipboardSyncManager {
 
         let appliedDesc = applied.map { "\($0.mime)→\($0.type)(\($0.size))" }.joined(separator: ", ")
         let droppedDesc = dropped.joined(separator: ", ")
-        log.debug("[MANAGER] applyInboundOffer offer=\(offer.offerId, privacy: .public): changeCount \(beforeCount, privacy: .public) → \(newCount, privacy: .public) applied=[\(appliedDesc, privacy: .public)] dropped=[\(droppedDesc, privacy: .public)]")
+        log.debug("[MANAGER] applyInboundOffer offer=\(offer.clipboardId, privacy: .public): changeCount \(beforeCount, privacy: .public) → \(newCount, privacy: .public) applied=[\(appliedDesc, privacy: .public)] dropped=[\(droppedDesc, privacy: .public)]")
     }
 }

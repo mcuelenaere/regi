@@ -2,7 +2,9 @@
 # Regenerate Swift bindings for the vendored agent.proto.
 #
 # Run after updating Packages/KVMKit/Sources/JetKVMKit/Clipboard/agent.proto
-# (typically: re-pulling from the JetKVM firmware repo). Commits the result.
+# (typically: re-copying from the tinypipe repo, crates/tinypipe-protocol/
+# proto/agent.proto — see that file's header for the vendored commit).
+# Commit the result.
 #
 # Toolchain: `brew install swift-protobuf` provides protoc-gen-swift.
 

@@ -404,16 +404,58 @@ public actor WebRTCFacade {
     /// Send one binary frame on the `host_bridge` data channel.
     /// Returns `false` if the channel isn't open or the underlying
     /// SCTP send queue rejected the buffer.
-    public func sendHostBridge(_ data: Data) -> Bool {
-        guard let channel = hostBridgeChannel else {
+    /// Queue one agent-protocol frame, pacing on the channel's send
+    /// buffer.
+    ///
+    /// The agent protocol's streaming layer has no application-level
+    /// credit scheme — it relies on transport backpressure (see
+    /// tinypipe's docs/transfer.md). That works on the agent's
+    /// WebSocket, whose write blocks, but `RTCDataChannel.sendData`
+    /// *buffers* instead of blocking. Serving one large representation
+    /// hands us a burst of ~63 KiB frames back-to-back, so without
+    /// pacing we'd balloon the SCTP send buffer until libwebrtc starts
+    /// rejecting sends (or drops the channel). Awaiting here propagates
+    /// the backpressure up into the bridge's serving loop, which is the
+    /// behaviour the spec assumes.
+    public func sendHostBridge(_ data: Data) async -> Bool {
+        guard hostBridgeChannel != nil else {
             log.debug("[WEBRTC] sendHostBridge: channel nil; dropping \(data.count, privacy: .public) bytes")
+            return false
+        }
+
+        var waitedMs = 0
+        while let channel = hostBridgeChannel,
+              channel.bufferedAmount > Self.hostBridgeHighWaterMark {
+            guard waitedMs < Self.hostBridgeMaxWaitMs else {
+                log.error("[WEBRTC] sendHostBridge: buffer still \(channel.bufferedAmount, privacy: .public)B after \(waitedMs, privacy: .public)ms; giving up on \(data.count, privacy: .public) bytes")
+                return false
+            }
+            try? await Task.sleep(for: .milliseconds(Self.hostBridgeDrainPollMs))
+            waitedMs += Self.hostBridgeDrainPollMs
+        }
+
+        // Re-read: the channel can go away across the awaits above.
+        guard let channel = hostBridgeChannel else {
+            log.debug("[WEBRTC] sendHostBridge: channel closed while draining; dropping \(data.count, privacy: .public) bytes")
             return false
         }
         let buffer = RTCDataBuffer(data: data, isBinary: true)
         let ok = channel.sendData(buffer)
-        log.debug("[WEBRTC] sendHostBridge: \(data.count, privacy: .public) bytes → \(ok ? "queued" : "rejected", privacy: .public)")
+        if !ok {
+            log.error("[WEBRTC] sendHostBridge: rejected \(data.count, privacy: .public) bytes (buffered=\(channel.bufferedAmount, privacy: .public))")
+        }
         return ok
     }
+
+    /// Start pacing once this much is already queued on `host_bridge`.
+    /// Deep enough to keep the pipe busy between our sends, shallow
+    /// enough that a superseded transfer doesn't sit behind megabytes of
+    /// stale frames.
+    private static let hostBridgeHighWaterMark: UInt64 = 1 * 1024 * 1024
+    private static let hostBridgeDrainPollMs = 5
+    /// Cap the wait so a wedged channel fails the send instead of
+    /// hanging the bridge's serving loop forever.
+    private static let hostBridgeMaxWaitMs = 30_000
 
     public func close() async {
         statsTask?.cancel()

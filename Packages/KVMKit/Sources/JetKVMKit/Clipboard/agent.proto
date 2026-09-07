@@ -1,47 +1,63 @@
-// JetKVM host-agent ↔ client wire protocol — VENDORED.
+// tinypipe host-agent ↔ client wire protocol — VENDORED.
 //
-// Upstream: jetkvm/jetkvm repo, branch claude/affectionate-lederberg-d93701,
-// path ui/src/utils/agentProtocol/agent.proto. Last vendored at firmware
-// commit 0c0a023cbe75e930778e371fce8396afe9cf251e. When updating, re-pull
-// from upstream, refresh that SHA, and re-run scripts/generate_proto.sh.
+// Upstream: github.com/mcuelenaere/tinypipe, branch main, path
+// crates/tinypipe-protocol/proto/agent.proto. Last vendored at commit
+// db92695866b41330e7ac165b98a9904cb3ceac59. Companion prose (streaming
+// layer, compression negotiation, flow control, drag lifecycle) lives
+// upstream at crates/tinypipe-protocol/docs/transfer.md.
+//
+// When updating: re-copy from upstream, refresh that SHA, and re-run
+// scripts/generate_proto.sh.
 //
 // ---- BEGIN VERBATIM COPY ----
+
+// tinypipe host-agent ↔ client wire protocol.
 //
-// Each WebSocket binary frame relayed between the host-side clipboard agent
-// and the JetKVM client (web UI today; native clients later) is one
-// serialized `Envelope`. The Go relay in internal/clipboard does NOT decode
-// these messages — it forwards opaque bytes. Both endpoints (this repo's
-// frontend and any third-party agent) implement this schema directly.
+// Each WebSocket binary frame relayed between the host-side agent (tinypipe)
+// and the KVM client (the device's web UI, or a native client such as Regi)
+// is one serialized `Envelope`. The relay on the KVM device forwards these
+// frames opaquely — it never decodes them. Both endpoints implement this
+// schema directly.
 //
-// Versioning:
-//   - Envelope.version is the wire version. v1 = 1. A v2 wire will use a
-//     different value so v1 endpoints fast-fail rather than mis-decode.
-//   - Per-feature versions live in the Feature enum (e.g. FEATURE_CLIPBOARD_-
-//     WRITE_V1); v2 of an existing feature is a new enum value, never a
-//     reuse.
-//   - Compression and Status enums use proto3's standard forward-compat:
-//     unknown numeric values are preserved by readers and simply not
-//     selected by writers.
+// Two features share one transport:
+//   - FEATURE_CLIPBOARD_V1 — clipboard sync (ClipboardOffer).
+//   - FEATURE_DRAG_V1      — drag-and-drop (DragOffer / DragEnd).
+// Both announce a `Payload` (a list of representations of one object) and
+// pull the bytes over a shared forward-only streaming layer (StreamOpen →
+// StreamData… → StreamClose). A representation with `file_name` set is a
+// file; without one it's a content form (text/html/image/…).
+//
+// Framing: the relay caps each WS frame at 64 KiB (it forwards each frame as
+// one WebRTC `host_bridge` data-channel send; 64 KiB is the RFC 8841
+// universal SCTP max-message-size). Payloads larger than a frame are carried
+// by the streaming layer, not a single message. See docs/transfer.md.
 
 syntax = "proto3";
 
-package jetkvm.agent.v1;
+package tinypipe.v1;
 
-// Compression algorithm for a representation's bytes. Aligned with IANA's
-// HTTP Content-Encoding registry. v1 ships exactly these two values; future
-// versions add new enum values without removing or repurposing existing
-// ones.
+// Compression algorithm for a representation's bytes (inline or streamed).
+// Negotiated: each side advertises in `Hello.supported_compressions` what it
+// can DECODE; a sender picks the best mutually-supported algorithm per
+// representation and stores already-incompressible data uncompressed. NONE and
+// DEFLATE are universal; ZSTD and BROTLI ride only when the peer advertises
+// them (ZSTD favours speed, BROTLI favours ratio on text). New algorithms get
+// new enum values. proto3 forward-compat: a receiver MUST treat an unknown
+// numeric value as a decode failure for that stream.
 enum Compression {
   COMPRESSION_UNSPECIFIED = 0;  // proto3 default; never sent on the wire
   COMPRESSION_NONE        = 1;  // identity / passthrough
   COMPRESSION_DEFLATE     = 2;  // raw RFC 1951 (no zlib wrapper, no gzip header)
+  COMPRESSION_ZSTD        = 3;  // RFC 8878
+  COMPRESSION_BROTLI      = 4;  // RFC 7932
 }
 
-// Versioned feature an endpoint supports. Each enum value is one specific
-// version of one feature; v2 of an existing feature gets its own value.
+// Versioned feature an endpoint supports. Each value is one specific version
+// of one feature; v2 of a feature gets its own value, never a reuse.
 enum Feature {
-  FEATURE_UNSPECIFIED        = 0;
-  FEATURE_CLIPBOARD_WRITE_V1 = 1;  // enables ClipboardOfferV1 / RequestV1 / ResponseV1
+  FEATURE_UNSPECIFIED  = 0;
+  FEATURE_CLIPBOARD_V1 = 1;  // enables ClipboardOffer + the streaming layer
+  FEATURE_DRAG_V1      = 2;  // enables DragOffer / DragEnd + the streaming layer
 }
 
 // Envelope is the single proto message written into each WS binary frame.
@@ -49,78 +65,133 @@ enum Feature {
 message Envelope {
   uint32 version = 1;  // = 1 for v1
   oneof message {
-    Hello               hello    = 2;
-    ClipboardOfferV1    offer    = 3;
-    ClipboardRequestV1  request  = 4;
-    ClipboardResponseV1 response = 5;
+    Hello          hello           = 2;
+    ClipboardOffer clipboard_offer = 3;
+    DragOffer      drag_offer      = 4;
+    DragEnd        drag_end        = 5;
+    StreamOpen     stream_open     = 6;
+    StreamData     stream_data     = 7;
+    StreamClose    stream_close    = 8;
+    StreamCancel   stream_cancel   = 9;
   }
 }
 
-// Hello is the first envelope each side sends after the WS upgrade. Until
-// the peer's Hello is parsed, the sender MUST NOT use any compression the
-// peer did not advertise, and MUST NOT send messages gated by a feature
-// the peer did not advertise.
+// Hello is the first envelope each side sends. The handshake is
+// client-initiated: the client sends its Hello first; the agent MUST reply
+// with its own Hello on the same WS and MUST NOT send Hello on WS-open.
+//
+// Receiving a Hello RESETS all per-connection state — in-flight streams,
+// outstanding offers, and the peer's negotiated compressions/features — and
+// re-adopts the values from this Hello. The relay forwards bytes opaquely and
+// never signals connect/disconnect, so a fresh Hello means a fresh peer (the
+// client reconnected). Senders MUST NOT use a compression or send a
+// feature-gated message the peer's latest Hello did not advertise.
 message Hello {
-  uint32              protocol_version   = 1;  // = 1 in v1
-  repeated Compression compressions       = 2;  // sender can DECODE these
-  repeated Feature     supported_features = 3;
+  string user_agent = 1;                            // informational only, like an HTTP User-Agent ("tinypipe/0.1", "regi/1.2")
+  repeated Compression supported_compressions = 2;  // algorithms the sender can DECODE; MUST include COMPRESSION_NONE
+  repeated Feature     supported_features     = 3;  // features the sender supports
 }
 
-// ClipboardOfferV1 announces one clipboard event (one user copy) and lists
-// all available representations. A new offer implicitly invalidates any
-// outstanding earlier offer from the same sender on this connection.
-//
-// Inline policy: a sender SHOULD inline a Format (via InlineData) when the
-// post-compression byte count is ≤ 64 KiB. Larger representations advertise
-// only size_hint; the peer fetches them with ClipboardRequestV1.
-message ClipboardOfferV1 {
-  uint32          offer_id = 1;  // monotonic per sender; starts at 1
-  repeated Format formats  = 2;  // ≥ 1
-
-  message Format {
-    // Wire MIME (e.g. "text/plain;charset=utf-8", "text/html", "image/png").
-    // Senders MUST normalize to a MIME the Web Clipboard API accepts:
-    // mandatory (text/plain, text/html, image/png), optional (text/uri-list,
-    // image/svg+xml), or "web "-prefixed custom MIMEs.
-    string mime = 1;
-
-    oneof body {
-      InlineData inline    = 2;
-      uint64     size_hint = 3;  // uncompressed-byte estimate; advisory
-    }
-  }
-
-  message InlineData {
-    Compression compression = 1;
-    bytes       data        = 2;  // bytes encoded per `compression`
-  }
+// Payload is the content of one clipboard event or one drag — a list of
+// representations of a single object. A representation with `file_name` set
+// IS a file (a file is just a named representation); without it, it's a
+// content form. The receiver is target-driven: a content target (text field,
+// document) picks an unnamed representation by `mime`; a file target (Finder,
+// Explorer) takes all named representations.
+message Payload {
+  repeated Representation representations = 1;  // >= 1
 }
 
-// ClipboardRequestV1 pulls one representation of a previously-announced
-// offer. MUST NOT be sent for a representation that was already inlined.
-message ClipboardRequestV1 {
-  uint32 offer_id = 1;
-  string mime     = 2;
+message Representation {
+  uint32 index = 1;                  // pull handle within this offer; referenced by StreamOpen
+  optional string file_name = 2;     // present ⇒ this representation is a file; absent ⇒ a content form
+  string mime = 3;                   // wire MIME (e.g. "text/plain;charset=utf-8", "image/png")
+  uint64 size = 4;                   // uncompressed byte length (progress + completeness check)
+  Compression compression = 5;       // applies to `inline` here and to every StreamData frame of this representation
+  // Small representations ride inline to save a round-trip; larger ones are
+  // pulled with StreamOpen. `inline` present (even empty) ⇒ apply directly;
+  // absent ⇒ open a stream. Files normally stream, but a tiny one may inline.
+  optional bytes inline = 6;
 }
 
-// ClipboardResponseV1 answers exactly one ClipboardRequestV1. If the request
-// can't be honored, status is non-OK and compression/data are absent.
-//
-// Senders MUST NOT produce a response whose serialized size would exceed
-// the relay's 8 MiB WS frame cap — for oversized representations the sender
-// returns status = STATUS_TOO_LARGE without data instead.
-message ClipboardResponseV1 {
-  uint32      offer_id    = 1;
-  string      mime        = 2;
-  Status      status      = 3;
-  Compression compression = 4;  // meaningful only when status == STATUS_OK
-  bytes       data        = 5;  // present only when status == STATUS_OK
+// ClipboardOffer announces one clipboard event. A new offer from a sender
+// supersedes its previous one: the receiver MUST drop pending pulls and
+// stale frames for the prior `clipboard_id`.
+message ClipboardOffer {
+  uint32  clipboard_id = 1;  // monotonic per sender per WS; starts at 1
+  Payload payload      = 2;
+}
 
+// DragOffer announces a live drag entering the remote surface. Unlike
+// clipboard offers, drags are concurrent (not superseding) and are ended
+// explicitly by DragEnd. The side the operator picked the drag up on (the
+// origin) sends it; the other side engages its local OS drag machinery.
+message DragOffer {
+  uint32  drag_id = 1;  // monotonic per sender per WS; starts at 1
+  Payload payload = 2;
+}
+
+// DragEnd reports the end of a drag gesture. It is sent by the client (where
+// the operator physically releases). DROPPED means the drop completed (the
+// receiver's streams then carry the bytes); CANCELLED means it was aborted
+// (no streams open). Per-representation delivery success lives on the
+// streams' StreamClose status, not here.
+message DragEnd {
+  uint32 drag_id = 1;
+  Status status  = 2;
   enum Status {
-    STATUS_UNSPECIFIED = 0;  // proto3 default; never sent on the wire
-    STATUS_OK          = 1;
-    STATUS_UNAVAILABLE = 2;  // offer expired / format gone
-    STATUS_TOO_LARGE   = 3;  // payload would exceed relay's 8 MiB frame cap
-    STATUS_ERROR       = 4;  // sender-side failure (opaque)
+    DRAG_STATUS_UNSPECIFIED = 0;
+    DRAG_STATUS_DROPPED     = 1;  // operator completed the drop
+    DRAG_STATUS_CANCELLED   = 2;  // operator aborted (Esc / no valid target)
   }
+}
+
+// StreamOpen asks the sender to start a forward-only stream of one
+// representation's bytes. `source` selects which feature's offer + which
+// representation; it is a oneof so future features can reuse the streaming
+// layer. The opener allocates `stream_id` (monotonic per opener per WS).
+message StreamOpen {
+  uint32 stream_id = 1;
+  oneof source {
+    ClipboardItem clipboard_item = 2;
+    DragItem      drag_item      = 3;
+  }
+  message ClipboardItem { uint32 clipboard_id = 1; uint32 index = 2; }
+  message DragItem      { uint32 drag_id      = 1; uint32 index = 2; }
+}
+
+// StreamData carries one frame of a stream's bytes. The sender compresses the
+// whole representation as a single stream (per the representation's
+// `compression`) and slices the compressed output into frames that each fill
+// the 64 KiB envelope; the receiver appends them in order (the transport is
+// reliable + ordered) and decompresses. There is no per-frame status and no
+// `last` flag — the stream ends with StreamClose.
+message StreamData {
+  uint32 stream_id = 1;
+  bytes  data      = 2;
+}
+
+// StreamClose terminates a stream. Sent by the data sender. Exactly one per
+// stream: COMPLETE on success (the receiver verifies decompressed length ==
+// the representation's `size`), CANCELLED to confirm a peer's StreamCancel,
+// or an error.
+message StreamClose {
+  uint32 stream_id = 1;
+  Status status    = 2;
+  enum Status {
+    STREAM_STATUS_UNSPECIFIED = 0;
+    STREAM_STATUS_COMPLETE    = 1;  // all bytes sent
+    STREAM_STATUS_CANCELLED   = 2;  // confirms the receiver's StreamCancel
+    STREAM_STATUS_UNAVAILABLE = 3;  // offer/representation gone (e.g. superseded clipboard offer)
+    STREAM_STATUS_NOT_FOUND   = 4;  // backing file vanished
+    STREAM_STATUS_IO_ERROR    = 5;  // read failed mid-stream
+    STREAM_STATUS_ERROR       = 6;  // generic sender-side failure
+  }
+}
+
+// StreamCancel asks the sender to abort a stream the receiver opened (user
+// cancel, disk full, no longer needed). The sender stops and replies with a
+// StreamClose carrying STREAM_STATUS_CANCELLED.
+message StreamCancel {
+  uint32 stream_id = 1;
 }
