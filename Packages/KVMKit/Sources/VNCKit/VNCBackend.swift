@@ -569,8 +569,8 @@ public final class VNCBackend: KVMBackend {
     private func absolutePixels(_ nx: Int32, _ ny: Int32) -> (x: Int, y: Int)? {
         let w = Int(frameSize.width), h = Int(frameSize.height)
         guard w > 0, h > 0 else { return nil }
-        let x = Int((Double(nx) / 32767.0) * Double(w - 1))
-        let y = Int((Double(ny) / 32767.0) * Double(h - 1))
+        let x = AbsolutePointer.pixelIndex(fromNormalized: nx, extent: w)
+        let y = AbsolutePointer.pixelIndex(fromNormalized: ny, extent: h)
         return (min(max(x, 0), w - 1), min(max(y, 0), h - 1))
     }
 
