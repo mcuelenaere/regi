@@ -114,6 +114,14 @@ public final class JetKVMBackend: KVMBackend {
     /// hasn't sent one yet; `.active == true` is the signal that the
     /// device is in failsafe mode and the UI should warn the user.
     public internal(set) var failsafe: FailsafeModeNotification?
+    /// Best-effort source for the session that replaced this one. The
+    /// takeover notification itself carries no params; populated moments
+    /// later from the device's per-source signaling metrics when available.
+    public private(set) var takeoverPeer: TakeoverPeer?
+    /// Distinguishes the brief lookup window from a completed lookup that
+    /// found no usable metadata, so the banner does not claim details are
+    /// unavailable while the request is still in flight.
+    public private(set) var takeoverPeerLookupComplete: Bool = false
     /// Presence of a host-side clipboard agent on the connected
     /// JetKVM. Driven by the `clipboardAgentStateChanged` push
     /// notification + a bootstrap `getClipboardAgentState` RPC at
@@ -163,6 +171,7 @@ public final class JetKVMBackend: KVMBackend {
     private var reconnectAttempt: Int = 0
     private var reconnectTask: Task<Void, Never>?
     private var hasBeenConnectedThisSession: Bool = false
+    private var takeoverLookupTask: Task<Void, Never>?
 
     public init() {}
 
@@ -719,6 +728,9 @@ public final class JetKVMBackend: KVMBackend {
             // UI; .closed transitions stop overriding state.kicked
             // (see handleRTCState).
             state = .kicked
+            takeoverPeer = nil
+            takeoverPeerLookupComplete = false
+            lookupTakeoverPeer()
 
         case "videoInputState":
             if let v = try? n.decodeParams(VideoState.self) {
@@ -771,6 +783,31 @@ public final class JetKVMBackend: KVMBackend {
 
     private func attachVideoTrack(_ track: RTCVideoTrack) {
         videoRenderer = WebRTCVideoRenderer(track: track)
+    }
+
+    private func lookupTakeoverPeer() {
+        takeoverLookupTask?.cancel()
+        guard let http else {
+            takeoverPeerLookupComplete = true
+            return
+        }
+        takeoverLookupTask = Task { @MainActor [weak self, http] in
+            do {
+                let peer = try await http.getLatestSessionRequestPeer()
+                guard !Task.isCancelled, self?.state == .kicked else { return }
+                self?.takeoverPeer = peer
+                self?.takeoverPeerLookupComplete = true
+                if let peer {
+                    log.notice("session taken over; most recently reported sourceType=\(peer.sourceType, privacy: .public) source=\(peer.source, privacy: .public)")
+                } else {
+                    log.notice("session taken over; device metrics did not identify the peer")
+                }
+            } catch {
+                guard !Task.isCancelled, self?.state == .kicked else { return }
+                self?.takeoverPeerLookupComplete = true
+                log.notice("session taken over; peer lookup failed: \(describe(error), privacy: .public)")
+            }
+        }
     }
 
     /// Called by KVMVideoView when its `RTCVideoViewDelegate` reports
@@ -928,6 +965,8 @@ public final class JetKVMBackend: KVMBackend {
     }
 
     private func teardown() async {
+        takeoverLookupTask?.cancel()
+        takeoverLookupTask = nil
         for task in pumpTasks { task.cancel() }
         pumpTasks = []
         if let rpc = self.rpc {
@@ -954,6 +993,8 @@ public final class JetKVMBackend: KVMBackend {
         atxState = nil
         streamQualityFactor = nil
         failsafe = nil
+        takeoverPeer = nil
+        takeoverPeerLookupComplete = false
         clipboardAgentState = .absent
         clipboardBridge = nil
         latestStats = nil

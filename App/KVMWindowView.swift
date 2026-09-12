@@ -178,7 +178,7 @@ struct KVMWindowView: View {
             VStack(spacing: 8) {
                 if case .kicked = session.state {
                     banner(
-                        "Another peer connected to this device — your session was taken over.",
+                        takeoverBannerText,
                         background: .red,
                         foreground: .white
                     )
@@ -389,6 +389,28 @@ struct KVMWindowView: View {
             .background(background)
             .foregroundStyle(foreground)
             .cornerRadius(6)
+    }
+
+    private var takeoverBannerText: LocalizedStringKey {
+        guard let peer = session.takeoverPeer else {
+            if !session.takeoverPeerLookupComplete {
+                return "Another peer connected to this device and took over your session. Looking up peer details…"
+            }
+            return "Another peer connected to this device and took over your session. The device did not expose its identity."
+        }
+        switch peer.sourceType {
+        case "local" where !peer.source.isEmpty:
+            return "Another peer connected to this device and took over your session. Most recently reported local source: \(peer.source)"
+        case "cloud" where !peer.source.isEmpty:
+            return "Another peer connected to this device and took over your session. Most recently reported cloud gateway: \(peer.source); the end user's IP is not exposed."
+        case "cloud":
+            return "Another peer connected to this device and took over your session. The most recently reported session used the cloud route; the end user's IP is not exposed."
+        default:
+            if !peer.source.isEmpty {
+                return "Another peer connected to this device and took over your session. Most recently reported source: \(peer.source)"
+            }
+            return "Another peer connected to this device and took over your session. The device did not expose its identity."
+        }
     }
 
     /// Trimmed video error string suitable as a "we know there's no
