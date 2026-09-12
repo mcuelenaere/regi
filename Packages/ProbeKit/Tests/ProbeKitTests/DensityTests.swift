@@ -9,7 +9,8 @@ import XCTest
 /// earlier cut used cyclic ones, LZFSE compressed 5,000 events into 384 bytes,
 /// and the resulting "1 B/event" would have sized the symbol far too small.
 final class DensityTests: XCTestCase {
-    /// Measured QR capacity per EC level, from `qr-spike capacity`. Level H is
+    /// Measured QR capacity per EC level, from a throwaway spike run against
+    /// CoreImage's generator before this package existed. Level H is
     /// the operative one — verified through the real rig at 240/240.
     static let capacityH = 1273
     static let capacityL = 2953
@@ -20,7 +21,7 @@ final class DensityTests: XCTestCase {
         let (encoded, _) = try FrameCodec.encodeCapped(Fixtures.frame(Fixtures.mixed(count: 400)))
         XCTAssertLessThanOrEqual(encoded.count, FrameCodec.defaultMaxBytes)
 
-        // From `qr-spike versions` at EC level H: 512 B is 119 modules, 768 B
+        // Measured at EC level H: 512 B is 119 modules, 768 B
         // is 143. Staying at or under 600 B keeps the symbol near 131 modules,
         // which is ~6.7 px/module in the probe's 880-pt band.
         XCTAssertLessThanOrEqual(FrameCodec.defaultMaxBytes, 768,
