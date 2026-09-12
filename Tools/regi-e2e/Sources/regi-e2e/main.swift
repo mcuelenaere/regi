@@ -21,6 +21,17 @@ regi-e2e — drives Regi and reads the probe's telemetry back over the KVM's vid
 Requires Screen Recording permission for whatever runs this binary.
 """
 
+extension String {
+    /// Pads by CHARACTERS. `String(format:"%-7s")` pads by bytes and re-decodes
+    /// the C string in the system encoding, which turned "key↓" into "key‚Üì".
+    func rightPadded(to n: Int) -> String {
+        count >= n ? self : self + String(repeating: " ", count: n - count)
+    }
+    func leftPadded(to n: Int) -> String {
+        count >= n ? self : String(repeating: " ", count: n - count) + self
+    }
+}
+
 func renderHealth(_ h: TelemetryFrame.Health) -> String {
     var parts: [String] = []
     parts.append(h.tapEnabled ? "tap:on" : "tap:OFF")
@@ -49,7 +60,8 @@ func doctor(window: String) async {
         print("capture    : \(String(format: "%.0fms", cap.millis)), \(Int(cap.capturePixelWidth)) px wide")
         if let ppm = cap.pixelsPerModule {
             let verdict = ppm >= 4 ? "OK" : (ppm >= 3 ? "MARGINAL" : "TOO SMALL")
-            print("QR module  : \(String(format: "%.2f", ppm)) captured px  [\(verdict), want >= 4]")
+            print("QR module  : >= \(String(format: "%.2f", ppm)) captured px  [\(verdict), want >= 4]"
+                  + "  (lower bound: assumes the largest symbol)")
         }
         print("probe      : \(renderHealth(cap.frame.health))")
         print("invariants : \(renderCounters(cap.frame.counters))")
@@ -91,8 +103,9 @@ func watch(window: String, intervalMillis: Int, limit: Int) async {
                 lastHealth = health
             }
             for e in try acc.ingest(cap.frame) {
-                print(String(format: "%8d  %-7s %@", e.seq,
-                             (e.kindLabel as NSString).utf8String!, e.detail))
+                let seq = String(e.seq).leftPadded(to: 8)
+                let kind = e.kindLabel.rightPadded(to: 7)
+                print("\(seq)  \(kind) \(e.detail)")
             }
             failures = 0
         } catch let fault as TelemetryAccumulator.Fault {

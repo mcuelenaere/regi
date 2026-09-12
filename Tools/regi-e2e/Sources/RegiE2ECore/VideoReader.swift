@@ -59,11 +59,17 @@ public final class VideoReader {
         public let qrPixelWidth: CGFloat
         public let capturePixelWidth: CGFloat
         public let millis: Double
-        /// Captured pixels per QR module. Below ~4 the decode rate collapses;
-        /// at 3 Vision stops locating the symbol at all.
+        /// Captured pixels per QR module, as a **lower bound**.
+        ///
+        /// The frame does not carry its symbol size, so this assumes the
+        /// largest we ever emit (version 40 = 177 modules plus a 1-module quiet
+        /// zone each side). A smaller payload produces a smaller symbol and
+        /// therefore *more* pixels per module, so the real figure is at least
+        /// this. Erring low is the right direction for a health check.
+        ///
+        /// Below ~4 the decode rate collapses; at 3 Vision stops locating the
+        /// symbol at all. Both measured in step 0.
         public var pixelsPerModule: CGFloat? {
-            // 179 modules at version 40 including the quiet zone; smaller
-            // symbols report proportionally more.
             qrPixelWidth > 0 ? qrPixelWidth / 179.0 : nil
         }
     }
