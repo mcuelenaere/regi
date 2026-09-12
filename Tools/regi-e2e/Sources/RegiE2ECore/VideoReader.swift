@@ -48,6 +48,15 @@ public final class VideoReader {
 
     private let windowName: String
 
+    /// Where the video sits inside the window, in window points, if known.
+    ///
+    /// Vision downsamples a large image before looking for barcodes, so
+    /// handing it a 3360x2100 window screenshot with a QR occupying a corner
+    /// can push the symbol below what it can resolve — enlarging the window
+    /// made decoding *worse*, not better. Cropping to the video first keeps
+    /// the symbol's share of the pixels high.
+    public var videoRectInWindow: CGRect?
+
     public init(windowName: String) {
         self.windowName = windowName
         // A bare CLI has no window-server connection, and touching AppKit or
@@ -133,10 +142,23 @@ public final class VideoReader {
             throw ReadError.captureFailed(error.localizedDescription)
         }
 
+        // Crop to the video before detection when we know where it is.
+        var searchImage = image
+        if let rect = videoRectInWindow, window.frame.width > 0 {
+            let sx = CGFloat(image.width) / window.frame.width
+            let sy = CGFloat(image.height) / window.frame.height
+            let crop = CGRect(x: rect.minX * sx, y: rect.minY * sy,
+                              width: rect.width * sx, height: rect.height * sy)
+                .intersection(CGRect(x: 0, y: 0, width: image.width, height: image.height))
+            if crop.width > 100, crop.height > 100, let cropped = image.cropping(to: crop) {
+                searchImage = cropped
+            }
+        }
+
         let request = VNDetectBarcodesRequest()
         request.symbologies = [.qr]
         do {
-            try VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
+            try VNImageRequestHandler(cgImage: searchImage, options: [:]).perform([request])
         } catch {
             throw ReadError.undecodableQR(error.localizedDescription)
         }
@@ -154,8 +176,8 @@ public final class VideoReader {
         do {
             let frame = try FrameCodec.decode(payload)
             return Capture(frame: frame,
-                           qrPixelWidth: obs.boundingBox.width * CGFloat(image.width),
-                           capturePixelWidth: CGFloat(image.width),
+                           qrPixelWidth: obs.boundingBox.width * CGFloat(searchImage.width),
+                           capturePixelWidth: CGFloat(searchImage.width),
                            millis: Date().timeIntervalSince(start) * 1000)
         } catch {
             throw ReadError.frameDecodeFailed("\(error)")

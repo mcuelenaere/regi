@@ -47,21 +47,28 @@ public enum FrameCodec {
     /// loop breaks with no error anywhere. So the frame is capped instead, and
     /// the **window shrinks rather than the symbol growing**.
     ///
-    /// 1,273 B is the capacity of a version-40 symbol at EC level H, which the
-    /// step 0 spike verified end to end through the real rig: 240/240 reads,
-    /// byte-for-byte, at 5.56 captured px/module from a 640-pt band. Level H is
-    /// the strongest error correction, which is what a compressed video path
-    /// wants.
+    /// Sized for *legibility*, not capacity.
     ///
-    /// At the measured density (see DensityTests: 6.7 B/event for keyboard
-    /// traffic, 9.6 for a mixed stream) that window self-sizes to roughly
-    /// 130-190 events — comfortably above the largest catalogue scenario, the
-    /// 160-event burst-ordering test, which is pure keyboard traffic.
+    /// A version-40 symbol at level H holds 1,273 B, and that was the original
+    /// budget. But bytes drive module count, module count drives module size at
+    /// a fixed band width, and below ~3 px/module in the HDMI frame the symbol
+    /// stops decoding — irrecoverably, since no amount of upscaling downstream
+    /// adds detail the source never had. Measured on the rig: a 1,177 B frame
+    /// rendered 176 modules and decoding failed completely.
     ///
-    /// If a future scenario needs a larger window, the lever is **sharding**:
-    /// a 2x2 grid of level-H codes carries ~5 KB at twice the band width.
-    /// Prefer that over dropping to a weaker EC level.
-    public static let defaultMaxBytes = 1273
+    /// 600 B is about 131 modules, which at the probe's 880-pt band is ~6.7
+    /// px/module at the source, with headroom for video compression.
+    ///
+    /// At the measured density (DensityTests: 6.7 B/event for keyboard
+    /// traffic, 9.6 mixed) the window self-sizes to roughly 60-90 events. That
+    /// is smaller than the largest scenario, which is fine: the window only has
+    /// to overlap between consecutive reads, not hold a whole scenario. The
+    /// driver reads several times a second and merges.
+    ///
+    /// If a genuinely larger window is ever needed, the lever is **sharding** —
+    /// several full-size codes side by side multiply capacity at unchanged
+    /// module size. Growing one symbol does not.
+    public static let defaultMaxBytes = 600
 
     /// Encode, dropping oldest events until the result fits `maxBytes`.
     ///

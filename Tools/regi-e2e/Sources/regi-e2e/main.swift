@@ -130,6 +130,12 @@ func doctor(window: String) async {
         let w = try await reader.findWindow()
         print("window     : \"\(w.title ?? "")\" (\(w.owningApplication?.applicationName ?? "?"))"
               + "  \(Int(w.frame.width))x\(Int(w.frame.height)) pt")
+        // Match what `run` does, or doctor reports a different verdict.
+        if let driver = try? AXDriver(), let g = try? driver.videoGeometry() {
+            reader.videoRectInWindow = CGRect(x: g.viewFrame.minX - w.frame.minX,
+                                              y: g.viewFrame.minY - w.frame.minY,
+                                              width: g.viewFrame.width, height: g.viewFrame.height)
+        }
         let cap = try await reader.read(from: w)
         print("capture    : \(String(format: "%.0fms", cap.millis)), \(Int(cap.capturePixelWidth)) px wide")
         if let ppm = cap.pixelsPerModule {

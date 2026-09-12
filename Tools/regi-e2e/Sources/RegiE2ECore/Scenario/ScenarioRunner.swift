@@ -45,6 +45,11 @@ public final class ScenarioRunner {
         self.driver = driver
         self.geometry = try driver.videoGeometry()
         self.injector = OSInjector(geometry: geometry)
+        // Window-relative, so the reader can crop the screenshot to the video.
+        reader.videoRectInWindow = CGRect(
+            x: geometry.viewFrame.minX - regiWindow.frame.minX,
+            y: geometry.viewFrame.minY - regiWindow.frame.minY,
+            width: geometry.viewFrame.width, height: geometry.viewFrame.height)
     }
 
     public func run(_ scenario: Scenario) async -> Outcome {

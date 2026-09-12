@@ -14,24 +14,19 @@ final class DensityTests: XCTestCase {
     static let capacityH = 1273
     static let capacityL = 2953
 
-    /// The largest scenario in the catalogue: 40 alternating key pairs, down
-    /// and up, all keyboard traffic. If this fits, everything fits.
-    static let burstEvents = 160
+    /// Module count is what decides legibility, and it follows from payload
+    /// size. This pins the relationship the budget was chosen against.
+    func testBudgetKeepsModuleCountLegible() throws {
+        let (encoded, _) = try FrameCodec.encodeCapped(Fixtures.frame(Fixtures.mixed(count: 400)))
+        XCTAssertLessThanOrEqual(encoded.count, FrameCodec.defaultMaxBytes)
 
-    func testLargestCatalogueScenarioFitsOneLevelHCode() throws {
-        let events = Fixtures.typing(events: Self.burstEvents)
-        let size = try FrameCodec.encode(Fixtures.frame(events)).count
-        print("""
-
-        ── burst-ordering scenario (\(Self.burstEvents) keyboard events) ──
-        \(size) bytes  (\(String(format: "%.2f", Double(size) / Double(events.count))) B/event)
-        level H capacity: \(Self.capacityH) B  → \(size <= Self.capacityH ? "FITS" : "OVERFLOWS")
-        """)
-        XCTAssertLessThanOrEqual(
-            size, Self.capacityH,
-            "The burst scenario must fit one level-H code. Shard to a 2x2 grid "
-            + "before weakening error correction — the video path needs the EC more."
-        )
+        // From `qr-spike versions` at EC level H: 512 B is 119 modules, 768 B
+        // is 143. Staying at or under 600 B keeps the symbol near 131 modules,
+        // which is ~6.7 px/module in the probe's 880-pt band.
+        XCTAssertLessThanOrEqual(FrameCodec.defaultMaxBytes, 768,
+                                 "a larger payload shrinks modules at a fixed band "
+                                 + "width, and below ~3 px/module the symbol stops "
+                                 + "decoding irrecoverably")
     }
 
     func testMeasuredDensityByTrafficShape() throws {
@@ -88,11 +83,30 @@ final class DensityTests: XCTestCase {
                           "this comparison is the driver's gap check")
     }
 
-    func testBurstScenarioIsNotTrimmedAtAll() throws {
-        let burst = Fixtures.frame(Fixtures.typing(events: Self.burstEvents))
-        let (_, encoded) = try FrameCodec.encodeCapped(burst)
-        XCTAssertEqual(encoded.events.count, Self.burstEvents,
-                       "the largest catalogue scenario must survive the cap untrimmed")
+    /// The window does not need to hold a whole scenario — only to overlap
+    /// between consecutive driver reads, which is what lets the accumulator
+    /// merge frames without a gap.
+    ///
+    /// The driver reads roughly four times a second during a settle; the
+    /// densest input a scenario produces is typing at about 25 events/second,
+    /// so a read covers ~6 events. Anything above ~40 leaves an order of
+    /// magnitude of headroom, including a few missed reads.
+    ///
+    /// This replaces an earlier assertion that the largest scenario must fit
+    /// untrimmed. That was the wrong invariant: it traded legibility for
+    /// capacity, and legibility is what actually fails — a payload large enough
+    /// to hold 160 events produced a 176-module symbol that stopped decoding on
+    /// the rig entirely.
+    func testWindowComfortablyExceedsOneReadIntervalOfEvents() throws {
+        let eventsPerRead = 6
+        for (name, events) in [("typing", Fixtures.typing(events: 400)),
+                               ("mixed", Fixtures.mixed(count: 400))] {
+            let (_, encoded) = try FrameCodec.encodeCapped(Fixtures.frame(events))
+            print("  \(name): window holds \(encoded.events.count) events "
+                  + "(~\(encoded.events.count / eventsPerRead) reads' worth)")
+            XCTAssertGreaterThan(encoded.events.count, eventsPerRead * 6,
+                                 "\(name) window is too small to survive a few missed reads")
+        }
     }
 
     // MARK: - Container

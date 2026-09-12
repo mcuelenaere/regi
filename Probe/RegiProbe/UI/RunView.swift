@@ -7,6 +7,15 @@ import SwiftUI
 /// Two audiences at once: the QR band is read by `regi-e2e`, and the
 /// visualization is watched by a human *through Regi's own window*.
 struct RunView: View {
+    /// On-screen size of the QR band, in points on the target.
+    ///
+    /// This is the number that decides whether telemetry decodes at all.
+    /// Module size at the *source* is bandSide / modulesAcross, and nothing
+    /// downstream can recover detail the HDMI frame never carried — upscaling
+    /// in Regi does not help. At 560pt a full 179-module symbol gave ~2.9
+    /// px/module and stopped decoding entirely once the payload grew.
+    static let bandSide: CGFloat = 880
+
     let model: ProbeModel
     let onStop: () -> Void
 
@@ -64,7 +73,7 @@ struct RunView: View {
                     Text("waiting for telemetry").foregroundStyle(.secondary)
                 }
             }
-            .frame(width: 560, height: 560)
+            .frame(width: Self.bandSide, height: Self.bandSide)
             .border(Color.black.opacity(0.15))
 
             Text("telemetry — do not cover")
