@@ -355,9 +355,6 @@ final class KVMVideoView: NSView {
     /// 12 at 10 ms. A partial failure at the margin is what a race looks like.
     private var heldButtons: MouseButtons = []
 
-    /// Last coordinates sent, so a forced button release lands where the
-    /// pointer actually is rather than moving the host's cursor.
-
     /// `buttonNumber` is an index; `MouseButtons` is a bitmask over the same
     /// order (left, right, middle, back, forward), which is also the order
     /// `NSEvent.pressedMouseButtons` uses.
