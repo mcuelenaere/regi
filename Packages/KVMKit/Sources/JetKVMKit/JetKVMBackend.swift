@@ -146,6 +146,9 @@ public final class JetKVMBackend: KVMBackend {
     private var pumpTasks: [Task<Void, Never>] = []
     private var modifierTracker = ModifierTracker()
     private var pointerThrottler = InputThrottler(interval: .milliseconds(8))
+    /// Stamped before the `Task` hop so the wire trace can prove whether the
+    /// hop preserves order. Diagnostic only.
+    private var outboundSeq: UInt64 = 0
     /// USB-HID Usage IDs of non-modifier keys we believe are held on
     /// the host. Combined with `modifierTracker.currentState` it tells
     /// the keep-alive loop whether to fire a heartbeat.
@@ -466,10 +469,36 @@ public final class JetKVMBackend: KVMBackend {
         sendPointerReport(x: normalizedX, y: normalizedY, buttons: buttons)
     }
 
+    /// Both motion and button transitions go on the **reliable** channel.
+    ///
+    /// Motion alone is drop-tolerant — a stale absolute position is corrected
+    /// by the next one — and that is why this used to ride
+    /// `.unreliableOrdered` (`maxRetransmits = 0`). But a pointer report
+    /// carries the whole button bitmask, so button transitions shared that
+    /// channel, and they are *not* drop-tolerant: lose a press and the host
+    /// never sees the click; lose a release and the host holds the button
+    /// until some later report happens to clear it, which is what made a
+    /// double-click leave the left button stuck and every click after it
+    /// register as a double.
+    ///
+    /// This is a correctness argument, not a measured one: attempts to count
+    /// the loss end to end were confounded by the QR telemetry's own
+    /// throughput limit, so how often it actually bites is still unknown.
+    /// What is certain is that the channel is allowed to drop these frames and
+    /// nothing downstream can reconstruct them.
+    ///
+    /// Splitting the two (buttons reliable, motion unreliable) would be worse
+    /// than either: with no ordering between channels, a stale motion report
+    /// carrying an older bitmask could land after a transition and undo it.
+    /// One channel keeps the stream ordered. The cost is bounded by the
+    /// 120 Hz throttle above — roughly 1 KB/s — and a lost frame now costs a
+    /// brief cursor stutter while SCTP retransmits instead of a wrong click.
     private func sendPointerReport(x: Int32, y: Int32, buttons: MouseButtons) {
         guard let webrtc else { return }
         let message = HIDRPCMessage.pointerReport(x: x, y: y, buttons: buttons.rawValue)
-        Task { await webrtc.sendHID(message, on: .unreliableOrdered) }
+        outboundSeq &+= 1
+        let seq = outboundSeq
+        Task { await webrtc.sendHID(message, on: .reliable, seq: seq) }
     }
 
     /// Forward a relative-mouse event when pointer-lock is engaged.
@@ -480,7 +509,7 @@ public final class JetKVMBackend: KVMBackend {
     public func sendMouseRelative(dx: Int8, dy: Int8, buttons: MouseButtons) {
         guard hidReady, let webrtc else { return }
         let message = HIDRPCMessage.mouseReport(dx: dx, dy: dy, buttons: buttons.rawValue)
-        Task { await webrtc.sendHID(message, on: .unreliableOrdered) }
+        Task { await webrtc.sendHID(message, on: .reliable) }
     }
 
     /// Tell the device to stop pushing video frames to the WebRTC
@@ -518,10 +547,11 @@ public final class JetKVMBackend: KVMBackend {
     /// Forward a scroll-wheel event. Routes through the binary
     /// `wheelReport` opcode (0x04) on the unreliable-ordered HID
     /// channel when the firmware is recent enough to dispatch it
-    /// (saves ~70 bytes/event vs JSON-RPC, drops the per-event JSON
-    /// parse on the device, and rides the drop-tolerant channel mouse
-    /// motion uses). Falls back to the JSON-RPC `wheelReport` method
-    /// on older firmware.
+    /// (saves ~70 bytes/event vs JSON-RPC and drops the per-event JSON
+    /// parse on the device). Falls back to the JSON-RPC `wheelReport`
+    /// method on older firmware. Reliable, not unreliable: wheel deltas
+    /// are relative, so a dropped frame is a scroll notch that silently
+    /// never happened rather than a stale value the next report fixes.
     ///
     /// Gating is by firmware version (>= 0.5.9 ships the binary
     /// dispatch handler) rather than a runtime capability
@@ -536,7 +566,7 @@ public final class JetKVMBackend: KVMBackend {
         if useBinary {
             guard hidReady, let webrtc else { return }
             let message = HIDRPCMessage.wheelReport(deltaY: wheelY, deltaX: wheelX)
-            Task { await webrtc.sendHID(message, on: .unreliableOrdered) }
+            Task { await webrtc.sendHID(message, on: .reliable) }
         } else {
             guard rpcReady else { return }
             Task { [weak self] in
