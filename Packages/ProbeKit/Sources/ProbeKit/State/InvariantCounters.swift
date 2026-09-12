@@ -53,6 +53,8 @@ public struct Violation: Sendable, Equatable, CustomStringConvertible {
         case duplicateDown(kvk: UInt16)
         case stuckAtEnd(kvk: UInt16, heldNanos: UInt64)
         case syntheticSource(pid: Int32)
+        case buttonUpWithoutDown(button: PointerButton)
+        case buttonStuckAtEnd(button: PointerButton)
     }
     public var kind: Kind
     public var seq: UInt64
@@ -69,6 +71,10 @@ public struct Violation: Sendable, Equatable, CustomStringConvertible {
             return "seq \(seq): \(KeyLabels.label(k)) still held after \(n / 1_000_000)ms"
         case .syntheticSource(let pid):
             return "seq \(seq): event injected by pid \(pid) — run contaminated"
+        case .buttonUpWithoutDown(let b):
+            return "seq \(seq): \(b.label) released with no matching press"
+        case .buttonStuckAtEnd(let b):
+            return "seq \(seq): \(b.label) still held at the end"
         }
     }
 }

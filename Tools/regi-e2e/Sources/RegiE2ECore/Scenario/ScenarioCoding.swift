@@ -111,6 +111,14 @@ extension Expectation: Codable {
                                    tolerance: try c.intOr("tolerance", 2))
         case "nothingHeld":         self = .nothingHeld
         case "noUnmatchedReleases": self = .noUnmatchedReleases
+        case "wheelTotal":
+            let axis = try c.decodeIfPresent(String.self, forKey: AnyKey("axis")) ?? "vertical"
+            self = .wheelTotal(axis: axis == "horizontal" ? .horizontal : .vertical,
+                               min: try c.int("min", kind), max: try c.int("max", kind))
+        case "clickCount":
+            let b = try c.decodeIfPresent(String.self, forKey: AnyKey("button")) ?? "left"
+            self = .clickCount(button: b == "right" ? .right : .left,
+                               min: try c.int("min", kind), max: try c.int("max", kind))
         case "modifierEndsUp":
             self = .modifierEndsUp(kvk: try KeyNames.keyCode(try c.str("key", kind)))
         default:
@@ -143,6 +151,14 @@ extension Expectation: Codable {
             try c.encode(tol, forKey: AnyKey("tolerance"))
         case .nothingHeld:         try c.encode("nothingHeld", forKey: AnyKey("expect"))
         case .noUnmatchedReleases: try c.encode("noUnmatchedReleases", forKey: AnyKey("expect"))
+        case .wheelTotal(let axis, let min, let max):
+            try c.encode("wheelTotal", forKey: AnyKey("expect"))
+            try c.encode(axis.rawValue, forKey: AnyKey("axis"))
+            try c.encode(min, forKey: AnyKey("min")); try c.encode(max, forKey: AnyKey("max"))
+        case .clickCount(let b, let min, let max):
+            try c.encode("clickCount", forKey: AnyKey("expect"))
+            try c.encode(b.rawValue, forKey: AnyKey("button"))
+            try c.encode(min, forKey: AnyKey("min")); try c.encode(max, forKey: AnyKey("max"))
         case .modifierEndsUp(let kvk):
             try c.encode("modifierEndsUp", forKey: AnyKey("expect"))
             try c.encode(KeyNames.name(kvk), forKey: AnyKey("key"))
@@ -185,6 +201,24 @@ extension Step: Codable {
             self = .drag(fromX: try c.int("fromX", kind), fromY: try c.int("fromY", kind),
                          toX: try c.int("toX", kind), toY: try c.int("toY", kind),
                          steps: try c.intOr("steps", 8))
+        case "buttonDown", "buttonUp":
+            let b = try c.decodeIfPresent(String.self, forKey: AnyKey("button")) ?? "left"
+            let button: Button = b == "right" ? .right : .left
+            let x = try c.int("x", kind), y = try c.int("y", kind)
+            self = kind == "buttonDown" ? .buttonDown(button: button, x: x, y: y)
+                                        : .buttonUp(button: button, x: x, y: y)
+        case "sideButton":
+            self = .sideButton(number: try c.int("number", kind),
+                               x: try c.int("x", kind), y: try c.int("y", kind),
+                               down: try c.boolOr("down", true))
+        case "scroll":
+            let axis = try c.decodeIfPresent(String.self, forKey: AnyKey("axis")) ?? "vertical"
+            self = .scroll(axis: axis == "horizontal" ? .horizontal : .vertical,
+                           lines: try c.int("lines", kind))
+        case "autorepeat":
+            self = .autorepeat(kvk: try KeyNames.keyCode(try c.str("key", kind)),
+                               count: try c.intOr("count", 5),
+                               intervalMillis: try c.intOr("intervalMillis", 40))
         case "focusRegi":      self = .focusRegi
         case "focusElsewhere": self = .focusElsewhere
         case "wait":           self = .wait(millis: try c.int("millis", kind))
@@ -230,6 +264,25 @@ extension Step: Codable {
             try c.encode(fx, forKey: AnyKey("fromX")); try c.encode(fy, forKey: AnyKey("fromY"))
             try c.encode(tx, forKey: AnyKey("toX")); try c.encode(ty, forKey: AnyKey("toY"))
             try c.encode(steps, forKey: AnyKey("steps"))
+        case .buttonDown(let b, let x, let y), .buttonUp(let b, let x, let y):
+            if case .buttonDown = self { try c.encode("buttonDown", forKey: AnyKey("do")) }
+            else { try c.encode("buttonUp", forKey: AnyKey("do")) }
+            try c.encode(b.rawValue, forKey: AnyKey("button"))
+            try c.encode(x, forKey: AnyKey("x")); try c.encode(y, forKey: AnyKey("y"))
+        case .sideButton(let number, let x, let y, let down):
+            try c.encode("sideButton", forKey: AnyKey("do"))
+            try c.encode(number, forKey: AnyKey("number"))
+            try c.encode(x, forKey: AnyKey("x")); try c.encode(y, forKey: AnyKey("y"))
+            try c.encode(down, forKey: AnyKey("down"))
+        case .scroll(let axis, let lines):
+            try c.encode("scroll", forKey: AnyKey("do"))
+            try c.encode(axis.rawValue, forKey: AnyKey("axis"))
+            try c.encode(lines, forKey: AnyKey("lines"))
+        case .autorepeat(let kvk, let count, let interval):
+            try c.encode("autorepeat", forKey: AnyKey("do"))
+            try c.encode(KeyNames.name(kvk), forKey: AnyKey("key"))
+            try c.encode(count, forKey: AnyKey("count"))
+            try c.encode(interval, forKey: AnyKey("intervalMillis"))
         case .focusRegi:       try c.encode("focusRegi", forKey: AnyKey("do"))
         case .focusElsewhere:  try c.encode("focusElsewhere", forKey: AnyKey("do"))
         case .wait(let ms):

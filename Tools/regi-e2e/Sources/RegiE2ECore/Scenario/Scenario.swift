@@ -41,6 +41,12 @@ public enum Step: Equatable {
     case moveTo(x: Int, y: Int)
     case click(button: Button, x: Int, y: Int, count: Int)
     case drag(fromX: Int, fromY: Int, toX: Int, toY: Int, steps: Int)
+    case buttonDown(button: Button, x: Int, y: Int)
+    case buttonUp(button: Button, x: Int, y: Int)
+    /// Back and forward, which are `otherMouse*` with a button number.
+    case sideButton(number: Int, x: Int, y: Int, down: Bool)
+    case scroll(axis: Axis, lines: Int)
+    case autorepeat(kvk: UInt16, count: Int, intervalMillis: Int)
     case focusRegi
     case focusElsewhere
     case wait(millis: Int)
@@ -56,6 +62,10 @@ public enum Step: Equatable {
 
     public enum Button: String, Equatable {
         case left, right
+    }
+
+    public enum Axis: String, Equatable {
+        case vertical, horizontal
     }
 }
 
@@ -75,6 +85,13 @@ public enum Expectation: Equatable {
     /// A modifier's last observed transition left it in this state — the
     /// assertion that catches the ⌘Tab inversion class of bug.
     case modifierEndsUp(kvk: UInt16)
+    /// Signed total of wheel line deltas. Never assert a *count* of wheel
+    /// events: the client coalesces and re-splits them, so only the total is
+    /// stable.
+    case wheelTotal(axis: Step.Axis, min: Int, max: Int)
+    /// Number of presses of a button. This is the "one click did not arrive as
+    /// two" assertion.
+    case clickCount(button: Step.Button, min: Int, max: Int)
 
     public enum KindFilter: String, Equatable {
         case key, pointer, wheel, gesture, any

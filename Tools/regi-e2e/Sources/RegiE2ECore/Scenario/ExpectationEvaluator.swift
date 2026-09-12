@@ -41,7 +41,9 @@ public enum ExpectationEvaluator {
         case .nothingHeld:
             var tracker = HeldStateTracker()
             for e in events { tracker.ingest(e) }
-            let held = tracker.heldKeys.keys.sorted().map(KeyLabels.label)
+            // Covers buttons as well as keys: a stuck mouse button is the same
+            // class of bug as a stuck modifier.
+            let held = tracker.heldDescriptions
             return Result(passed: held.isEmpty,
                           detail: held.isEmpty ? "nothing held"
                                                : "still held: \(held.joined(separator: " "))")
@@ -50,6 +52,28 @@ public enum ExpectationEvaluator {
             for e in events { tracker.ingest(e) }
             let n = tracker.counters.upWithoutDown
             return Result(passed: n == 0, detail: "\(n) release(s) without a matching press")
+        case .wheelTotal(let axis, let min, let max):
+            // Signed total, never a count: the client coalesces wheel events
+            // and re-splits them, so only the sum is stable.
+            let total = events.reduce(0) { acc, e -> Int in
+                guard case .wheel(let w) = e.payload else { return acc }
+                return acc + Int(axis == .vertical ? w.lineDeltaY : w.lineDeltaX)
+            }
+            return Result(passed: total >= min && total <= max,
+                          detail: "\(axis.rawValue) wheel total \(total), wanted \(min)…\(max)")
+
+        case .clickCount(let button, let min, let max):
+            let want: PointerButton = button == .left ? .left : .right
+            let n = events.reduce(0) { acc, e -> Int in
+                guard case .pointer(let p) = e.payload,
+                      let (b, down) = PointerButton.transition(type: p.type,
+                                                               buttonNumber: p.buttonNumber),
+                      b == want, down else { return acc }
+                return acc + 1
+            }
+            return Result(passed: n >= min && n <= max,
+                          detail: "\(want.label) pressed \(n)×, wanted \(min)…\(max)")
+
         case .modifierEndsUp(let kvk):
             // Reads the last transition's flag bit rather than counting
             // transitions: parity would report the wrong answer after any

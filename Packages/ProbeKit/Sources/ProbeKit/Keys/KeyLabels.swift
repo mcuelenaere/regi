@@ -64,3 +64,34 @@ public enum ModifierFlagBits {
         return rawFlags & bit != 0
     }
 }
+
+/// Mouse buttons, identified the way a `CGEvent` reports them.
+///
+/// A button press arrives as a pointer event whose type says which class of
+/// button it was; for `otherMouse*` the button number distinguishes middle from
+/// the side buttons.
+public enum PointerButton: UInt32, Sendable, CaseIterable {
+    case left = 0, right = 1, middle = 2, back = 3, forward = 4
+
+    public var label: String {
+        switch self {
+        case .left: return "M1"; case .right: return "M2"; case .middle: return "M3"
+        case .back: return "M4"; case .forward: return "M5"
+        }
+    }
+
+    /// `(button, isDown)` for a pointer event, or nil when it is motion rather
+    /// than a button transition.
+    public static func transition(type: UInt32, buttonNumber: UInt32) -> (PointerButton, Bool)? {
+        switch type {
+        case 1:  return (.left, true)      // leftMouseDown
+        case 2:  return (.left, false)     // leftMouseUp
+        case 3:  return (.right, true)     // rightMouseDown
+        case 4:  return (.right, false)    // rightMouseUp
+        case 25, 26:                        // otherMouseDown / Up
+            guard let b = PointerButton(rawValue: buttonNumber) else { return nil }
+            return (b, type == 25)
+        default: return nil
+        }
+    }
+}

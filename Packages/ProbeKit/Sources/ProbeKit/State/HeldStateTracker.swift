@@ -13,6 +13,10 @@ public struct HeldStateTracker: Sendable {
     }
 
     public private(set) var heldKeys: [UInt16: Hold] = [:]
+    /// Buttons are tracked alongside keys because a stuck mouse button is the
+    /// same class of bug as a stuck modifier, and just as invisible without
+    /// something watching for it.
+    public private(set) var heldButtons: [PointerButton: Hold] = [:]
     public private(set) var counters = InvariantCounters()
     public private(set) var violations: [Violation] = []
     private var lastNanos: UInt64 = 0
@@ -79,9 +83,24 @@ public struct HeldStateTracker: Sendable {
                 heldKeys.removeValue(forKey: f.kvk)
             }
 
-        case .pointer(let p) where p.sourcePID != 0:
-            counters.syntheticSourceEvents += 1
-            new.append(.init(kind: .syntheticSource(pid: p.sourcePID), seq: event.seq))
+        case .pointer(let p):
+            if p.sourcePID != 0 {
+                counters.syntheticSourceEvents += 1
+                new.append(.init(kind: .syntheticSource(pid: p.sourcePID), seq: event.seq))
+            }
+            if let (button, down) = PointerButton.transition(type: p.type,
+                                                             buttonNumber: p.buttonNumber) {
+                if down {
+                    if heldButtons[button] == nil {
+                        heldButtons[button] = Hold(firstSeq: event.seq,
+                                                   firstNanos: event.machAbsoluteNanos,
+                                                   repeatCount: 0)
+                    }
+                } else if heldButtons.removeValue(forKey: button) == nil {
+                    counters.upWithoutDown += 1
+                    new.append(.init(kind: .buttonUpWithoutDown(button: button), seq: event.seq))
+                }
+            }
 
         default:
             break
@@ -101,11 +120,21 @@ public struct HeldStateTracker: Sendable {
             let held = nanos > hold.firstNanos ? nanos - hold.firstNanos : 0
             new.append(.init(kind: .stuckAtEnd(kvk: kvk, heldNanos: held), seq: hold.firstSeq))
         }
+        for (button, hold) in heldButtons.sorted(by: { $0.key.rawValue < $1.key.rawValue }) {
+            counters.stuckAtEnd += 1
+            new.append(.init(kind: .buttonStuckAtEnd(button: button), seq: hold.firstSeq))
+        }
         violations.append(contentsOf: new)
         return new
     }
 
-    public var nothingHeld: Bool { heldKeys.isEmpty }
+    public var nothingHeld: Bool { heldKeys.isEmpty && heldButtons.isEmpty }
+
+    /// Human-readable list of everything still down, keys and buttons alike.
+    public var heldDescriptions: [String] {
+        heldKeys.keys.sorted().map(KeyLabels.label)
+            + heldButtons.keys.sorted { $0.rawValue < $1.rawValue }.map(\.label)
+    }
 
     /// Hold duration for a key that is currently held, in nanoseconds.
     public func holdDuration(of kvk: UInt16, atNanos nanos: UInt64) -> UInt64? {

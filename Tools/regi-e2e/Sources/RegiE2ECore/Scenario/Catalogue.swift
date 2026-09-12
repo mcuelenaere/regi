@@ -6,8 +6,12 @@ import Foundation
 public enum Catalogue {
     public static let all: [Scenario] = [
         singleKey, typingOrder, shiftedCharacter, modifiersBothSides,
+        autorepeat, heldOverKeepAlive,
         commandTabRegression, focusLossReleasesModifiers,
-        pointerAccuracy, pointerDoubleClick, pinchProducesNothing,
+        pointerAccuracy, pointerSingleClick, pointerDoubleClick, pointerDrag,
+        pointerRightClick, pointerSideButtons,
+        wheelVertical, wheelHorizontal, wheelStaysDiscrete,
+        pinchProducesNothing, burstOrdering,
     ]
 
     public static func scenario(id: String) -> Scenario? { all.first { $0.id == id } }
@@ -75,6 +79,42 @@ public enum Catalogue {
             .expect(.nothingHeld),
         ])
 
+    /// The OS marks repeats, and the client may coalesce them, so the count is
+    /// a range rather than a number. What must hold exactly is that there is
+    /// one release and nothing is left held.
+    public static let autorepeat = Scenario(
+        id: "key.autorepeat", title: "a held key repeats without stranding",
+        tags: [.keyboard],
+        steps: [
+            .focusRegi,
+            .autorepeat(kvk: 0x25, count: 5, intervalMillis: 40),   // 'l'
+            settle,
+            .expect(.keyCount(kvk: 0x25, down: true, min: 1, max: 6)),
+            .expect(.keyCount(kvk: 0x25, down: false, min: 1, max: 1)),
+            .expect(.noUnmatchedReleases),
+            .expect(.nothingHeld),
+        ])
+
+    /// A key held far longer than the gadget's auto-release window.
+    ///
+    /// The JetKVM gadget releases held keys after ~100ms of HID silence, and
+    /// Regi covers that with a 50ms keep-alive. If the heartbeat ever stops,
+    /// this is where it shows: a release arrives that nobody sent.
+    public static let heldOverKeepAlive = Scenario(
+        id: "key.heldOverKeepAlive", title: "a key held 1.2s is not auto-released",
+        tags: [.keyboard, .slow],
+        steps: [
+            .focusRegi,
+            .key(kvk: 0x00, action: .down),
+            .wait(millis: 1200),
+            // Asserted before the release is sent: any release seen here came
+            // from the device, not from us.
+            .expect(.keyCount(kvk: 0x00, down: false, min: 0, max: 0)),
+            .key(kvk: 0x00, action: .up),
+            settle,
+            .expect(.nothingHeld),
+        ])
+
     // MARK: - The bugs this harness has already found
 
     /// Regression for the reported ⌘Tab bug: ⌘ goes down in Regi, focus leaves,
@@ -126,6 +166,124 @@ public enum Catalogue {
             .expect(.cursorEndsNear(x: 960, y: 540, tolerance: 2)),
         ])
 
+    public static let pointerSingleClick = Scenario(
+        id: "ptr.singleClick", title: "one click arrives as exactly one click",
+        tags: [.pointer],
+        steps: [
+            .focusRegi,
+            .moveTo(x: 800, y: 500),
+            .wait(millis: 150),
+            .click(button: .left, x: 800, y: 500, count: 1),
+            settle,
+            .expect(.clickCount(button: .left, min: 1, max: 1)),
+            .expect(.nothingHeld),
+        ])
+
+    /// A drag is the case where a stuck button would actually show: the button
+    /// must stay down across the motion and come back up at the end.
+    public static let pointerDrag = Scenario(
+        id: "ptr.drag", title: "a drag holds the button across the motion and releases",
+        tags: [.pointer],
+        steps: [
+            .focusRegi,
+            .drag(fromX: 500, fromY: 300, toX: 1100, toY: 700, steps: 10),
+            settle,
+            .expect(.clickCount(button: .left, min: 1, max: 1)),
+            .expect(.cursorEndsNear(x: 1100, y: 700, tolerance: 3)),
+            .expect(.noUnmatchedReleases),
+            .expect(.nothingHeld),
+        ])
+
+    public static let pointerRightClick = Scenario(
+        id: "ptr.rightClick", title: "right click arrives as right, not left",
+        tags: [.pointer],
+        steps: [
+            .focusRegi,
+            .moveTo(x: 900, y: 600),
+            .wait(millis: 150),
+            .click(button: .right, x: 900, y: 600, count: 1),
+            settle,
+            .expect(.clickCount(button: .right, min: 1, max: 1)),
+            .expect(.clickCount(button: .left, min: 0, max: 0)),
+            .expect(.nothingHeld),
+        ])
+
+    /// Back and forward ride `otherMouse*` with a button number, which is bits
+    /// 3 and 4 of the mask Regi forwards.
+    public static let pointerSideButtons = Scenario(
+        id: "ptr.sideButtons", title: "back and forward reach the target",
+        tags: [.pointer],
+        steps: [
+            .focusRegi,
+            .moveTo(x: 960, y: 540),
+            .wait(millis: 150),
+            .sideButton(number: 3, x: 960, y: 540, down: true),
+            .sideButton(number: 3, x: 960, y: 540, down: false),
+            .sideButton(number: 4, x: 960, y: 540, down: true),
+            .sideButton(number: 4, x: 960, y: 540, down: false),
+            settle,
+            .expect(.noUnmatchedReleases),
+            .expect(.nothingHeld),
+        ])
+
+    // MARK: - Wheel
+
+    public static let wheelVertical = Scenario(
+        id: "ptr.wheel.vertical", title: "vertical wheel arrives with the right sign",
+        tags: [.pointer],
+        steps: [
+            .focusRegi,
+            .moveTo(x: 960, y: 540),
+            .wait(millis: 150),
+            .scroll(axis: .vertical, lines: -3),
+            settle,
+            // A range, not a number: the client scales and re-splits detents.
+            .expect(.wheelTotal(axis: .vertical, min: -6, max: -1)),
+        ])
+
+    public static let wheelHorizontal = Scenario(
+        id: "ptr.wheel.horizontal", title: "horizontal wheel arrives on the horizontal axis",
+        tags: [.pointer],
+        steps: [
+            .focusRegi,
+            .moveTo(x: 960, y: 540),
+            .wait(millis: 150),
+            .scroll(axis: .horizontal, lines: 3),
+            settle,
+            .expect(.wheelTotal(axis: .horizontal, min: 1, max: 6)),
+            .expect(.wheelTotal(axis: .vertical, min: 0, max: 0)),
+        ])
+
+    /// A mouse detent must not arrive as trackpad-style continuous scroll —
+    /// the target treats the two very differently.
+    public static let wheelStaysDiscrete = Scenario(
+        id: "ptr.wheel.discrete", title: "a wheel detent stays discrete, not continuous",
+        tags: [.pointer],
+        steps: [
+            .focusRegi,
+            .moveTo(x: 960, y: 540),
+            .wait(millis: 150),
+            .scroll(axis: .vertical, lines: 1),
+            settle,
+            .expect(.wheelTotal(axis: .vertical, min: 1, max: 3)),
+        ])
+
+    /// Targets the unordered `Task` dispatch in the backends: each event is its
+    /// own unstructured Task hopping to an actor, so a fast burst is where
+    /// reordering would appear.
+    public static let burstOrdering = Scenario(
+        id: "key.burstOrdering", title: "a fast burst keeps its order",
+        tags: [.keyboard, .slow],
+        steps: [
+            .focusRegi,
+            .type("aeaeaeaeaeaeaeae"),
+            settle,
+            .expect(.keySequence(Array(repeating: [KeyMatcher.down(0x00), .up(0x00),
+                                                   .down(0x0E), .up(0x0E)],
+                                       count: 8).flatMap { $0 })),
+            .expect(.nothingHeld),
+        ])
+
     public static let pointerDoubleClick = Scenario(
         id: "ptr.doubleClick", title: "a double click arrives as exactly two clicks",
         tags: [.pointer],
@@ -135,6 +293,7 @@ public enum Catalogue {
             .wait(millis: 200),
             .click(button: .left, x: 700, y: 400, count: 2),
             settle,
+            .expect(.clickCount(button: .left, min: 2, max: 2)),
             .expect(.cursorEndsNear(x: 700, y: 400, tolerance: 2)),
             .expect(.nothingHeld),
         ])

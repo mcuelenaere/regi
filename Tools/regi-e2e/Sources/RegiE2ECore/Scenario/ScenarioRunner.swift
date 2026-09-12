@@ -113,11 +113,24 @@ public final class ScenarioRunner {
                            button: button == .left ? .left : .right, count: count)
 
         case .drag(let fx, let fy, let tx, let ty, let steps):
-            injector.move(to: CGPoint(x: fx, y: fy))
-            try? await Task.sleep(nanoseconds: 100_000_000)
-            injector.click(at: CGPoint(x: fx, y: fy), button: .left, count: 0)
-            injector.glide(to: CGPoint(x: tx, y: ty),
-                           from: CGPoint(x: fx, y: fy), steps: steps)
+            injector.drag(from: CGPoint(x: fx, y: fy), to: CGPoint(x: tx, y: ty), steps: steps)
+
+        case .buttonDown(let button, let x, let y):
+            injector.buttonDown(at: CGPoint(x: x, y: y),
+                                button: button == .left ? .left : .right)
+
+        case .buttonUp(let button, let x, let y):
+            injector.buttonUp(at: CGPoint(x: x, y: y),
+                              button: button == .left ? .left : .right)
+
+        case .sideButton(let number, let x, let y, let down):
+            injector.sideButton(at: CGPoint(x: x, y: y), number: number, down: down)
+
+        case .scroll(let axis, let lines):
+            injector.scroll(lines: lines, horizontal: axis == .horizontal)
+
+        case .autorepeat(let kvk, let count, let interval):
+            injector.autorepeat(CGKeyCode(kvk), count: count, intervalMillis: interval)
 
         case .focusRegi:
             driver.activate()

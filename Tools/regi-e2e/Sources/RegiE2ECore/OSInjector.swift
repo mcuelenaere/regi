@@ -42,6 +42,9 @@ public final class OSInjector {
     }
 
     public func click(at pixel: CGPoint, button: CGMouseButton = .left, count: Int = 1) {
+        // `1...0` traps at runtime, and a zero-count click is a caller mistake
+        // rather than something to silently perform.
+        guard count >= 1 else { return }
         for i in 1...count {
             post(button == .left ? .leftMouseDown : .rightMouseDown, at: pixel,
                  button: button, clickState: i)
@@ -50,6 +53,91 @@ public final class OSInjector {
                  button: button, clickState: i)
             if i < count { Thread.sleep(forTimeInterval: 0.06) }
         }
+    }
+
+    // MARK: - Button transitions and drag
+
+    public func buttonDown(at pixel: CGPoint, button: CGMouseButton = .left) {
+        post(downType(button), at: pixel, button: button, clickState: 1)
+    }
+
+    public func buttonUp(at pixel: CGPoint, button: CGMouseButton = .left) {
+        post(upType(button), at: pixel, button: button, clickState: 1)
+    }
+
+    /// Press, move, release. The intermediate events must be `*MouseDragged`
+    /// rather than `mouseMoved`, or the target sees motion with no button held
+    /// and the drag is not a drag.
+    public func drag(from origin: CGPoint, to destination: CGPoint,
+                     button: CGMouseButton = .left, steps: Int = 8) {
+        move(to: origin)
+        Thread.sleep(forTimeInterval: 0.08)
+        buttonDown(at: origin, button: button)
+        Thread.sleep(forTimeInterval: 0.04)
+        for i in 1...max(1, steps) {
+            let t = CGFloat(i) / CGFloat(max(1, steps))
+            post(draggedType(button),
+                 at: CGPoint(x: origin.x + (destination.x - origin.x) * t,
+                             y: origin.y + (destination.y - origin.y) * t),
+                 button: button)
+            Thread.sleep(forTimeInterval: stepInterval)
+        }
+        buttonUp(at: destination, button: button)
+    }
+
+    /// Back and forward are `otherMouse*` with a button number; bits 3 and 4 of
+    /// `NSEvent.pressedMouseButtons`, which is what Regi reads.
+    public func sideButton(at pixel: CGPoint, number: Int, down: Bool) {
+        let screen = geometry.screenPoint(forFramebufferPixel: pixel)
+        guard let e = CGEvent(mouseEventSource: source,
+                              mouseType: down ? .otherMouseDown : .otherMouseUp,
+                              mouseCursorPosition: screen, mouseButton: .center) else { return }
+        e.setIntegerValueField(.mouseEventButtonNumber, value: Int64(number))
+        e.post(tap: .cghidEventTap)
+    }
+
+    // MARK: - Wheel
+
+    /// A discrete wheel detent, the way a real mouse reports it: line units,
+    /// not pixels. A KVM wheel must arrive discrete rather than as
+    /// trackpad-style continuous scroll, which is itself worth asserting.
+    public func scroll(lines: Int, horizontal: Bool = false) {
+        guard let e = CGEvent(scrollWheelEvent2Source: source, units: .line,
+                              wheelCount: horizontal ? 2 : 1,
+                              wheel1: horizontal ? 0 : Int32(lines),
+                              wheel2: horizontal ? Int32(lines) : 0,
+                              wheel3: 0) else { return }
+        e.post(tap: .cghidEventTap)
+    }
+
+    private func downType(_ b: CGMouseButton) -> CGEventType {
+        switch b { case .left: return .leftMouseDown; case .right: return .rightMouseDown
+                   default: return .otherMouseDown }
+    }
+    private func upType(_ b: CGMouseButton) -> CGEventType {
+        switch b { case .left: return .leftMouseUp; case .right: return .rightMouseUp
+                   default: return .otherMouseUp }
+    }
+    private func draggedType(_ b: CGMouseButton) -> CGEventType {
+        switch b { case .left: return .leftMouseDragged; case .right: return .rightMouseDragged
+                   default: return .otherMouseDragged }
+    }
+
+    // MARK: - Autorepeat
+
+    /// The OS marks repeats with `keyboardEventAutorepeat`, and the probe uses
+    /// it to distinguish a repeat from the client double-sending a press.
+    public func autorepeat(_ kvk: CGKeyCode, count: Int, intervalMillis: Int) {
+        key(kvk, down: true)
+        for _ in 0..<max(0, count - 1) {
+            Thread.sleep(forTimeInterval: Double(intervalMillis) / 1000)
+            if let e = CGEvent(keyboardEventSource: source, virtualKey: kvk, keyDown: true) {
+                e.setIntegerValueField(.keyboardEventAutorepeat, value: 1)
+                e.post(tap: .cghidEventTap)
+            }
+        }
+        Thread.sleep(forTimeInterval: Double(intervalMillis) / 1000)
+        key(kvk, down: false)
     }
 
     private func post(_ type: CGEventType, at pixel: CGPoint,
