@@ -365,6 +365,32 @@ final class KVMVideoView: NSView {
         return MouseButtons(rawValue: 1 << UInt8(buttonNumber))
     }
 
+    /// Last coordinates actually sent to the host.
+    ///
+    /// The anchor the suppression below measures against: it advances only
+    /// when a report goes out, so a run of movements each too small to matter
+    /// is compared against the last position the host was actually told about
+    /// rather than against the previous event, and cannot drift.
+    private var lastPointerCoords: (x: Int32, y: Int32)?
+
+    /// Whether moving from `a` to `b` could actually shift the host's cursor.
+    ///
+    /// Compares the *magnitude* of the move against one source pixel rather
+    /// than asking which pixel each position falls in. Bucketing by pixel
+    /// looked equivalent and is not: it depends on a rounding convention we do
+    /// not control, and the host does not use the same one. A six-unit tremor
+    /// straddling a boundary — 16383 to 16389, which is 959.97 to 960.32 px —
+    /// reads as a pixel change under `floor` while the host, rounding, sees no
+    /// movement at all and draws a zero-delta drag. Measured on the rig: that
+    /// exact report is the one that inflates the click count.
+    private func movesHostCursor(from a: (x: Int32, y: Int32),
+                                 to b: (x: Int32, y: Int32)) -> Bool {
+        guard videoSize.width > 0, videoSize.height > 0 else { return a != b }
+        let unitsPerPixelX = AbsolutePointer.unitsPerPixel(sourceExtent: videoSize.width)
+        let unitsPerPixelY = AbsolutePointer.unitsPerPixel(sourceExtent: videoSize.height)
+        return abs(CGFloat(b.x - a.x)) >= unitsPerPixelX
+            || abs(CGFloat(b.y - a.y)) >= unitsPerPixelY    }
+
     private func sendPointer(event: NSEvent, motion: Bool) {
         guard let session else { return }
 
@@ -389,6 +415,10 @@ final class KVMVideoView: NSView {
             // — typical mouse motion is single digits.
             let dx = Int8(clamping: Int(event.deltaX.rounded()))
             let dy = Int8(clamping: Int(event.deltaY.rounded()))
+            // Same rule as the absolute path below: a motion report that
+            // cannot move the host cursor carries nothing and is not harmless.
+            // Here it is simply a zero delta.
+            if motion, dx == 0, dy == 0 { return }
             session.sendMouseRelative(dx: dx, dy: dy, buttons: buttons)
             return
         }
@@ -403,6 +433,30 @@ final class KVMVideoView: NSView {
         // and releases outside still produces a clean release on
         // the host.
         guard let coords = normalizedCoords(event: event, clampOutOfBounds: !motion) else { return }
+
+        // Drop motion that cannot move the host cursor.
+        //
+        // The normalized space is 32767 units across whatever the source
+        // actually is — roughly 17 units per pixel at 1920 wide — so a hand's
+        // tremor easily changes the normalized value while still landing on
+        // the same source pixel. Such a report carries no information, but it
+        // is not harmless.
+        //
+        // Measured on a JetKVM rig and reproduced on PiKVM against a different
+        // target, so it is not one device's firmware: of 11 clicks, exactly
+        // one had a motion report sent between its press and its release, and
+        // that was exactly the one the target reported with a click count of
+        // 2. The other ten were clean. The target renders the report as a
+        // zero-delta drag and bumps its click counter, so a single click
+        // arrives as a double — which in Finder opens the item rather than
+        // selecting it.
+        //
+        // This is specific to absolute pointing: a mouse plugged into the host
+        // sends relative deltas and reports nothing when it has not moved,
+        // which is the behaviour being restored here.
+        if motion, let last = lastPointerCoords, !movesHostCursor(from: last, to: coords) { return }
+
+        lastPointerCoords = (coords.x, coords.y)
         if motion {
             session.sendPointerMotion(normalizedX: coords.x, normalizedY: coords.y, buttons: buttons)
         } else {
@@ -469,11 +523,8 @@ final class KVMVideoView: NSView {
         let inVideo = videoX >= 0 && videoX <= videoRect.width
                    && videoY >= 0 && videoY <= videoRect.height
         guard inVideo || clampOutOfBounds else { return nil }
-        let clampedX = max(0, min(videoRect.width, videoX))
-        let clampedY = max(0, min(videoRect.height, videoY))
-        let nx = Int32(clampedX / videoRect.width * 32767)
-        let ny = Int32(clampedY / videoRect.height * 32767)
-        return (nx, ny)
+        return (AbsolutePointer.normalize(videoX, extent: videoRect.width),
+                AbsolutePointer.normalize(videoY, extent: videoRect.height))
     }
 }
 
