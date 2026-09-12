@@ -185,3 +185,19 @@ extension HeldStateTrackerTests {
         XCTAssertTrue(t.nothingHeld)
     }
 }
+
+extension HeldStateTrackerTests {
+    /// `isClean` must describe the input under test, not the capture pipeline.
+    /// A probe left running long enough will always have wrapped its ring, and
+    /// clock inversions are normal on a session tap — neither says anything
+    /// about whether a key went missing.
+    func testPipelineCountersDoNotMakeARunLookDirty() {
+        var c = InvariantCounters()
+        c.droppedByRing = 239
+        c.nonMonotonicTimestamp = 4
+        XCTAssertTrue(c.isClean)
+
+        c.upWithoutDown = 1
+        XCTAssertFalse(c.isClean, "a lost press is a real problem and must show")
+    }
+}

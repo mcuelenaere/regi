@@ -26,14 +26,24 @@ public struct InvariantCounters: Sendable, Equatable {
     /// Tap events with `sourcePID != 0`: something other than the KVM injected
     /// input, so the run is contaminated.
     public var syntheticSourceEvents: UInt32 = 0
+    /// Events evicted from the probe's ring before anyone read them.
+    ///
+    /// Informational, and excluded from `isClean`: the ring wraps after its
+    /// capacity no matter what, so on any long-running probe this is simply
+    /// "the session has been going a while" and says nothing about the input
+    /// under test. Whether the *driver* actually lost evidence is a separate
+    /// question, answered authoritatively by its gap detection against
+    /// `oldestSeqInWindow`.
     public var droppedByRing: UInt32 = 0
 
     public init() {}
 
     public var isClean: Bool {
-        // nonMonotonicTimestamp is excluded on purpose: see its declaration.
+        // nonMonotonicTimestamp and droppedByRing are excluded on purpose:
+        // both are properties of the capture pipeline rather than of the input
+        // being tested. See their declarations.
         upWithoutDown == 0 && duplicateDown == 0 && stuckAtEnd == 0
-            && syntheticSourceEvents == 0 && droppedByRing == 0
+            && syntheticSourceEvents == 0
     }
 }
 
