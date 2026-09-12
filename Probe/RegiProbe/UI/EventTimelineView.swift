@@ -14,22 +14,24 @@ struct EventTimelineView: View {
                 ForEach(rows, id: \.seq) { row in
                     HStack(spacing: 8) {
                         Text("\(row.seq)")
-                            .frame(width: 52, alignment: .trailing)
+                            .frame(width: 60, alignment: .trailing)
                             .foregroundStyle(.secondary)
                         Text(row.delta)
-                            .frame(width: 56, alignment: .trailing)
+                            .frame(width: 64, alignment: .trailing)
                             .foregroundStyle(.secondary)
                         Text(row.kind)
-                            .frame(width: 56, alignment: .leading)
+                            .frame(width: 62, alignment: .leading)
                             .foregroundStyle(row.isDiagnostic ? .red : .primary)
                         Text(row.detail)
                             .lineLimit(1)
-                        Spacer(minLength: 0)
+                            .truncationMode(.middle)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .font(.system(size: 11, design: .monospaced))
                 }
             }
-            .padding(.vertical, 2)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
         }
     }
 

@@ -97,14 +97,21 @@ struct RunView: View {
                     .frame(width: 320, height: 200)
                     .border(Color.secondary.opacity(0.25))
 
-                VStack(alignment: .leading, spacing: 8) {
-                    InvariantPanelView(counters: model.counters,
-                                       held: model.heldKeys,
-                                       violations: model.violations)
-                    EventTimelineView(events: model.recentEvents)
-                        .frame(height: 150)
-                }
-                .frame(width: 320)
+                InvariantPanelView(counters: model.counters,
+                                   held: model.heldKeys,
+                                   violations: model.violations)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            // Full width rather than sharing a 320pt column: event detail is
+            // the most-read thing on this screen and it was truncating to
+            // "cli…" and "flags 0x12…", which is exactly the part you need.
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Recent events").font(.caption).foregroundStyle(.secondary)
+                EventTimelineView(events: model.recentEvents)
+                    .frame(maxWidth: .infinity, minHeight: 260, alignment: .leading)
+                    .background(RoundedRectangle(cornerRadius: 6)
+                        .fill(Color.secondary.opacity(0.06)))
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
