@@ -110,3 +110,31 @@ final class HeldStateTrackerTests: XCTestCase {
         XCTAssertNil(t.holdDuration(of: 0x01, atNanos: 1_700_000_000))
     }
 }
+
+extension HeldStateTrackerTests {
+    /// Measured on a real session tap: `CGEventGetTimestamp` interleaves out of
+    /// order across event sources by ~12 ms in ordinary use. Flagging that as a
+    /// violation would fail every real run, so it is counted and nothing more.
+    func testBackwardsTimestampIsCountedButNotAViolation() {
+        var t = HeldStateTracker()
+        t.ingest(key(1, 0x00, down: true, nanos: 5_000_000_000))
+        let v = t.ingest(key(2, 0x01, down: true, nanos: 4_988_000_000))
+
+        XCTAssertEqual(t.counters.nonMonotonicTimestamp, 1, "still worth counting")
+        XCTAssertTrue(v.isEmpty, "must not be reported as a violation")
+        XCTAssertTrue(t.counters.isClean, "must not make a run look dirty")
+    }
+
+    /// Ordering assertions rely on seq, which is assigned on arrival, so an
+    /// inverted timestamp must not disturb held-state tracking.
+    func testHeldStateIsUnaffectedByTimestampInversion() {
+        var t = HeldStateTracker()
+        t.ingest(key(1, 0x38, down: true, nanos: 5_000_000_000))
+        t.ingest(key(2, 0x00, down: true, nanos: 4_988_000_000))
+        t.ingest(key(3, 0x00, down: false, nanos: 5_010_000_000))
+        t.ingest(key(4, 0x38, down: false, nanos: 5_020_000_000))
+        t.finish()
+        XCTAssertTrue(t.nothingHeld)
+        XCTAssertEqual(t.counters.upWithoutDown, 0)
+    }
+}

@@ -23,11 +23,10 @@ public struct HeldStateTracker: Sendable {
     public mutating func ingest(_ event: ProbeEvent) -> [Violation] {
         var new: [Violation] = []
 
+        // Counted, never reported as a violation: a session tap's timestamps
+        // are not monotonic across event sources. See InvariantCounters.
         if event.machAbsoluteNanos < lastNanos {
             counters.nonMonotonicTimestamp += 1
-            new.append(.init(kind: .nonMonotonicTimestamp(previous: lastNanos,
-                                                          current: event.machAbsoluteNanos),
-                             seq: event.seq))
         }
         lastNanos = max(lastNanos, event.machAbsoluteNanos)
 
