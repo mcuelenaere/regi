@@ -131,8 +131,14 @@ public final class Session {
         backend?.sendKeypress(virtualKeyCode: keyCode, pressed: pressed, source: source)
     }
 
-    public func handleFlagsChanged(virtualKeyCode keyCode: UInt16, source: KeyEventSource) {
-        backend?.handleFlagsChanged(virtualKeyCode: keyCode, source: source)
+    /// `rawFlags` is `NSEvent.modifierFlags.rawValue` or
+    /// `CGEvent.flags.rawValue`. It is required rather than optional because
+    /// the modifier's state must be read from it: inferring state by toggling
+    /// breaks permanently the first time a transition happens outside our
+    /// window, such as releasing ⌘ after ⌘Tab.
+    public func handleFlagsChanged(virtualKeyCode keyCode: UInt16, rawFlags: UInt64,
+                                   source: KeyEventSource) {
+        backend?.handleFlagsChanged(virtualKeyCode: keyCode, rawFlags: rawFlags, source: source)
     }
 
     public func releaseAllHeldModifiers() {

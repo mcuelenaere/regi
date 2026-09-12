@@ -235,7 +235,7 @@ public final class PiKVMBackend: KVMBackend {
         emit(try? PiKVMEvent.key(code: code, pressed: pressed))
     }
 
-    public func handleFlagsChanged(virtualKeyCode keyCode: UInt16, source _: KeyEventSource) {
+    public func handleFlagsChanged(virtualKeyCode keyCode: UInt16, rawFlags: UInt64, source _: KeyEventSource) {
         guard isConnected, let code = WebKeyMap.virtualKeyToWebCode[keyCode] else { return }
 
         // Caps Lock: macOS fires once per toggle; emit a momentary
@@ -246,7 +246,7 @@ public final class PiKVMBackend: KVMBackend {
             return
         }
 
-        guard let transition = modifierTracker.handle(modifierKeyCode: keyCode) else { return }
+        guard let transition = modifierTracker.handle(modifierKeyCode: keyCode, rawFlags: rawFlags) else { return }
         if transition.pressed { heldModifierCodes.insert(code) } else { heldModifierCodes.remove(code) }
         emit(try? PiKVMEvent.key(code: code, pressed: transition.pressed))
     }

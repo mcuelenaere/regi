@@ -359,7 +359,7 @@ public final class JetKVMBackend: KVMBackend {
     ///   momentary press to flip its own CapsLock state, so we emit
     ///   press + release back-to-back. Looking up via `KeyMap`
     ///   (kVK_CapsLock 0x39 → USB HID 0x39).
-    public func handleFlagsChanged(virtualKeyCode keyCode: UInt16, source: KeyEventSource) {
+    public func handleFlagsChanged(virtualKeyCode keyCode: UInt16, rawFlags: UInt64, source: KeyEventSource) {
         guard hidReady, let webrtc else { return }
 
         if keyCode == 0x39, let usbHID = KeyMap.virtualKeyToHIDUsageID[keyCode] {
@@ -380,7 +380,7 @@ public final class JetKVMBackend: KVMBackend {
             return
         }
 
-        guard let transition = modifierTracker.handle(modifierKeyCode: keyCode) else { return }
+        guard let transition = modifierTracker.handle(modifierKeyCode: keyCode, rawFlags: rawFlags) else { return }
         guard let usbHID = transition.modifier.usbHIDUsageID else { return }
         let message = HIDRPCMessage.keypressReport(key: usbHID, pressed: transition.pressed)
         Task { await webrtc.sendHID(message, on: .reliable) }

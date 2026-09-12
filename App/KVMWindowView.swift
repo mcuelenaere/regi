@@ -7,6 +7,7 @@ struct KVMWindowView: View {
     @State private var pointerLock = PointerLockManager()
     @State private var hostKey = HostKeyDetector()
     @State private var keyboardMonitor: Any?
+    @State private var resignObserver: NSObjectProtocol?
     @State private var showControls = false
     @State private var showStats = false
 
@@ -293,8 +294,9 @@ struct KVMWindowView: View {
                 hostKey.didKeyUp(keyCode)
                 session.sendKeypress(virtualKeyCode: keyCode, pressed: false, source: .eventTap)
             }
-            capturer.onFlagsChanged = { [session] keyCode in
-                session.handleFlagsChanged(virtualKeyCode: keyCode, source: .eventTap)
+            capturer.onFlagsChanged = { [session] keyCode, rawFlags in
+                session.handleFlagsChanged(virtualKeyCode: keyCode, rawFlags: rawFlags,
+                                           source: .eventTap)
             }
             capturer.onModifierFlagsChanged = { [hostKey] flags in
                 hostKey.didChangeFlags(flags)
@@ -333,6 +335,24 @@ struct KVMWindowView: View {
                 }
                 return event
             }
+            // Release held modifiers whenever we lose focus, not only when
+            // keyboard capture suspends.
+            //
+            // `capturer.onSuspend` above covers the capture-on case, but
+            // capture is off by default and then nothing fired: ⌘Tab away and
+            // the ⌘-up is delivered to the app you switched to, never to us,
+            // so the host keeps ⌘ held. ModifierTracker now re-synchronises
+            // from the event flags, which stops the *inversion* that followed —
+            // but only this releases the key already stranded on the host.
+            resignObserver = NotificationCenter.default.addObserver(
+                forName: NSApplication.didResignActiveNotification,
+                object: nil, queue: .main
+            ) { [session, hostKey] _ in
+                MainActor.assumeIsolated {
+                    session.releaseAllHeldModifiers()
+                    hostKey.reset()
+                }
+            }
         }
         .onDisappear {
             capturer.disable()
@@ -341,6 +361,10 @@ struct KVMWindowView: View {
             if let monitor = keyboardMonitor {
                 NSEvent.removeMonitor(monitor)
                 keyboardMonitor = nil
+            }
+            if let observer = resignObserver {
+                NotificationCenter.default.removeObserver(observer)
+                resignObserver = nil
             }
         }
     }

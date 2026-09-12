@@ -67,7 +67,9 @@ final class KeyboardCapturer {
     /// (we register the tap source on the main run loop).
     var onKeyDown: ((UInt16) -> Void)?
     var onKeyUp: ((UInt16) -> Void)?
-    var onFlagsChanged: ((UInt16) -> Void)?
+    /// (keyCode, rawFlags). The flags are required: the modifier's state has
+    /// to be read from them, not inferred by toggling — see ModifierTracker.
+    var onFlagsChanged: ((UInt16, UInt64) -> Void)?
 
     /// Fires alongside `onFlagsChanged` with the current bitmask of
     /// pressed modifiers. Used by HostKeyDetector to spot the
@@ -371,7 +373,7 @@ final class KeyboardCapturer {
                 case .keyDown: onKeyDown?(keyCode)
                 case .keyUp: onKeyUp?(keyCode)
                 case .flagsChanged:
-                    onFlagsChanged?(keyCode)
+                    onFlagsChanged?(keyCode, event.flags.rawValue)
                     // The CGEvent's flags field has the same bit layout
                     // as NSEvent.ModifierFlags, so we can map straight
                     // across without parsing keycodes ourselves.
