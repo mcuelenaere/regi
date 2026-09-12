@@ -143,6 +143,31 @@ public final class AXDriver {
         try press(item)
     }
 
+    /// Resize the app's largest window.
+    ///
+    /// Not cosmetic: the QR band arrives scaled by how big Regi's window is, so
+    /// a small window drops captured pixels per module below the ~4 floor and
+    /// telemetry stops decoding. Being able to set it makes a run reproducible
+    /// rather than dependent on how the window was left.
+    @discardableResult
+    public func resizeLargestWindow(to size: CGSize) -> Bool {
+        let windows = value(app, kAXWindowsAttribute as String) as? [AXUIElement] ?? []
+        guard let target = windows.max(by: { a, b in area(of: a) < area(of: b) }) else {
+            return false
+        }
+        var newSize = size
+        guard let axValue = AXValueCreate(.cgSize, &newSize) else { return false }
+        return AXUIElementSetAttributeValue(target, kAXSizeAttribute as CFString,
+                                            axValue) == .success
+    }
+
+    private func area(of element: AXUIElement) -> CGFloat {
+        guard let sizeRef = value(element, kAXSizeAttribute as String) else { return 0 }
+        var s = CGSize.zero
+        AXValueGetValue(sizeRef as! AXValue, .cgSize, &s)
+        return s.width * s.height
+    }
+
     public func activate() {
         NSRunningApplication(processIdentifier: pid)?
             .activate(options: [.activateIgnoringOtherApps])

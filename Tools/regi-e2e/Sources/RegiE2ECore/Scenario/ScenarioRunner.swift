@@ -31,6 +31,14 @@ public final class ScenarioRunner {
     private let injector: OSInjector
     public let geometry: VideoGeometry
 
+    /// Modifiers this runner currently holds down.
+    ///
+    /// A flagsChanged event describes the state of the *whole* keyboard, not
+    /// just the key that moved. Sending `flags: 0` to release one modifier
+    /// therefore claims they are all up, and the target released the others
+    /// too — which is how `modifiers.bothSides` failed.
+    private var heldModifiers: Set<UInt16> = []
+
     public init(reader: VideoReader, regiWindow: SCWindow, driver: AXDriver) throws {
         self.reader = reader
         self.regiWindow = regiWindow
@@ -41,15 +49,26 @@ public final class ScenarioRunner {
 
     public func run(_ scenario: Scenario) async -> Outcome {
         let started = Date()
+        heldModifiers.removeAll()
         var accumulator = TelemetryAccumulator()
         var collected: [ProbeEvent] = []
         var checks: [(Expectation, ExpectationEvaluator.Result)] = []
 
         // Start from the current tip. Anything already in the probe's window
         // belongs to whatever happened before this scenario.
-        guard let opening = try? await reader.read(from: regiWindow) else {
+        // Individual reads miss a few percent of the time (the probe swaps
+        // codes on a dwell timer and a capture can land mid-swap). For a
+        // measurement that is fine; for the precondition that establishes the
+        // baseline it is not, so retry rather than fail the scenario.
+        var opening: VideoReader.Capture?
+        for attempt in 0..<6 {
+            if let cap = try? await reader.read(from: regiWindow) { opening = cap; break }
+            if attempt < 5 { try? await Task.sleep(nanoseconds: 200_000_000) }
+        }
+        guard let opening else {
             return Outcome(scenario: scenario, passed: false, quarantined: scenario.quarantined,
-                           checks: [], events: [], failure: "could not read telemetry to start",
+                           checks: [], events: [],
+                           failure: "no telemetry after 6 attempts — is the probe's run window up?",
                            duration: Date().timeIntervalSince(started))
         }
         _ = try? accumulator.ingest(opening.frame)
@@ -91,12 +110,13 @@ public final class ScenarioRunner {
             }
 
         case .modifier(let kvk, let down):
-            // Flags must describe the resulting state, since that is what the
-            // app reads. Only the device-side bit distinguishes left from right.
-            let bit = deviceBit(for: kvk)
-            let coarse = coarseMask(for: kvk)
-            injector.modifier(CGKeyCode(kvk),
-                              flags: CGEventFlags(rawValue: down ? (coarse | bit) : 0))
+            if down { heldModifiers.insert(kvk) } else { heldModifiers.remove(kvk) }
+            // Compose the flags from everything still held, not just this key.
+            var raw: UInt64 = 0
+            for held in heldModifiers {
+                raw |= deviceBit(for: held) | coarseMask(for: held)
+            }
+            injector.modifier(CGKeyCode(kvk), flags: CGEventFlags(rawValue: raw))
 
         case .type(let text):
             for ch in text {
@@ -157,30 +177,52 @@ public final class ScenarioRunner {
         }
     }
 
-    /// Read until the probe stops producing new events for `quietMillis`.
+    /// Wait until the probe has stopped producing new events.
     ///
-    /// `absent` expectations are only meaningful after this completes: without
-    /// it, "nothing extra arrived" just means "nothing had arrived *yet*".
+    /// Wall-clock silence is not enough on its own. Telemetry lags the actual
+    /// event by the video path plus the probe's dwell interval — roughly
+    /// 300-500ms — so a scenario ending in a *single* event (one wheel detent)
+    /// would see earlier traffic stop, sit quiet for `quietMillis`, and exit
+    /// before the event ever surfaced. That produced wheel scenarios which
+    /// failed in a full run and passed in isolation, where the preceding run's
+    /// traffic happened to keep the stream alive.
+    ///
+    /// So quiet is only counted after enough *frames* have gone by for anything
+    /// in flight to have appeared: each frame covers one dwell interval, and
+    /// the probe cannot show a change sooner than that.
     private func settle(quietMillis: Int, maxMillis: Int,
                         accumulator: inout TelemetryAccumulator,
                         collected: inout [ProbeEvent], baseline: UInt64) async throws {
         let deadline = Date().addingTimeInterval(Double(maxMillis) / 1000)
         var lastChange = Date()
         var lastSeq = accumulator.lastSeqSeen
+        var framesSeen = 0
+        var lastFrameIndex = accumulator.lastFrameIndex
 
         while Date() < deadline {
             if let cap = try? await reader.read(from: regiWindow) {
+                if cap.frame.frameIndex != lastFrameIndex {
+                    lastFrameIndex = cap.frame.frameIndex
+                    framesSeen += 1
+                }
                 let fresh = try accumulator.ingest(cap.frame)
                 collected.append(contentsOf: fresh.filter { $0.seq > baseline })
                 if accumulator.lastSeqSeen != lastSeq {
                     lastSeq = accumulator.lastSeqSeen
                     lastChange = Date()
+                    framesSeen = 0      // something arrived; start counting again
                 }
             }
-            if Date().timeIntervalSince(lastChange) * 1000 >= Double(quietMillis) { return }
+            let quietLongEnough = Date().timeIntervalSince(lastChange) * 1000 >= Double(quietMillis)
+            if quietLongEnough, framesSeen >= Self.minimumQuietFrames { return }
             try? await Task.sleep(nanoseconds: 80_000_000)
         }
     }
+
+    /// Distinct telemetry frames that must pass with no new events before the
+    /// stream counts as quiet. Three covers the probe's dwell plus a missed
+    /// read or two, which happen at a few percent.
+    static let minimumQuietFrames = 3
 
     // MARK: - Flag helpers
 

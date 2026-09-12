@@ -9,6 +9,15 @@ func value(_ name: String, _ def: String) -> String {
 }
 func intValue(_ name: String, _ def: Int) -> Int { Int(value(name, "")) ?? def }
 
+/// "1680x1050", or "0" to leave the window alone.
+func parseSize(_ text: String) -> CGSize {
+    let parts = text.lowercased().split(separator: "x")
+    guard parts.count == 2, let w = Double(parts[0]), let h = Double(parts[1]) else {
+        return .zero
+    }
+    return CGSize(width: w, height: h)
+}
+
 let usage = """
 regi-e2e — drives Regi and reads the probe's telemetry back over the KVM's video.
 
@@ -30,6 +39,9 @@ regi-e2e — drives Regi and reads the probe's telemetry back over the KVM's vid
       The built-in catalogue as JSON — worked examples in that format.
 
   regi-e2e run [--window=Regi] [--scenario=SUBSTRING] [--tag=TAG] [--scenarios=FILE]
+               [--window-size=1680x1050]
+      --window-size fixes Regi's window before running, because both QR
+      legibility and pointer accuracy depend on it. Pass 0 to leave it.
       Run scenarios against the rig. Quarantined failures are reported but
       do not affect the exit code.
 
@@ -124,6 +136,13 @@ func doctor(window: String) async {
             let verdict = ppm >= 4 ? "OK" : (ppm >= 3 ? "MARGINAL" : "TOO SMALL")
             print("QR module  : >= \(String(format: "%.2f", ppm)) captured px  [\(verdict), want >= 4]"
                   + "  (lower bound: assumes the largest symbol)")
+            if ppm < 3 {
+                // Reads will fail intermittently from here, which surfaces as
+                // flaky scenarios rather than as an obvious cause. Fail now.
+                print("             enlarge Regi's window: the band arrives scaled by "
+                      + "window size, and below ~3 px/module Vision stops finding it")
+                failures += 1
+            }
         }
         print("probe      : \(renderHealth(cap.frame.health))")
         print("invariants : \(renderCounters(cap.frame.counters))")
@@ -261,15 +280,24 @@ func pointerCheck(window: String, tolerance: Int) async {
 }
 
 func runScenarios(window: String, filterID: String, tag: String,
-                  scenarioFile: String) async {
+                  scenarioFile: String, windowSize: CGSize) async {
     let reader = VideoReader(windowName: window)
     guard let regiWindow = try? await reader.findWindow() else {
         print("FAILED: Regi window not found"); exit(2)
     }
     let runner: ScenarioRunner
     do {
-        runner = try ScenarioRunner(reader: reader, regiWindow: regiWindow,
-                                    driver: try AXDriver())
+        let driver = try AXDriver()
+        // Set the window rather than inheriting whatever it was left at. Two
+        // things depend on it: the QR band arrives scaled by window size, and
+        // pointer accuracy is bounded by framebuffer pixels per screen point.
+        // Fixing it makes a run reproducible instead of quietly different.
+        if windowSize.width > 0 {
+            driver.activate()
+            _ = driver.resizeLargestWindow(to: windowSize)
+            try? await Task.sleep(nanoseconds: 700_000_000)
+        }
+        runner = try ScenarioRunner(reader: reader, regiWindow: regiWindow, driver: driver)
     } catch {
         print("FAILED: \(error)"); exit(2)
     }
@@ -289,13 +317,29 @@ func runScenarios(window: String, filterID: String, tag: String,
     if !tag.isEmpty { chosen = chosen.filter { $0.tags.contains { $0.rawValue == tag } } }
     guard !chosen.isEmpty else { print("no scenarios matched"); exit(2) }
 
+    // A run takes focus and drives the mouse and keyboard, so on a machine
+    // someone is also using, it has to be obvious when that starts and stops.
+    // Input arriving during a run is indistinguishable from injected input
+    // once it reaches the target, so it does not merely annoy -- it corrupts
+    // the results.
+    let estimate = Int(Double(chosen.count) * 4.5)
+    print("""
+
+    ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+    ┃  RUN STARTING — hands off the keyboard and mouse                 ┃
+    ┃  \(chosen.count) scenario(s), roughly \(estimate)s. Regi will take focus.
+    ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+    """)
     print(String(format: "geometry: %.2f framebuffer px per screen point\n", runner.geometry.pixelsPerPoint))
 
+    let runStarted = Date()
     var failed = 0, quarantinedFailures = 0
-    for scenario in chosen {
+    for (index, scenario) in chosen.enumerated() {
+        FileHandle.standardError.write(Data("  [\(index + 1)/\(chosen.count)] \(scenario.id)…\r".utf8))
         let outcome = await runner.run(scenario)
         let mark = outcome.passed ? "✓" : (outcome.quarantined ? "~" : "✗")
-        print("\(mark) \(scenario.id.rightPadded(to: 42)) \(scenario.title)")
+        print("\(mark) \(scenario.id.rightPadded(to: 42)) \(scenario.title)"
+              + String(format: "  %.1fs", outcome.duration))
 
         if !outcome.passed {
             if let failure = outcome.failure { print("      error: \(failure)") }
@@ -310,7 +354,10 @@ func runScenarios(window: String, filterID: String, tag: String,
         }
     }
 
-    print("")
+    print("""
+
+    ┗━━ RUN COMPLETE after \(Int(Date().timeIntervalSince(runStarted)))s — the machine is yours again
+    """)
     print("\(chosen.count - failed - quarantinedFailures)/\(chosen.count) passed"
           + (quarantinedFailures > 0 ? ", \(quarantinedFailures) quarantined failure(s)" : ""))
     exit(failed == 0 ? 0 : 1)
@@ -327,7 +374,8 @@ case "doctor":
 case "run":
     await runScenarios(window: value("window", "Regi"),
                        filterID: value("scenario", ""), tag: value("tag", ""),
-                       scenarioFile: value("scenarios", ""))
+                       scenarioFile: value("scenarios", ""),
+                       windowSize: parseSize(value("window-size", "1680x1050")))
 case "schema":
     print(ScenarioSchema.text)
 case "export":
