@@ -199,7 +199,7 @@ public protocol KVMBackend: AnyObject {
     // `KeyEventSource` for why the distinction has to travel with the
     // event rather than be tracked as backend state.
     func sendKeypress(virtualKeyCode: UInt16, pressed: Bool, source: KeyEventSource)
-    func handleFlagsChanged(virtualKeyCode: UInt16, source: KeyEventSource)
+    func handleFlagsChanged(virtualKeyCode: UInt16, rawFlags: UInt64, source: KeyEventSource)
     func releaseAllHeldModifiers()
     func sendPointerMotion(normalizedX: Int32, normalizedY: Int32, buttons: MouseButtons)
     func sendPointerButtonChange(normalizedX: Int32, normalizedY: Int32, buttons: MouseButtons)

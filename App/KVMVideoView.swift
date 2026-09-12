@@ -230,7 +230,9 @@ final class KVMVideoView: NSView {
         // Modifier press/release. We use event.keyCode (the specific
         // modifier key that toggled) rather than event.modifierFlags
         // (the combined union) so we can distinguish left vs right.
-        session?.handleFlagsChanged(virtualKeyCode: event.keyCode, source: .appKit)
+        session?.handleFlagsChanged(virtualKeyCode: event.keyCode,
+                                    rawFlags: UInt64(event.modifierFlags.rawValue),
+                                    source: .appKit)
     }
 
     // Suppress the system's "beep on unhandled keys" sound — we forward

@@ -476,8 +476,19 @@ public final class VNCBackend: KVMBackend {
         enqueueKey(virtualKeyCode: keyCode, down: pressed)
     }
 
-    public func handleFlagsChanged(virtualKeyCode keyCode: UInt16, source _: KeyEventSource) {
-        let pressed = !heldModifiers.contains(keyCode)
+    public func handleFlagsChanged(virtualKeyCode keyCode: UInt16, rawFlags: UInt64,
+                                   source _: KeyEventSource) {
+        // Read the state from the event's own flags rather than toggling our
+        // own: a transition missed outside the window (⌘Tab being the usual
+        // one) otherwise inverts this key for the rest of the session.
+        // Caps lock has no device-side bit and stays a toggle.
+        let pressed: Bool
+        if let bit = ModifierTracker.deviceFlagBit(forKeyCode: keyCode) {
+            pressed = rawFlags & bit != 0
+            guard pressed != heldModifiers.contains(keyCode) else { return }
+        } else {
+            pressed = !heldModifiers.contains(keyCode)
+        }
         if pressed { heldModifiers.insert(keyCode) } else { heldModifiers.remove(keyCode) }
         enqueueKey(virtualKeyCode: keyCode, down: pressed)
     }
