@@ -292,6 +292,7 @@ func runScenarios(window: String, filterID: String, tag: String,
         print("FAILED: Regi window not found"); exit(2)
     }
     let runner: ScenarioRunner
+    var activeWindow = regiWindow
     do {
         let driver = try AXDriver()
         // Set the window rather than inheriting whatever it was left at. Two
@@ -302,8 +303,14 @@ func runScenarios(window: String, filterID: String, tag: String,
             driver.activate()
             _ = driver.resizeLargestWindow(to: windowSize)
             try? await Task.sleep(nanoseconds: 700_000_000)
+            // Re-find it: SCWindow carries the frame from when it was looked
+            // up, and the crop rectangle is computed against that frame. Using
+            // the pre-resize one crops the wrong region and Vision finds no QR
+            // at all — which reads as "the probe stopped", not as a stale
+            // reference.
+            if let fresh = try? await reader.findWindow() { activeWindow = fresh }
         }
-        runner = try ScenarioRunner(reader: reader, regiWindow: regiWindow, driver: driver)
+        runner = try ScenarioRunner(reader: reader, regiWindow: activeWindow, driver: driver)
     } catch {
         print("FAILED: \(error)"); exit(2)
     }
