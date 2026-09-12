@@ -1,0 +1,97 @@
+import Foundation
+
+/// Display-only. Assertions compare virtual keycodes directly, so this is for
+/// the probe's on-screen keyboard and for readable failure messages — there is
+/// deliberately no kVK↔HID identity table in this package.
+public enum KeyLabels {
+    public static func label(_ kvk: UInt16) -> String {
+        if let n = named[kvk] { return n }
+        return String(format: "kVK 0x%02X", kvk)
+    }
+
+    public static let named: [UInt16: String] = [
+        0x00: "A", 0x01: "S", 0x02: "D", 0x03: "F", 0x04: "H", 0x05: "G",
+        0x06: "Z", 0x07: "X", 0x08: "C", 0x09: "V", 0x0B: "B", 0x0C: "Q",
+        0x0D: "W", 0x0E: "E", 0x0F: "R", 0x10: "Y", 0x11: "T", 0x1F: "O",
+        0x20: "U", 0x22: "I", 0x23: "P", 0x25: "L", 0x26: "J", 0x28: "K",
+        0x2D: "N", 0x2E: "M",
+        0x12: "1", 0x13: "2", 0x14: "3", 0x15: "4", 0x16: "6", 0x17: "5",
+        0x19: "9", 0x1A: "7", 0x1C: "8", 0x1D: "0",
+        0x24: "Return", 0x30: "Tab", 0x31: "Space", 0x33: "Delete", 0x35: "Escape",
+        0x1B: "-", 0x18: "=", 0x21: "[", 0x1E: "]", 0x2A: "\\", 0x29: ";", 0x27: "'",
+        0x2B: ",", 0x2F: ".", 0x2C: "/", 0x32: "`",
+        0x7B: "←", 0x7C: "→", 0x7D: "↓", 0x7E: "↑",
+        // Both sides matter: left/right fidelity is a core assertion.
+        0x37: "⌘L", 0x36: "⌘R",
+        0x38: "⇧L", 0x3C: "⇧R",
+        0x3A: "⌥L", 0x3D: "⌥R",
+        0x3B: "⌃L", 0x3E: "⌃R",
+        0x39: "CapsLock", 0x3F: "Fn",
+        0x7A: "F1", 0x78: "F2", 0x63: "F3", 0x76: "F4", 0x60: "F5", 0x61: "F6",
+        0x62: "F7", 0x64: "F8", 0x65: "F9", 0x6D: "F10", 0x67: "F11", 0x6F: "F12",
+    ]
+
+    /// True for the eight modifier keycodes that arrive as `flagsChanged`
+    /// rather than key down/up, plus Caps Lock.
+    public static func isModifier(_ kvk: UInt16) -> Bool {
+        (0x36...0x3E).contains(kvk) || kvk == 0x3F
+    }
+}
+
+/// Device-side modifier bits in a raw `CGEventFlags` value.
+///
+/// These are what distinguish left from right — `NSEvent.ModifierFlags` and the
+/// documented `CGEventFlags` masks both collapse the sides. They also make a
+/// `flagsChanged` event self-describing: the bit says whether that modifier is
+/// now down, so state never has to be inferred from toggle parity.
+public enum ModifierFlagBits {
+    public static let byKeyCode: [UInt16: UInt64] = [
+        0x3B: 0x0000_0001,   // left control
+        0x38: 0x0000_0002,   // left shift
+        0x3C: 0x0000_0004,   // right shift
+        0x37: 0x0000_0008,   // left command
+        0x36: 0x0000_0010,   // right command
+        0x3A: 0x0000_0020,   // left option
+        0x3D: 0x0000_0040,   // right option
+        0x3E: 0x0000_2000,   // right control
+        0x39: 0x0001_0000,   // caps lock (maskAlphaShift; has no side)
+    ]
+
+    /// Whether `kvk` is down according to `rawFlags`, or nil when the keycode
+    /// is not a modifier we can decide from flags alone.
+    public static func isDown(kvk: UInt16, rawFlags: UInt64) -> Bool? {
+        guard let bit = byKeyCode[kvk] else { return nil }
+        return rawFlags & bit != 0
+    }
+}
+
+/// Mouse buttons, identified the way a `CGEvent` reports them.
+///
+/// A button press arrives as a pointer event whose type says which class of
+/// button it was; for `otherMouse*` the button number distinguishes middle from
+/// the side buttons.
+public enum PointerButton: UInt32, Sendable, CaseIterable {
+    case left = 0, right = 1, middle = 2, back = 3, forward = 4
+
+    public var label: String {
+        switch self {
+        case .left: return "M1"; case .right: return "M2"; case .middle: return "M3"
+        case .back: return "M4"; case .forward: return "M5"
+        }
+    }
+
+    /// `(button, isDown)` for a pointer event, or nil when it is motion rather
+    /// than a button transition.
+    public static func transition(type: UInt32, buttonNumber: UInt32) -> (PointerButton, Bool)? {
+        switch type {
+        case 1:  return (.left, true)      // leftMouseDown
+        case 2:  return (.left, false)     // leftMouseUp
+        case 3:  return (.right, true)     // rightMouseDown
+        case 4:  return (.right, false)    // rightMouseUp
+        case 25, 26:                        // otherMouseDown / Up
+            guard let b = PointerButton(rawValue: buttonNumber) else { return nil }
+            return (b, type == 25)
+        default: return nil
+        }
+    }
+}

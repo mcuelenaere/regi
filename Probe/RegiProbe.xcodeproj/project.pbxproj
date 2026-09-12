@@ -1,0 +1,333 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 63;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		8EC45DDC3DA167074ACE9037 /* EventTapDecoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 974F8A7EEDFCF9727D8933A1 /* EventTapDecoder.swift */; };
+		B120DBEB78D3329B3FD95D6D /* KeyboardLayoutSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3B3EB1DE5AE12D16D5641B6D /* KeyboardLayoutSnapshot.swift */; };
+		4A5A6546EC87EE0E29495FBA /* ProbeCaptureThread.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D9A7E26353140CAF8127BF6 /* ProbeCaptureThread.swift */; };
+		C65F0B82B4DD2418FF93C348 /* SecureInputMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF66EE73E2511B426AAB0B34 /* SecureInputMonitor.swift */; };
+		98E38BAC5B0592BD8BA82124 /* ProbeModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D16B311ACFC3C09F2BD4B29D /* ProbeModel.swift */; };
+		7DF36B6ACB435B71755A483B /* RunWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2EA0745989B803D8559D3B00 /* RunWindowController.swift */; };
+		57521DDE3F4E7A2A6C92AF69 /* TelemetryRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 583779922D81C48B69341606 /* TelemetryRenderer.swift */; };
+		64E4267891A6EA746057E7AE /* RegiProbeApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = F29CC4886C9EE0EEF6E6D7ED /* RegiProbeApp.swift */; };
+		3F1B046A3302F502EEB0A83E /* EventTimelineView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 766E6BC6B183C2AAF02AC560 /* EventTimelineView.swift */; };
+		A3F651933B5BB14B992CA5F9 /* InvariantPanelView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B1037CE2075EF19AA76BB00 /* InvariantPanelView.swift */; };
+		34F21C6467CDEA902EF2A37A /* KeyboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A57AF13336415A604957E71 /* KeyboardView.swift */; };
+		7F408DE789EAC016AE5FDE3D /* PointerCanvasView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30D4F6C1F53BB78C57C7669F /* PointerCanvasView.swift */; };
+		F19573008A0DCCBD99DCADC1 /* ProbeRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9641DE36E8E2227D5D0A1A0 /* ProbeRootView.swift */; };
+		7D5FD247D42A562CA3305085 /* RunView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E4E6DC2D03DB08F8310C8A66 /* RunView.swift */; };
+		9BC46E520EC7ADAB57F68DE8 /* ProbeKit in Frameworks */ = {isa = PBXBuildFile; productRef = B40ED73949A487DC953E210B /* ProbeKit */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		974F8A7EEDFCF9727D8933A1 /* EventTapDecoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventTapDecoder.swift; sourceTree = "<group>"; };
+		3B3EB1DE5AE12D16D5641B6D /* KeyboardLayoutSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardLayoutSnapshot.swift; sourceTree = "<group>"; };
+		9D9A7E26353140CAF8127BF6 /* ProbeCaptureThread.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProbeCaptureThread.swift; sourceTree = "<group>"; };
+		AF66EE73E2511B426AAB0B34 /* SecureInputMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecureInputMonitor.swift; sourceTree = "<group>"; };
+		D16B311ACFC3C09F2BD4B29D /* ProbeModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProbeModel.swift; sourceTree = "<group>"; };
+		2EA0745989B803D8559D3B00 /* RunWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunWindowController.swift; sourceTree = "<group>"; };
+		583779922D81C48B69341606 /* TelemetryRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TelemetryRenderer.swift; sourceTree = "<group>"; };
+		F29CC4886C9EE0EEF6E6D7ED /* RegiProbeApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RegiProbeApp.swift; sourceTree = "<group>"; };
+		766E6BC6B183C2AAF02AC560 /* EventTimelineView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventTimelineView.swift; sourceTree = "<group>"; };
+		2B1037CE2075EF19AA76BB00 /* InvariantPanelView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InvariantPanelView.swift; sourceTree = "<group>"; };
+		9A57AF13336415A604957E71 /* KeyboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardView.swift; sourceTree = "<group>"; };
+		30D4F6C1F53BB78C57C7669F /* PointerCanvasView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PointerCanvasView.swift; sourceTree = "<group>"; };
+		B9641DE36E8E2227D5D0A1A0 /* ProbeRootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProbeRootView.swift; sourceTree = "<group>"; };
+		E4E6DC2D03DB08F8310C8A66 /* RunView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunView.swift; sourceTree = "<group>"; };
+		AFE2D86BBE9130635B092A4A /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		A8792157CB4F27FB949C035F /* RegiProbe.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = RegiProbe.app; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		81EE6EBBE4E76CD17C4E1A30 = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				9BC46E520EC7ADAB57F68DE8 /* ProbeKit in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		129040963FEAD8765D501D45 = {
+			isa = PBXGroup;
+			children = (
+				01E2702789640E3C0FB0A0B7 /* RegiProbe */,
+				F54CD936E573369F98BA3613 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		01E2702789640E3C0FB0A0B7 /* RegiProbe */ = {
+			isa = PBXGroup;
+			children = (
+				F29CC4886C9EE0EEF6E6D7ED /* RegiProbeApp.swift */,
+				F3BC2FFEE53CA4A48EDF84F4 /* Capture */,
+				FBA84D4D48C030D1D3C9577A /* Core */,
+				ECBE6CA5C8EDA7DD21A43220 /* UI */,
+				AFE2D86BBE9130635B092A4A /* Info.plist */,
+			);
+			path = RegiProbe;
+			sourceTree = "<group>";
+		};
+		F3BC2FFEE53CA4A48EDF84F4 /* Capture */ = {
+			isa = PBXGroup;
+			children = (
+				974F8A7EEDFCF9727D8933A1 /* EventTapDecoder.swift */,
+				3B3EB1DE5AE12D16D5641B6D /* KeyboardLayoutSnapshot.swift */,
+				9D9A7E26353140CAF8127BF6 /* ProbeCaptureThread.swift */,
+				AF66EE73E2511B426AAB0B34 /* SecureInputMonitor.swift */,
+			);
+			path = Capture;
+			sourceTree = "<group>";
+		};
+		FBA84D4D48C030D1D3C9577A /* Core */ = {
+			isa = PBXGroup;
+			children = (
+				D16B311ACFC3C09F2BD4B29D /* ProbeModel.swift */,
+				2EA0745989B803D8559D3B00 /* RunWindowController.swift */,
+				583779922D81C48B69341606 /* TelemetryRenderer.swift */,
+			);
+			path = Core;
+			sourceTree = "<group>";
+		};
+		ECBE6CA5C8EDA7DD21A43220 /* UI */ = {
+			isa = PBXGroup;
+			children = (
+				766E6BC6B183C2AAF02AC560 /* EventTimelineView.swift */,
+				2B1037CE2075EF19AA76BB00 /* InvariantPanelView.swift */,
+				9A57AF13336415A604957E71 /* KeyboardView.swift */,
+				30D4F6C1F53BB78C57C7669F /* PointerCanvasView.swift */,
+				B9641DE36E8E2227D5D0A1A0 /* ProbeRootView.swift */,
+				E4E6DC2D03DB08F8310C8A66 /* RunView.swift */,
+			);
+			path = UI;
+			sourceTree = "<group>";
+		};
+		F54CD936E573369F98BA3613 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				A8792157CB4F27FB949C035F /* RegiProbe.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		34A04005BCAF206EEC990BD9 /* RegiProbe */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B64186637C3DF1393259DF48;
+			buildPhases = (
+				76D04F601073A435DEB14853,
+				81EE6EBBE4E76CD17C4E1A30,
+				57AA924DCD914E7C2CE830CB,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = RegiProbe;
+			packageProductDependencies = (
+				B40ED73949A487DC953E210B /* ProbeKit */,
+			);
+			productName = RegiProbe;
+			productReference = A8792157CB4F27FB949C035F /* RegiProbe.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		244210E48437B6556980A702 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1600;
+				LastUpgradeCheck = 1600;
+				TargetAttributes = {
+					34A04005BCAF206EEC990BD9 = {
+						CreatedOnToolsVersion = 16.0;
+					};
+				};
+			};
+			buildConfigurationList = 8DC24304A6355CFF9BEA1B6E;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 129040963FEAD8765D501D45;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				324CBFE7772022DA7766CD39 /* XCLocalSwiftPackageReference "../Packages/ProbeKit" */,
+			);
+			productRefGroup = F54CD936E573369F98BA3613 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				34A04005BCAF206EEC990BD9 /* RegiProbe */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		57AA924DCD914E7C2CE830CB = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		76D04F601073A435DEB14853 = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				8EC45DDC3DA167074ACE9037 /* EventTapDecoder.swift in Sources */,
+				B120DBEB78D3329B3FD95D6D /* KeyboardLayoutSnapshot.swift in Sources */,
+				4A5A6546EC87EE0E29495FBA /* ProbeCaptureThread.swift in Sources */,
+				C65F0B82B4DD2418FF93C348 /* SecureInputMonitor.swift in Sources */,
+				98E38BAC5B0592BD8BA82124 /* ProbeModel.swift in Sources */,
+				7DF36B6ACB435B71755A483B /* RunWindowController.swift in Sources */,
+				57521DDE3F4E7A2A6C92AF69 /* TelemetryRenderer.swift in Sources */,
+				64E4267891A6EA746057E7AE /* RegiProbeApp.swift in Sources */,
+				3F1B046A3302F502EEB0A83E /* EventTimelineView.swift in Sources */,
+				A3F651933B5BB14B992CA5F9 /* InvariantPanelView.swift in Sources */,
+				34F21C6467CDEA902EF2A37A /* KeyboardView.swift in Sources */,
+				7F408DE789EAC016AE5FDE3D /* PointerCanvasView.swift in Sources */,
+				F19573008A0DCCBD99DCADC1 /* ProbeRootView.swift in Sources */,
+				7D5FD247D42A562CA3305085 /* RunView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		4BC37439D56AD84A22B8D8E2 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				SDKROOT = macosx;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_TESTABILITY = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				ONLY_ACTIVE_ARCH = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		10AED54DA2895D83425A2A82 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = RegiProbe/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 0.1;
+				PRODUCT_BUNDLE_IDENTIFIER = app.regi.probe;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		9FA8CA53DEDF5A7247005625 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				SDKROOT = macosx;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				SWIFT_COMPILATION_MODE = wholemodule;
+			};
+			name = Release;
+		};
+		C2151B4C591233E74285473A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = RegiProbe/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 0.1;
+				PRODUCT_BUNDLE_IDENTIFIER = app.regi.probe;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		8DC24304A6355CFF9BEA1B6E /* Build configuration list for PBXProject */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				4BC37439D56AD84A22B8D8E2 /* Debug */,
+				9FA8CA53DEDF5A7247005625 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		B64186637C3DF1393259DF48 /* Build configuration list for PBXNativeTarget */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				10AED54DA2895D83425A2A82 /* Debug */,
+				C2151B4C591233E74285473A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		324CBFE7772022DA7766CD39 /* XCLocalSwiftPackageReference "../Packages/ProbeKit" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../Packages/ProbeKit;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		B40ED73949A487DC953E210B /* ProbeKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = ProbeKit;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 244210E48437B6556980A702 /* Project object */;
+}

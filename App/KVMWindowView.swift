@@ -222,13 +222,16 @@ struct KVMWindowView: View {
                     Toggle(isOn: keyboardCaptureBinding) {
                         Label("Keyboard lock", systemImage: "keyboard")
                     }
+                    .accessibilityIdentifier(AXIdentifiers.sessionKeyboardCaptureToggle)
                     Toggle(isOn: pointerLockBinding) {
                         Label("Pointer lock", systemImage: "cursorarrow.rays")
                     }
+                    .accessibilityIdentifier(AXIdentifiers.sessionPointerLockToggle)
                     Divider()
                     Toggle(isOn: $hideCursorOverVideo) {
                         Label("Hide cursor over video", systemImage: "cursorarrow.slash")
                     }
+                    .accessibilityIdentifier(AXIdentifiers.sessionHideCursorToggle)
                 } label: {
                     Self.dualCaptureIcon(
                         keyboardEngaged: keyboardCaptureEngaged,
@@ -236,6 +239,7 @@ struct KVMWindowView: View {
                     )
                     .accessibilityLabel("Capture")
                 }
+                .accessibilityIdentifier(AXIdentifiers.sessionCaptureMenu)
                 .help("Capture system keyboard shortcuts and/or lock the pointer for relative mouse mode. Optionally hide your local cursor over the video area when you'd rather see only the host's cursor. Keyboard capture requires Accessibility permission.")
             }
             if hasControlCapabilities {
@@ -245,6 +249,7 @@ struct KVMWindowView: View {
                     } label: {
                         Label("Controls", systemImage: "slider.horizontal.3")
                     }
+                    .accessibilityIdentifier(AXIdentifiers.sessionControlsButton)
                     .popover(isPresented: $showControls, arrowEdge: .top) {
                         ControlPanel()
                             .environment(session)
@@ -259,6 +264,7 @@ struct KVMWindowView: View {
                 } label: {
                     Label("Stats", systemImage: "chart.line.uptrend.xyaxis")
                 }
+                .accessibilityIdentifier(AXIdentifiers.sessionStatsButton)
                 .popover(isPresented: $showStats, arrowEdge: .top) {
                     StatsPanel()
                         .environment(session)
