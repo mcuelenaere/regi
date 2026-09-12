@@ -70,3 +70,44 @@ final class RingLiveStateTests: XCTestCase {
         XCTAssertTrue(ring.liveState().violations.isEmpty)
     }
 }
+
+/// `dropped` must mean "a reader never saw these", not "the ring wrapped".
+final class RingDropAccountingTests: XCTestCase {
+    private func move() -> ProbeEvent.Payload {
+        .pointer(.init(type: 5, x: 1, y: 1, deltaX: 1))
+    }
+
+    /// A reader keeping up sees every event; the ring wrapping underneath it
+    /// is normal and must not be reported as loss. Before this, `dropped`
+    /// began climbing the moment the ring first wrapped and never stopped, so
+    /// any run longer than the capacity looked like it was losing input.
+    func testReaderKeepingUpSeesNoDrops() {
+        let ring = ProbeEventRing(capacity: 16)
+        for i in 0..<200 {
+            ring.append(machAbsoluteNanos: UInt64(i), payload: move())
+            _ = ring.recent(16)   // a driver reading every event
+        }
+        XCTAssertEqual(ring.liveState().counters.droppedByRing, 0,
+                       "the ring wrapped 12 times over, but nothing was missed")
+    }
+
+    /// A reader that never reads does lose events, and that must be reported.
+    func testUnreadEventsAreCountedAsDropped() {
+        let ring = ProbeEventRing(capacity: 16)
+        for i in 0..<50 {
+            ring.append(machAbsoluteNanos: UInt64(i), payload: move())
+        }
+        XCTAssertEqual(ring.liveState().counters.droppedByRing, 34,
+                       "50 events into a 16-slot ring with no reader: 34 fell out unseen")
+    }
+
+    /// A reader that falls behind loses only what it actually missed.
+    func testPartialReaderLosesOnlyWhatItMissed() {
+        let ring = ProbeEventRing(capacity: 16)
+        for i in 0..<16 { ring.append(machAbsoluteNanos: UInt64(i), payload: move()) }
+        _ = ring.recent(16)                       // caught up: seen 1...16
+        for i in 16..<48 { ring.append(machAbsoluteNanos: UInt64(i), payload: move()) }
+        XCTAssertEqual(ring.liveState().counters.droppedByRing, 16,
+                       "32 more events arrived, the ring held the last 16, so 16 went unseen")
+    }
+}

@@ -15,7 +15,18 @@ public final class ProbeEventRing: @unchecked Sendable {
 
     public private(set) var nextSeq: UInt64 = 1
     public private(set) var oldestAvailableSeq: UInt64 = 1
+    /// Events overwritten before any reader saw them.
+    ///
+    /// This counts genuine loss only. It used to increment on every eviction,
+    /// which meant it started climbing the moment the ring first wrapped and
+    /// never stopped -- on a long run every event past the capacity was
+    /// reported as dropped even though the driver had read all of them. That
+    /// made a healthy session look broken.
     public private(set) var dropped: UInt32 = 0
+
+    /// Highest seq handed out by `recent`. An eviction at or below this was
+    /// seen by a reader and is not loss.
+    private var highestReadSeq: UInt64 = 0
 
     /// Cumulative held-state, fed exactly once per event as it is captured.
     ///
@@ -58,10 +69,12 @@ public final class ProbeEventRing: @unchecked Sendable {
         nextSeq += 1
 
         if let evicted = storage[writeIndex] {
-            // Overwriting an unread event: the window moved past it. Counted and
-            // surfaced, because a driver that misses this would assert over a
-            // partial record.
-            dropped &+= 1
+            // The window has moved past this event. That is only a *drop* if no
+            // reader ever got it; a driver keeping up sees every event and the
+            // ring wrapping underneath it is normal.
+            if evicted.seq > highestReadSeq {
+                dropped &+= 1
+            }
             oldestAvailableSeq = evicted.seq + 1
         }
         let event = ProbeEvent(seq: seq, machAbsoluteNanos: machAbsoluteNanos,
@@ -85,6 +98,9 @@ public final class ProbeEventRing: @unchecked Sendable {
             out.append(e)
             idx = (idx - 1 + capacity) % capacity
         }
+        // `out` is newest-first here, so its first element is the high-water
+        // mark for what this reader has now seen.
+        if let newest = out.first { highestReadSeq = max(highestReadSeq, newest.seq) }
         return (out.reversed(), oldestAvailableSeq, dropped)
     }
 
@@ -107,6 +123,7 @@ public final class ProbeEventRing: @unchecked Sendable {
         writeIndex = 0
         oldestAvailableSeq = nextSeq
         dropped = 0
+        highestReadSeq = 0
         tracker = HeldStateTracker()
     }
 }
