@@ -17,7 +17,7 @@ let package = Package(
         // the macOS-slice headers fixed (stasel/WebRTC#145), which got us
         // off the fork; M152 is current. Only the WebRTC-backed targets
         // pull it in.
-        .package(url: "https://github.com/stasel/WebRTC.git", exact: "152.0.0"),
+        .package(url: "https://github.com/stasel/WebRTC.git", exact: "153.0.0"),
     ],
     targets: [
         // Shared abstraction with zero external dependencies: the KVMBackend
