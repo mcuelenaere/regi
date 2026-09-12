@@ -25,7 +25,15 @@ public final class PiKVMBackend: KVMBackend {
     public private(set) var statsHistory: [ConnectionStats] = []
     public static let maxStatsHistory = 60
 
+    /// KVMD's own web UI. Its index is the menu everything else hangs off —
+    /// PiKVM has no single settings page — so we land the user there.
+    public var webInterfaceURL: URL? {
+        endpoint?.httpURL(path: "/")
+    }
+
     // Transport
+    /// Where we're connected, for `webInterfaceURL`. Cleared on teardown.
+    private var endpoint: DeviceEndpoint?
     private var http: PiKVMHTTPClient?
     private var janus: JanusSignalingClient?
     private var events: PiKVMEventClient?
@@ -58,6 +66,7 @@ public final class PiKVMBackend: KVMBackend {
         if case .connecting = state { return }
         await teardown()
 
+        self.endpoint = endpoint
         let user = endpoint.username ?? "admin"
 
         // 1. Authenticate. No password yet → ask the UI for one.
@@ -326,6 +335,7 @@ public final class PiKVMBackend: KVMBackend {
         janus = nil
         events = nil
         http = nil
+        endpoint = nil
         videoRenderer?.detach()
         videoRenderer = nil
         hasReceivedFirstFrame = false

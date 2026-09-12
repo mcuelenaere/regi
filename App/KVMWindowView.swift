@@ -21,23 +21,22 @@ struct KVMWindowView: View {
     /// applies to all session windows.
     @AppStorage("RegiHideCursorOverVideo") private var hideCursorOverVideo: Bool = false
 
-    /// Whether the connected device exposes any control-plane feature
-    /// (ATX / codec / quality / clipboard). False for PiKVM v1, which
-    /// hides the Controls toolbar item entirely.
+    /// Whether the connected device exposes anything the Controls popover can
+    /// show (power / clipboard / a web interface). False for PiKVM v1 before
+    /// it's connected, which hides the Controls toolbar item entirely.
     private var hasControlCapabilities: Bool {
-        let c = session.capabilities
-        return !session.availablePowerActions.isEmpty
-            || c.videoCodecPreference || c.streamQuality || c.clipboardSync
+        !session.availablePowerActions.isEmpty
+            || session.capabilities.clipboardSync
+            || session.webInterfaceURL != nil
     }
 
-    /// Whether the Controls popover should be openable. JetKVM's controls ride
-    /// its JSON-RPC channel (and self-disable inside the panel until it's
-    /// ready), so gate on `rpcReady` there; VNC/PiKVM have no RPC channel, so a
-    /// live connection is enough. `videoCodecPreference` is JetKVM-only, so it
-    /// distinguishes the two without a device-kind check.
+    /// Whether the Controls popover should be openable. Every section inside
+    /// self-gates — power buttons only appear once the backend advertises
+    /// actions (JetKVM's arrive with its JSON-RPC channel), clipboard shows its
+    /// own agent state — so a live connection is the only precondition.
     private var controlsReady: Bool {
-        guard case .connected = session.state else { return false }
-        return session.rpcReady || !session.capabilities.videoCodecPreference
+        if case .connected = session.state { return true }
+        return false
     }
 
     private var keyboardCaptureBinding: Binding<Bool> {
@@ -250,7 +249,7 @@ struct KVMWindowView: View {
                             .environment(session)
                     }
                     .disabled(!controlsReady)
-                    .help("Power, codec, and quality controls.")
+                    .help("Power, clipboard sync, and the device's web interface.")
                 }
             }
             ToolbarItem(placement: .primaryAction) {

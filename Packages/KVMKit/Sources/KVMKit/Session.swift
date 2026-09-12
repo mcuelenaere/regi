@@ -17,7 +17,7 @@ private let log = Logger(subsystem: "app.regi.mac", category: "session")
 /// properties are still tracked transitively because the concrete
 /// backends are themselves `@Observable`.
 ///
-/// JetKVM-only control-plane surface (codec/quality/ATX/clipboard) is
+/// JetKVM-only control-plane surface (video/USB state, ATX, clipboard) is
 /// resolved by down-casting to `JetKVMBackend`; on other backends those
 /// reads return neutral defaults and the App layer hides the
 /// corresponding UI via `capabilities`.
@@ -54,7 +54,6 @@ public final class Session {
     public var videoState: VideoState? { jetKVM?.videoState }
     public var usbState: String? { jetKVM?.usbState }
     public var streamQualityFactor: Double? { jetKVM?.streamQualityFactor }
-    public var videoCodecPreference: VideoCodecPreference? { jetKVM?.videoCodecPreference }
     public var failsafe: FailsafeModeNotification? { jetKVM?.failsafe }
     public var clipboardAgentState: ClipboardAgentState { jetKVM?.clipboardAgentState ?? .absent }
     public var clipboardBridge: ClipboardBridge? { jetKVM?.clipboardBridge }
@@ -71,6 +70,13 @@ public final class Session {
     public var availablePowerActions: [KVMPowerAction] { backend?.availablePowerActions ?? [] }
     /// Front-panel power-LED state, or nil when the backend can't report it.
     public var powerIndicator: Bool? { backend?.powerIndicator }
+
+    // MARK: - Device web interface
+
+    /// The connected device's own browser-based admin UI, or nil when the
+    /// device family has none (VNC) or nothing is connected. The App opens it
+    /// in the default browser rather than reimplementing those settings.
+    public var webInterfaceURL: URL? { backend?.webInterfaceURL }
 
     /// Perform a power action on the active backend. No-op when the backend
     /// doesn't support it.
@@ -153,18 +159,4 @@ public final class Session {
 
     public func pauseVideo() { backend?.pauseVideo() }
     public func resumeVideo() { backend?.resumeVideo() }
-
-    // MARK: - JetKVM-only control plane
-    //
-    // These forward to the JetKVM backend when present. On other
-    // backends the corresponding UI is hidden via `capabilities`, so
-    // these are no-ops/neutral rather than errors.
-
-    public func updateStreamQualityFactor(_ factor: Double) async {
-        await jetKVM?.updateStreamQualityFactor(factor)
-    }
-
-    public func updateVideoCodecPreference(_ codec: VideoCodecPreference) async {
-        await jetKVM?.updateVideoCodecPreference(codec)
-    }
 }

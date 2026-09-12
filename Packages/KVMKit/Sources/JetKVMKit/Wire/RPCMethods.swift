@@ -29,15 +29,6 @@ public struct ATXState: Codable, Sendable, Equatable {
     }
 }
 
-// MARK: - Video codec preference
-
-/// Argument and return type for the codec preference RPCs.
-public enum VideoCodecPreference: String, Codable, Sendable, CaseIterable {
-    case auto
-    case h264
-    case h265
-}
-
 // MARK: - Video state
 
 /// Streaming state of the video pipeline. Wire format is `uint8`
