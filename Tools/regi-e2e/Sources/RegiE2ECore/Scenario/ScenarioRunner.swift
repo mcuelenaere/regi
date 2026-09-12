@@ -89,6 +89,7 @@ public final class ScenarioRunner {
                     try await perform(step, accumulator: &accumulator, collected: &collected,
                                       baseline: baseline)
                 } catch {
+                    releaseHeldModifiersOnDriver()
                     return Outcome(scenario: scenario, passed: false,
                                    quarantined: scenario.quarantined, checks: checks,
                                    events: collected, failure: "\(error)",
@@ -97,10 +98,32 @@ public final class ScenarioRunner {
             }
         }
 
+        releaseHeldModifiersOnDriver()
+
         let passed = checks.allSatisfy(\.1.passed)
         return Outcome(scenario: scenario, passed: passed, quarantined: scenario.quarantined,
                        checks: checks, events: collected, failure: nil,
                        duration: Date().timeIntervalSince(started))
+    }
+
+    /// Release anything this scenario left held **on the driver**.
+    ///
+    /// Some scenarios press a modifier and deliberately never release it —
+    /// `commandTabLeavesNothingStuck` is exactly that, since the point is that
+    /// Regi must release it on the target. But the driver's own OS still
+    /// believes the key is down, and that leaks into every later scenario.
+    ///
+    /// It bit in a way that took a while to see: macOS turns Shift+scroll into
+    /// *horizontal* scrolling, so a leaked Shift made every later vertical-wheel
+    /// scenario report zero vertical movement while horizontal ones kept
+    /// passing. The scenarios were fine; the state between them was not.
+    private func releaseHeldModifiersOnDriver() {
+        guard !heldModifiers.isEmpty else { return }
+        for kvk in heldModifiers.sorted() {
+            injector.modifier(CGKeyCode(kvk), flags: CGEventFlags(rawValue: 0))
+            Thread.sleep(forTimeInterval: 0.03)
+        }
+        heldModifiers.removeAll()
     }
 
     private func perform(_ step: Step, accumulator: inout TelemetryAccumulator,
