@@ -28,26 +28,12 @@ extension JetKVMBackend {
         try await rpcCall(method: "getATXState")
     }
 
-    // MARK: - Video codec preference
-
-    public func getVideoCodecPreference() async throws -> VideoCodecPreference {
-        try await rpcCall(method: "getVideoCodecPreference")
-    }
-
-    public func setVideoCodecPreference(_ codec: VideoCodecPreference) async throws {
-        struct Params: Encodable, Sendable { let codec: String }
-        try await rpcCallVoid(method: "setVideoCodecPreference", params: Params(codec: codec.rawValue))
-    }
-
     // MARK: - Stream quality
+    //
+    // Read-only: the device's web UI owns tuning this, we only display it.
 
     public func getStreamQualityFactor() async throws -> Double {
         try await rpcCall(method: "getStreamQualityFactor")
-    }
-
-    public func setStreamQualityFactor(_ factor: Double) async throws {
-        struct Params: Encodable, Sendable { let factor: Double }
-        try await rpcCallVoid(method: "setStreamQualityFactor", params: Params(factor: factor))
     }
 
     // MARK: - Pause / resume video stream
@@ -118,41 +104,13 @@ extension JetKVMBackend {
         async let usb = fetch("getUSBState") { try await self.getUSBState() }
         async let atx = fetch("getATXState") { try await self.getATXState() }
         async let factor = fetch("getStreamQualityFactor") { try await self.getStreamQualityFactor() }
-        async let codec = fetch("getVideoCodecPreference") { try await self.getVideoCodecPreference() }
         async let clipAgent = fetch("getClipboardAgentState") { try await self.getClipboardAgentState() }
 
         videoState = await video
         usbState = await usb
         atxState = await atx
         streamQualityFactor = await factor
-        videoCodecPreference = await codec
         if let c = await clipAgent { clipboardAgentState = c }
-    }
-
-    /// Optimistically update the cached factor and send the setter.
-    /// On failure, refresh from the server to restore truth.
-    public func updateStreamQualityFactor(_ factor: Double) async {
-        streamQualityFactor = factor
-        do {
-            try await setStreamQualityFactor(factor)
-        } catch {
-            log.error("setStreamQualityFactor(\(factor, privacy: .public)) failed: \(String(describing: error), privacy: .public)")
-            streamQualityFactor = await fetch("getStreamQualityFactor") {
-                try await self.getStreamQualityFactor()
-            }
-        }
-    }
-
-    public func updateVideoCodecPreference(_ codec: VideoCodecPreference) async {
-        videoCodecPreference = codec
-        do {
-            try await setVideoCodecPreference(codec)
-        } catch {
-            log.error("setVideoCodecPreference(\(codec.rawValue, privacy: .public)) failed: \(String(describing: error), privacy: .public)")
-            videoCodecPreference = await fetch("getVideoCodecPreference") {
-                try await self.getVideoCodecPreference()
-            }
-        }
     }
 
     private func fetch<R>(_ method: String, _ call: () async throws -> R) async -> R? {

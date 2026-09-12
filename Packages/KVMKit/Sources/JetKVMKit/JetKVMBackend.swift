@@ -48,6 +48,14 @@ public final class JetKVMBackend: KVMBackend {
     public var availablePowerActions: [KVMPowerAction] {
         rpcReady ? [.powerButtonShort, .reset, .powerButtonLong] : []
     }
+
+    /// The device's own web UI, dropped straight onto its settings route —
+    /// everything Regi deliberately doesn't reimplement (video tuning,
+    /// network, EDID, firmware updates) lives there. Same scheme/host/port as
+    /// the transport, so a TLS device opens over https.
+    public var webInterfaceURL: URL? {
+        endpoint?.httpURL(path: "/settings")
+    }
     /// Front-panel power-LED state, from the cached `getATXState`.
     public var powerIndicator: Bool? { atxState?.power }
 
@@ -93,16 +101,15 @@ public final class JetKVMBackend: KVMBackend {
     // MARK: - Cached control-plane state
     //
     // Populated on rpc-ready by a one-shot `refreshControlState()`
-    // call, and updated optimistically when the user changes a value
-    // via setStreamQualityFactor / setVideoCodecPreference. Server-
-    // pushed events (M3 commit 18) refresh the time-varying ones
-    // (videoState, usbState, atxState).
+    // call. Server-pushed events (M3 commit 18) refresh the
+    // time-varying ones (videoState, usbState, atxState).
 
     public internal(set) var videoState: VideoState?
     public internal(set) var usbState: String?
     public internal(set) var atxState: ATXState?
+    /// Encoder quality the device reports, 0...1. Read-only — the device's own
+    /// web UI owns changing it; we only surface it in the stats panel.
     public internal(set) var streamQualityFactor: Double?
-    public internal(set) var videoCodecPreference: VideoCodecPreference?
     /// Last-received failsafe mode notification. nil when the device
     /// hasn't sent one yet; `.active == true` is the signal that the
     /// device is in failsafe mode and the UI should warn the user.
@@ -936,6 +943,7 @@ public final class JetKVMBackend: KVMBackend {
         webrtc = nil
         signaling = nil
         http = nil
+        endpoint = nil
         videoRenderer?.detach()
         videoRenderer = nil
         hasReceivedFirstFrame = false
@@ -945,7 +953,6 @@ public final class JetKVMBackend: KVMBackend {
         usbState = nil
         atxState = nil
         streamQualityFactor = nil
-        videoCodecPreference = nil
         failsafe = nil
         clipboardAgentState = .absent
         clipboardBridge = nil

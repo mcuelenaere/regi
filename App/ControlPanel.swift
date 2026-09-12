@@ -1,10 +1,14 @@
+import AppKit
 import SwiftUI
 import KVMKit
 
-/// Popover content with ATX power buttons, codec preference, stream
-/// quality slider, and clipboard-sync toggle. Fed by Session's
-/// cached control-plane state — Session refreshes once when the rpc
-/// channel opens.
+/// Popover content with power buttons, the clipboard-sync toggle, and a link
+/// out to the device's own web UI. Fed by Session's cached control-plane
+/// state — Session refreshes once when the rpc channel opens.
+///
+/// Deliberately narrow: everything that's a *device* setting rather than a
+/// session operation (video tuning, network, EDID, firmware) stays in the
+/// device's web interface, which the Device section opens.
 struct ControlPanel: View {
     @Environment(Session.self) private var session
     /// The power action awaiting confirmation, if any. Drives the single
@@ -17,12 +21,12 @@ struct ControlPanel: View {
     /// write while it's on flows to the connected host.
     @AppStorage("RegiClipboardSyncEnabled") private var clipboardSyncEnabled: Bool = false
 
-    private var rpcDisabled: Bool { !session.rpcReady }
-
     private var caps: KVMCapabilities { session.capabilities }
     private var hasPowerControls: Bool { !session.availablePowerActions.isEmpty }
+    /// The device's own web UI, when its family has one (nil for VNC).
+    private var webInterfaceURL: URL? { session.webInterfaceURL }
     private var hasAnyControls: Bool {
-        hasPowerControls || caps.videoCodecPreference || caps.streamQuality || caps.clipboardSync
+        hasPowerControls || caps.clipboardSync || webInterfaceURL != nil
     }
 
     var body: some View {
@@ -34,16 +38,14 @@ struct ControlPanel: View {
                 powerSection
                 Divider()
             }
-            if caps.videoCodecPreference {
-                codecSection
-                Divider()
-            }
-            if caps.streamQuality {
-                qualitySection
-                Divider()
-            }
             if caps.clipboardSync {
                 clipboardSection
+                if webInterfaceURL != nil {
+                    Divider()
+                }
+            }
+            if let url = webInterfaceURL {
+                deviceSection(url)
             }
             if !hasAnyControls {
                 Text("No additional controls for this device.")
@@ -136,59 +138,6 @@ struct ControlPanel: View {
         }
     }
 
-    // MARK: - Codec
-
-    private var codecSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Codec preference").font(.headline)
-            Picker(
-                "Codec",
-                selection: Binding(
-                    get: { session.videoCodecPreference ?? .auto },
-                    set: { newValue in
-                        Task { await session.updateVideoCodecPreference(newValue) }
-                    }
-                )
-            ) {
-                Text("Auto").tag(VideoCodecPreference.auto)
-                Text("H.264").tag(VideoCodecPreference.h264)
-                Text("H.265").tag(VideoCodecPreference.h265)
-            }
-            .pickerStyle(.segmented)
-            .disabled(rpcDisabled || session.videoCodecPreference == nil)
-            Text("Takes effect on next reconnect.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    // MARK: - Quality
-
-    private var qualitySection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Stream quality").font(.headline)
-                Spacer()
-                if let factor = session.streamQualityFactor {
-                    Text(String(format: "%.0f%%", factor * 100))
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                }
-            }
-            Slider(
-                value: Binding(
-                    get: { session.streamQualityFactor ?? 1.0 },
-                    set: { newValue in
-                        Task { await session.updateStreamQualityFactor(newValue) }
-                    }
-                ),
-                in: 0.1...1.0,
-                step: 0.1
-            )
-            .disabled(rpcDisabled || session.streamQualityFactor == nil)
-        }
-    }
-
     // MARK: - Clipboard sync
 
     @ViewBuilder
@@ -245,6 +194,25 @@ struct ControlPanel: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+        }
+    }
+
+    // MARK: - Device
+
+    /// Hand off to the device's own web UI. Regi doesn't reimplement the
+    /// device's settings; this is the one-click way to reach them, on the same
+    /// scheme/host/port the session is already using.
+    private func deviceSection(_ url: URL) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Device").font(.headline)
+            Button {
+                NSWorkspace.shared.open(url)
+            } label: {
+                Label("Open Web Interface…", systemImage: "arrow.up.forward.app")
+            }
+            Text("Opens \(url.host() ?? "the device") in your browser for video, network and firmware settings.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 

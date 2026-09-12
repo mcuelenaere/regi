@@ -121,24 +121,19 @@ public enum KVMPowerAction: String, Sendable, CaseIterable {
 }
 
 /// Which optional control-plane features a connected backend exposes.
-/// The App layer gates JetKVM-only UI (codec/quality, the clipboard agent) on
-/// these so a PiKVM session shows only what it can actually drive. JetKVM
-/// advertises everything; PiKVM v1 advertises nothing (core video + input
-/// only). Power control is gated separately on `availablePowerActions`.
+/// The App layer gates optional UI (the clipboard agent) on these so a PiKVM
+/// session shows only what it can actually drive. JetKVM advertises
+/// everything; PiKVM v1 advertises nothing (core video + input only). Power
+/// control is gated separately on `availablePowerActions`, and the web
+/// interface on `webInterfaceURL`.
 public struct KVMCapabilities: Sendable, Equatable {
-    public var videoCodecPreference: Bool
-    public var streamQuality: Bool
     public var clipboardSync: Bool
     public var pauseResume: Bool
 
     public init(
-        videoCodecPreference: Bool = false,
-        streamQuality: Bool = false,
         clipboardSync: Bool = false,
         pauseResume: Bool = false
     ) {
-        self.videoCodecPreference = videoCodecPreference
-        self.streamQuality = streamQuality
         self.clipboardSync = clipboardSync
         self.pauseResume = pauseResume
     }
@@ -149,8 +144,6 @@ public struct KVMCapabilities: Sendable, Equatable {
 
     /// Everything the JetKVM transport supports today.
     public static let jetKVM = KVMCapabilities(
-        videoCodecPreference: true,
-        streamQuality: true,
         clipboardSync: true,
         pauseResume: true
     )
@@ -186,6 +179,14 @@ public protocol KVMBackend: AnyObject {
     var powerIndicator: Bool? { get }
     func sendPowerAction(_ action: KVMPowerAction) async throws
 
+    /// Deep link into the device's own browser-based admin UI, or nil when the
+    /// device family has none (VNC is a bare RFB port). Each backend points at
+    /// the most useful entry page for its firmware — JetKVM's settings route,
+    /// PiKVM's index — and the App opens it in the default browser. Nil until
+    /// the backend knows where it's connected, so the button only appears on a
+    /// live session.
+    var webInterfaceURL: URL? { get }
+
     // Lifecycle
     func connect(endpoint: DeviceEndpoint, password: String?) async
     func disconnect() async
@@ -215,4 +216,7 @@ public extension KVMBackend {
     var availablePowerActions: [KVMPowerAction] { [] }
     var powerIndicator: Bool? { nil }
     func sendPowerAction(_ action: KVMPowerAction) async throws {}
+
+    /// Backends fronting a device with no web UI of its own (VNC) inherit this.
+    var webInterfaceURL: URL? { nil }
 }
