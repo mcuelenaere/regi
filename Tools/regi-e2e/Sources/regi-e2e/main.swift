@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import ProbeKit
 import RegiE2ECore
@@ -50,6 +51,41 @@ func renderCounters(_ c: InvariantCounters) -> String {
     return parts.isEmpty ? "clean" : parts.joined(separator: "  ")
 }
 
+/// Resolving every identifier is the drift check: the CLI and the app keep
+/// separate copies of these strings, so a UI refactor that drops one has to
+/// fail loudly here rather than as a mysterious scenario failure later.
+func checkAccessibility() {
+    print("\n── Regi (accessibility) ──")
+    do {
+        let driver = try AXDriver()
+        print("app        : pid \(driver.pid)")
+        var missing: [String] = []
+        for id in AXID.alwaysPresentInSession {
+            let ok = driver.exists(id)
+            print("  \(ok ? "✓" : "✗") \(id)")
+            if !ok { missing.append(id) }
+        }
+        if !missing.isEmpty {
+            print("\n\(missing.count) identifier(s) missing — is a session window open?")
+            print("If one is open, a UI change dropped them: see App/AXIdentifiers.swift")
+            return
+        }
+        let g = try driver.videoGeometry()
+        print("video view : \(Int(g.viewFrame.width))x\(Int(g.viewFrame.height)) pt "
+              + "at (\(Int(g.viewFrame.minX)),\(Int(g.viewFrame.minY)))")
+        print("source     : \(Int(g.sourceSize.width))x\(Int(g.sourceSize.height)) px")
+        let c = g.contentRect
+        print("content    : \(Int(c.width))x\(Int(c.height)) pt at (\(Int(c.minX)),\(Int(c.minY)))"
+              + "  [letterbox derived independently of Regi]")
+        print(String(format: "accuracy   : %.2f framebuffer px per screen point "
+                     + "— the floor on pointer assertions", g.pixelsPerPoint))
+        let centre = g.screenPoint(forFramebufferPixel: CGPoint(x: 959.5, y: 539.5))
+        print("centre px  : (960,540) -> screen (\(Int(centre.x)),\(Int(centre.y)))")
+    } catch {
+        print("FAILED: \(error)")
+    }
+}
+
 func doctor(window: String) async {
     let reader = VideoReader(windowName: window)
     do {
@@ -70,6 +106,7 @@ func doctor(window: String) async {
         if !cap.frame.heldKeys.isEmpty {
             print("held       : \(cap.frame.heldKeys.map(KeyLabels.label).joined(separator: " "))")
         }
+        checkAccessibility()
         if !cap.frame.health.isUsable {
             print("\nNOT READY — the probe cannot record reliably in this state.")
             exit(1)

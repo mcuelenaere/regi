@@ -165,6 +165,22 @@ final class KVMVideoView: NSView {
 
     override var acceptsFirstResponder: Bool { true }
 
+    // MARK: - Accessibility
+    //
+    // Without this the view is invisible to the accessibility tree, so nothing
+    // can ask where the video actually is on screen. `regi-e2e` needs exactly
+    // that to convert a framebuffer pixel into a screen point, and it also
+    // makes the video surface visible to real assistive technology.
+    //
+    // Set rather than overridden: `isAccessibilityElement` is a method on
+    // NSView, not a property, so the property form does not override anything.
+    private func configureAccessibility() {
+        setAccessibilityElement(true)
+        setAccessibilityRole(.image)
+        setAccessibilityIdentifier(AXIdentifiers.sessionVideoView)
+        setAccessibilityLabel(String(localized: "Host video"))
+    }
+
     /// Use top-left origin so view-local coordinates match what the
     /// host expects (0..32767 normalized with 0,0 in the top-left).
     /// Without this, NSEvent.locationInWindow → view-local would have
@@ -173,6 +189,7 @@ final class KVMVideoView: NSView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        configureAccessibility()
         // Drop any prior didBecomeKey observer (we may be moving from
         // one window to another, e.g. SwiftUI re-parenting on
         // representable updates).

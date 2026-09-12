@@ -259,6 +259,7 @@ struct StatusStrip: View {
                 if let video = session.videoState {
                     Text(verbatim: "\(video.width)×\(video.height)")
                         .monospacedDigit()
+                        .accessibilityIdentifier(AXIdentifiers.sessionResolutionText)
                 }
                 // Decoded FPS from WebRTC stats. Different from
                 // videoState.fps (host's HDMI rate) — the stats one

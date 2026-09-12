@@ -179,6 +179,7 @@ struct HostsView: View {
                 deviceKind: host.kind
             )
             .tag(entry.id)
+            .accessibilityIdentifier(AXIdentifiers.hostsRow(host.displayName))
         case .discovered(let host):
             HostRow(
                 displayName: host.displayName,
@@ -187,6 +188,7 @@ struct HostsView: View {
                 deviceKind: host.kind
             )
             .tag(entry.id)
+            .accessibilityIdentifier(AXIdentifiers.hostsRow(host.displayName))
         }
     }
 
@@ -251,6 +253,7 @@ struct HostsView: View {
             Button { showingAdd = true } label: {
                 Image(systemName: "plus")
             }
+            .accessibilityIdentifier(AXIdentifiers.hostsAddButton)
             .buttonStyle(GutterButtonStyle())
             .help("Add a host")
         }
