@@ -1,0 +1,142 @@
+syntax = "proto3";
+
+package regiprobe.telemetry.v1;
+
+// The contract between RegiProbe (encodes, on the target) and regi-e2e
+// (decodes, on the driver). It travels as a QR code on the target's screen,
+// through the KVM's video path, so every byte is paid for twice: once in QR
+// capacity and once in how small the on-screen band can be.
+//
+// Regenerate with scripts/generate_probe_proto.sh and commit the result.
+
+// Fields are DELTAS against the previous event in the frame. proto3 omits
+// zero-valued fields entirely, so the encoder biases the common case to zero:
+// `seq_delta_minus_one` is 0 for a contiguous run, and `raw_flags` is only set
+// when it actually changes.
+message Event {
+  uint32 seq_delta_minus_one = 1;
+  uint32 t_delta_micros = 2;
+
+  oneof payload {
+    Key key = 3;
+    Flags flags = 4;
+    Pointer pointer = 5;
+    Wheel wheel = 6;
+    Gesture gesture = 7;
+    Touches touches = 8;
+    Diagnostic diagnostic = 9;
+  }
+}
+
+message Key {
+  uint32 kvk = 1;                  // macOS virtual keycode — the assertion namespace
+  bool down = 2;
+  bool autorepeat = 3;
+  optional uint64 raw_flags = 4;   // CGEventFlags raw value, device-side bits included
+  string characters = 5;
+  int32 source_pid = 6;            // 0 for real hardware; non-zero means injected
+}
+
+// flagsChanged carries the modifier's keycode, which is the only thing that
+// distinguishes left from right.
+message Flags {
+  uint32 kvk = 1;
+  uint64 raw_flags = 2;
+}
+
+message Pointer {
+  uint32 type = 1;                 // CGEventType raw value
+  // Position is delta-encoded against the previous pointer event in the frame
+  // (the first is relative to 0, i.e. absolute). Motion events move a few
+  // points at a time, so this is the difference between ~7.5 and ~3 bytes per
+  // event -- and a 200-point drag fitting in one QR code or not.
+  sint32 x_delta = 2;              // screen points, top-left origin
+  sint32 y_delta = 3;
+  sint32 delta_x = 4;              // OS-derived (pointer-accelerated)
+  sint32 delta_y = 5;
+  uint32 button_number = 6;
+  uint32 click_state = 7;
+  int32 source_pid = 8;
+}
+
+message Wheel {
+  sint32 line_delta_y = 1;
+  sint32 line_delta_x = 2;
+  sint32 point_delta_y = 3;
+  sint32 point_delta_x = 4;
+  bool is_continuous = 5;          // a KVM wheel detent must arrive discrete
+  uint32 phase = 6;
+  int32 source_pid = 7;
+}
+
+// Unused by Regi today (no multi-touch support). Present so the wire format
+// does not have to change across two projects when it lands.
+message Gesture {
+  uint32 kind = 1;                 // magnify | rotate | swipe | smartMagnify | pressure
+  double value = 2;
+  double secondary = 3;
+  uint32 phase = 4;
+  uint32 stage = 5;
+}
+
+message Touches {
+  message Touch {
+    uint64 identity = 1;
+    float norm_x = 2;              // trackpad 0..1
+    float norm_y = 3;
+    uint32 phase = 4;
+    uint32 type = 5;
+  }
+  repeated Touch touches = 1;
+}
+
+message Diagnostic {
+  uint32 kind = 1;                 // tapDisabled | runWindow | secureInput | ringOverflow | ...
+  string detail = 2;
+  uint64 value = 3;
+}
+
+message Health {
+  bool tap_enabled = 1;
+  bool run_active = 2;
+  bool accessibility_granted = 3;
+  string secure_input_holder = 4;  // non-empty means the tap is starved: run is invalid
+}
+
+message Counters {
+  uint32 up_without_down = 1;
+  uint32 duplicate_down = 2;
+  uint32 stuck_at_end = 3;
+  uint32 non_monotonic_timestamp = 4;
+  uint32 synthetic_source_events = 5;
+  uint32 dropped_by_ring = 6;
+}
+
+message ScreenInfo {
+  sint32 origin_x = 1;
+  sint32 origin_y = 2;
+  uint32 width = 3;
+  uint32 height = 4;
+  float backing_scale = 5;
+}
+
+message Frame {
+  uint32 wire_version = 1;
+  uint32 epoch = 2;                // bumped on probe relaunch; driver fails the run
+  uint32 frame_index = 3;          // monotonic; advances when content changes
+  uint64 probe_monotonic_nanos = 4;
+
+  // Absolute anchors for the per-event deltas, carried once per frame.
+  uint64 base_seq = 5;
+  uint64 base_t_micros = 6;
+
+  // If the driver's last-seen seq is older than this, evidence was lost and the
+  // run must FAIL. A test must never be green because the record went missing.
+  uint64 oldest_seq_in_window = 7;
+
+  Health health = 8;
+  Counters counters = 9;
+  repeated uint32 held_keys = 10;
+  ScreenInfo screen = 11;
+  repeated Event events = 12;
+}
