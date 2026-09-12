@@ -68,24 +68,20 @@ enum EventTapDecoder {
         }
     }
 
-    /// Gesture events are NSEvent types outside the documented `CGEventType`
-    /// set, so only the raw type is available without constructing an `NSEvent`
-    /// — which is exactly what is unsafe on this thread.
+    /// Only the raw event type is available without constructing an `NSEvent`,
+    /// which is what is unsafe on this thread. The raw-value mapping lives in
+    /// ProbeKit so it can be pinned against AppKit's own constants — see
+    /// `GestureKindTests`, which exists because mapping `NSEventTypeGesture`
+    /// (29) to magnify (30) made every trackpad cursor movement look like a
+    /// pinch.
     ///
-    /// Magnitudes (magnification, rotation, pressure) therefore stay zero.
-    /// That is enough for what these are for today: Regi emits no gestures, so
-    /// the assertion is that a pinch produces *nothing*, and the arrival of an
-    /// event of this kind is the whole signal. If magnitudes are ever needed,
-    /// retain the CGEvent and decode it on the main thread.
+    /// Magnitudes stay zero: Regi emits no gestures, so what these are for
+    /// today is asserting that a pinch produces *nothing*, and the arrival of
+    /// an event of this kind is the whole signal. If magnitudes are ever
+    /// needed, retain the CGEvent and decode it on the main thread.
     private static func gesture(type: CGEventType, event: CGEvent) -> ProbeEvent.Payload? {
-        let kind: ProbeEvent.Gesture.Kind
-        switch type.rawValue {
-        case 29: kind = .magnify
-        case 18: kind = .rotate
-        case 31: kind = .swipe
-        case 32: kind = .smartMagnify
-        case 34: kind = .pressure
-        default: return nil
+        guard let kind = ProbeEvent.Gesture.Kind(nsEventTypeRawValue: type.rawValue) else {
+            return nil
         }
         return .gesture(.init(kind: kind, value: 0))
     }
@@ -101,11 +97,12 @@ enum EventTapDecoder {
                                .scrollWheel] {
             mask |= 1 << UInt64(t.rawValue)
         }
-        // NSEvent gesture types, which CGEventType does not name.
-        for raw: UInt64 in [18 /* rotate */, 19 /* beginGesture */, 20 /* endGesture */,
-                            29 /* magnify */, 31 /* swipe */, 32 /* smartMagnify */,
-                            34 /* pressure */] {
-            mask |= 1 << raw
+        // NSEvent gesture types, which CGEventType does not name. The list is
+        // shared with the decoder so the mask and the mapping cannot drift --
+        // a mismatch either captures events that are then dropped, or drops
+        // events that were never captured.
+        for raw in ProbeEvent.Gesture.Kind.allNSEventTypeRawValues {
+            mask |= 1 << UInt64(raw)
         }
         return CGEventMask(mask)
     }
