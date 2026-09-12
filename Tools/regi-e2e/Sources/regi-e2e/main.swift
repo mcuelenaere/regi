@@ -17,7 +17,12 @@ regi-e2e — drives Regi and reads the probe's telemetry back over the KVM's vid
       events as they arrive. --limit stops after N reads (0 = forever).
 
   regi-e2e doctor [--window=Regi]
-      One capture, reporting decode health and the probe's own readiness.
+      One capture, reporting decode health and the probe's own readiness,
+      plus every accessibility identifier and the derived video geometry.
+
+  regi-e2e pointer-check [--window=Regi] [--tolerance=2]
+      Drive the pointer to known framebuffer pixels and verify where the
+      target says it landed. End-to-end check on the coordinate path.
 
 Requires Screen Recording permission for whatever runs this binary.
 """
@@ -181,6 +186,67 @@ func watch(window: String, intervalMillis: Int, limit: Int) async {
     print("\n\(acc.totalEvents) events over \(reads) reads")
 }
 
+/// Drives the pointer to known framebuffer pixels and reports where the target
+/// says it landed. This is the end-to-end check on the coordinate path:
+/// AXFrame -> letterbox -> screen point -> Regi -> KVM -> target.
+func pointerCheck(window: String, tolerance: Int) async {
+    let reader = VideoReader(windowName: window)
+    guard let regiWindow = try? await reader.findWindow() else {
+        print("FAILED: Regi window not found"); exit(2)
+    }
+    let driver: AXDriver
+    let geometry: VideoGeometry
+    do {
+        driver = try AXDriver()
+        geometry = try driver.videoGeometry()
+    } catch {
+        print("FAILED: \(error)"); exit(2)
+    }
+    print("geometry   : content \(Int(geometry.contentRect.width))x\(Int(geometry.contentRect.height))"
+          + " pt at (\(Int(geometry.contentRect.minX)),\(Int(geometry.contentRect.minY)))")
+    print(String(format: "accuracy   : %.2f framebuffer px per screen point, tolerance %d px\n",
+                 geometry.pixelsPerPoint, tolerance))
+
+    let injector = OSInjector(geometry: geometry)
+    driver.activate()
+    try? await Task.sleep(nanoseconds: 600_000_000)
+
+    let targets: [(String, CGPoint)] = [
+        ("centre",      CGPoint(x: 960, y: 540)),
+        ("upper-left",  CGPoint(x: 480, y: 270)),
+        ("lower-right", CGPoint(x: 1440, y: 810)),
+        ("near-origin", CGPoint(x: 40, y: 40)),
+    ]
+
+    var failures = 0
+    for (name, want) in targets {
+        // A short glide, then settle: motion is throttled at 8ms in the
+        // backends, so the last position is what matters, not the count.
+        injector.glide(to: want, from: CGPoint(x: want.x - 60, y: want.y - 40), steps: 5)
+        try? await Task.sleep(nanoseconds: 500_000_000)
+
+        guard let cap = try? await reader.read(from: regiWindow) else {
+            print("  \(name): could not read telemetry"); failures += 1; continue
+        }
+        let lastPointer = cap.frame.events.reversed().compactMap { e -> CGPoint? in
+            if case .pointer(let p) = e.payload { return CGPoint(x: Int(p.x), y: Int(p.y)) }
+            return nil
+        }.first
+        guard let got = lastPointer else {
+            print("  \(name): no pointer event arrived"); failures += 1; continue
+        }
+        let dx = Int(got.x - want.x), dy = Int(got.y - want.y)
+        let ok = abs(dx) <= tolerance && abs(dy) <= tolerance
+        if !ok { failures += 1 }
+        print("  \(ok ? "✓" : "✗") \(name.rightPadded(to: 12)) want (\(Int(want.x)),\(Int(want.y)))"
+              + "  got (\(Int(got.x)),\(Int(got.y)))  error (\(dx),\(dy))")
+    }
+
+    print("")
+    print(failures == 0 ? "pointer mapping OK" : "\(failures) of \(targets.count) targets missed")
+    exit(failures == 0 ? 0 : 1)
+}
+
 let mode = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "help"
 switch mode {
 case "watch":
@@ -189,6 +255,8 @@ case "watch":
                 limit: intValue("limit", 0))
 case "doctor":
     await doctor(window: value("window", "Regi"))
+case "pointer-check":
+    await pointerCheck(window: value("window", "Regi"), tolerance: intValue("tolerance", 2))
 default:
     print(usage)
 }
