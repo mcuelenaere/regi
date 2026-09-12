@@ -8,21 +8,44 @@ to this machine.
 
 ## Build and install
 
-```bash
-./Probe/install.sh                      # ad-hoc signed
-./Probe/install.sh "RegiProbeSelfSigned"  # stable identity — grant survives rebuilds
-```
-
-`install.sh` generates the Xcode project itself, so `brew install xcodegen` is
-the only prerequisite. RegiProbe is a target of the root `Regi.xcodeproj`, which
-[XcodeGen](https://xcodegen.com) generates from [`project.yml`](../project.yml):
+Run this on the **target** machine. `INSTALL_PATH` is `/Applications`, so
+`DSTROOT=/` puts the app straight at `/Applications/RegiProbe.app` — already
+ad-hoc signed with the hardened runtime, no separate copy or re-sign step.
 
 ```bash
-xcodegen generate
+xcodegen generate                       # only needed when sources were added
+xcodebuild -project Regi.xcodeproj -scheme RegiProbe -configuration Release \
+    -destination 'platform=macOS' CODE_SIGN_IDENTITY="-" DSTROOT=/ install
 ```
 
-Adding a source file needs no pbxproj editing — add the file under
-`Probe/RegiProbe/` and regenerate.
+The install path is not cosmetic. TCC keys an Accessibility grant on the
+binary's code designated requirement; for an ad-hoc-signed binary that
+degenerates to path + cdhash, so running out of DerivedData means a new grant on
+every rebuild and a trail of dead entries in System Settings.
+
+Ad-hoc signing still re-prompts on each rebuild, because the cdhash moves. To
+make the grant survive, create a self-signed code-signing certificate once
+(Keychain Access → Certificate Assistant → Create a Certificate, type "Code
+Signing") and sign with it instead — the requirement is then anchored to that
+leaf rather than a hash of the bits:
+
+```bash
+xcodebuild -project Regi.xcodeproj -scheme RegiProbe -configuration Release \
+    -destination 'platform=macOS' CODE_SIGN_IDENTITY="RegiProbeSelfSigned" \
+    DSTROOT=/ install
+```
+
+Then launch it, press **Grant Accessibility…**, approve, and confirm the
+**Event tap** row turns green. Check what the grant is actually keyed on with:
+
+```bash
+codesign -d --requirements - /Applications/RegiProbe.app
+```
+
+RegiProbe is a target of the root `Regi.xcodeproj`, which
+[XcodeGen](https://xcodegen.com) generates from [`project.yml`](../project.yml),
+so `brew install xcodegen` is the only prerequisite. Adding a source file needs
+no pbxproj editing — add the file under `Probe/RegiProbe/` and regenerate.
 
 ## Running a session
 

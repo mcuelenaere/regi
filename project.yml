@@ -171,8 +171,8 @@ targets:
   RegiProbe:
     type: application
     platform: macOS
-    # Scoped to the app directory, not Probe/ — install.sh, generate-time docs
-    # and the README live one level up and must not be swept into the target.
+    # Scoped to the app directory, not Probe/ — the README lives one level up
+    # and must not be swept into the target.
     sources:
       - path: Probe/RegiProbe
         excludes: ["**/.DS_Store"]
@@ -191,8 +191,9 @@ targets:
         MARKETING_VERSION: "0.1"
         PRODUCT_BUNDLE_IDENTIFIER: app.regi.probe
 
-# Both schemes are referenced by name from CI and Probe/install.sh, so the names
-# here are load-bearing. No testables: the package tests run via `swift test`.
+# Both schemes are referenced by name from CI and from the install command in
+# Probe/README.md, so the names here are load-bearing. No testables: the package
+# tests run via `swift test`.
 schemes:
   Regi:
     build:
