@@ -88,10 +88,14 @@ struct RunView: View {
                     .frame(width: 320, height: 200)
                     .border(Color.secondary.opacity(0.25))
 
-                InvariantPanelView(counters: model.counters,
-                                   held: model.heldKeys,
-                                   violations: model.violations)
-                    .frame(width: 320)
+                VStack(alignment: .leading, spacing: 8) {
+                    InvariantPanelView(counters: model.counters,
+                                       held: model.heldKeys,
+                                       violations: model.violations)
+                    EventTimelineView(events: model.recentEvents)
+                        .frame(height: 150)
+                }
+                .frame(width: 320)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

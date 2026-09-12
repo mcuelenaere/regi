@@ -1,13 +1,19 @@
-import AppKit
 import CoreGraphics
 import ProbeKit
 
 /// Turns a `CGEvent` into a `ProbeEvent.Payload`.
 ///
-/// Runs inside the tap callback, so it must stay cheap: field reads and a
-/// struct, nothing that allocates beyond the one optional `characters` string.
+/// **No AppKit here, deliberately.** This runs inside the tap callback on a
+/// non-main thread, and AppKit is not safe there: `NSEvent.characters` routes
+/// through Text Services Manager, which asserts the main queue and traps. That
+/// crashed the app on the first keystroke. Character translation now goes
+/// through `KeyboardLayoutSnapshot`, which uses `UCKeyTranslate` over a layout
+/// blob fetched on the main thread.
+///
+/// It must also stay cheap: field reads and a struct, nothing more.
 enum EventTapDecoder {
-    static func payload(type: CGEventType, event: CGEvent) -> ProbeEvent.Payload? {
+    static func payload(type: CGEventType, event: CGEvent,
+                        layout: KeyboardLayoutSnapshot) -> ProbeEvent.Payload? {
         let sourcePID = Int32(event.getIntegerValueField(.eventSourceUnixProcessID))
 
         switch type {
@@ -21,7 +27,7 @@ enum EventTapDecoder {
                 // (NX_DEVICELSHIFTKEYMASK etc.) are the only way to prove
                 // left/right modifier fidelity.
                 rawFlags: event.flags.rawValue,
-                characters: characters(of: event),
+                characters: layout.characters(keyCode: kvk, flags: event.flags),
                 sourcePID: sourcePID
             ))
 
@@ -63,30 +69,25 @@ enum EventTapDecoder {
     }
 
     /// Gesture events are NSEvent types outside the documented `CGEventType`
-    /// set, so they arrive here as raw values. Regi emits none of these today —
-    /// they exist so a pinch can be asserted to produce *nothing*.
+    /// set, so only the raw type is available without constructing an `NSEvent`
+    /// — which is exactly what is unsafe on this thread.
+    ///
+    /// Magnitudes (magnification, rotation, pressure) therefore stay zero.
+    /// That is enough for what these are for today: Regi emits no gestures, so
+    /// the assertion is that a pinch produces *nothing*, and the arrival of an
+    /// event of this kind is the whole signal. If magnitudes are ever needed,
+    /// retain the CGEvent and decode it on the main thread.
     private static func gesture(type: CGEventType, event: CGEvent) -> ProbeEvent.Payload? {
-        guard let ns = NSEvent(cgEvent: event) else { return nil }
-        switch ns.type {
-        case .magnify:      return .gesture(.init(kind: .magnify, value: Double(ns.magnification),
-                                                  phase: UInt32(ns.phase.rawValue)))
-        case .rotate:       return .gesture(.init(kind: .rotate, value: Double(ns.rotation),
-                                                  phase: UInt32(ns.phase.rawValue)))
-        case .swipe:        return .gesture(.init(kind: .swipe, value: Double(ns.deltaX),
-                                                  secondary: Double(ns.deltaY),
-                                                  phase: UInt32(ns.phase.rawValue)))
-        case .smartMagnify: return .gesture(.init(kind: .smartMagnify, value: 0))
-        case .pressure:     return .gesture(.init(kind: .pressure, value: Double(ns.pressure),
-                                                  stage: UInt32(max(0, ns.stage))))
-        default:            return nil
+        let kind: ProbeEvent.Gesture.Kind
+        switch type.rawValue {
+        case 29: kind = .magnify
+        case 18: kind = .rotate
+        case 31: kind = .swipe
+        case 32: kind = .smartMagnify
+        case 34: kind = .pressure
+        default: return nil
         }
-    }
-
-    /// `NSEvent.characters`, not `CGEvent.keyboardGetUnicodeString` — the latter
-    /// mutates dead-key state, which would corrupt the very input we are
-    /// observing.
-    private static func characters(of event: CGEvent) -> String {
-        NSEvent(cgEvent: event)?.characters ?? ""
+        return .gesture(.init(kind: kind, value: 0))
     }
 
     /// Mask covering every event kind the probe records, including the gesture

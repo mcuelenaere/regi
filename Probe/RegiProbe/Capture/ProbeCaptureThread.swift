@@ -12,6 +12,7 @@ import ProbeKit
 final class ProbeCaptureThread: @unchecked Sendable {
     private let log = Logger(subsystem: "app.regi.probe", category: "capture")
     private let ring: ProbeEventRing
+    let layout = KeyboardLayoutSnapshot()
 
     private var thread: Thread?
     private var runLoop: CFRunLoop?
@@ -123,7 +124,7 @@ final class ProbeCaptureThread: @unchecked Sendable {
         }
 
         let nanos = MachClock.nanos(fromMachAbsolute: event.timestamp)
-        if let payload = EventTapDecoder.payload(type: type, event: event) {
+        if let payload = EventTapDecoder.payload(type: type, event: event, layout: layout) {
             ring.append(machAbsoluteNanos: nanos, payload: payload)
         }
 

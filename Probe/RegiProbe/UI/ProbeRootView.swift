@@ -99,6 +99,11 @@ struct ProbeRootView: View {
             InvariantPanelView(counters: model.counters,
                                held: model.heldKeys,
                                violations: model.violations)
+
+            Text("Recent events").font(.caption).foregroundStyle(.secondary)
+            EventTimelineView(events: model.recentEvents)
+                .frame(height: 160)
+                .background(RoundedRectangle(cornerRadius: 6).fill(Color.secondary.opacity(0.06)))
         }
     }
 }

@@ -21,6 +21,9 @@ final class ProbeAppDelegate: NSObject, NSApplicationDelegate {
     lazy var runWindow = RunWindowController(model: model)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Must happen on the main thread: the TIS APIs carry the same
+        // main-queue assertion that crashed the tap callback.
+        model.capture.layout.observeLayoutChanges()
         model.startMonitoring()
         runWindow.observeSystemEvents()
 

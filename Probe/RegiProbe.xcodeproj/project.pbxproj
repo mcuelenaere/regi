@@ -8,12 +8,14 @@
 
 /* Begin PBXBuildFile section */
 		8EC45DDC3DA167074ACE9037 /* EventTapDecoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 974F8A7EEDFCF9727D8933A1 /* EventTapDecoder.swift */; };
+		B120DBEB78D3329B3FD95D6D /* KeyboardLayoutSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3B3EB1DE5AE12D16D5641B6D /* KeyboardLayoutSnapshot.swift */; };
 		4A5A6546EC87EE0E29495FBA /* ProbeCaptureThread.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D9A7E26353140CAF8127BF6 /* ProbeCaptureThread.swift */; };
 		C65F0B82B4DD2418FF93C348 /* SecureInputMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF66EE73E2511B426AAB0B34 /* SecureInputMonitor.swift */; };
 		98E38BAC5B0592BD8BA82124 /* ProbeModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D16B311ACFC3C09F2BD4B29D /* ProbeModel.swift */; };
 		7DF36B6ACB435B71755A483B /* RunWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2EA0745989B803D8559D3B00 /* RunWindowController.swift */; };
 		57521DDE3F4E7A2A6C92AF69 /* TelemetryRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 583779922D81C48B69341606 /* TelemetryRenderer.swift */; };
 		64E4267891A6EA746057E7AE /* RegiProbeApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = F29CC4886C9EE0EEF6E6D7ED /* RegiProbeApp.swift */; };
+		3F1B046A3302F502EEB0A83E /* EventTimelineView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 766E6BC6B183C2AAF02AC560 /* EventTimelineView.swift */; };
 		A3F651933B5BB14B992CA5F9 /* InvariantPanelView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B1037CE2075EF19AA76BB00 /* InvariantPanelView.swift */; };
 		34F21C6467CDEA902EF2A37A /* KeyboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A57AF13336415A604957E71 /* KeyboardView.swift */; };
 		7F408DE789EAC016AE5FDE3D /* PointerCanvasView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30D4F6C1F53BB78C57C7669F /* PointerCanvasView.swift */; };
@@ -24,12 +26,14 @@
 
 /* Begin PBXFileReference section */
 		974F8A7EEDFCF9727D8933A1 /* EventTapDecoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventTapDecoder.swift; sourceTree = "<group>"; };
+		3B3EB1DE5AE12D16D5641B6D /* KeyboardLayoutSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardLayoutSnapshot.swift; sourceTree = "<group>"; };
 		9D9A7E26353140CAF8127BF6 /* ProbeCaptureThread.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProbeCaptureThread.swift; sourceTree = "<group>"; };
 		AF66EE73E2511B426AAB0B34 /* SecureInputMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecureInputMonitor.swift; sourceTree = "<group>"; };
 		D16B311ACFC3C09F2BD4B29D /* ProbeModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProbeModel.swift; sourceTree = "<group>"; };
 		2EA0745989B803D8559D3B00 /* RunWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunWindowController.swift; sourceTree = "<group>"; };
 		583779922D81C48B69341606 /* TelemetryRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TelemetryRenderer.swift; sourceTree = "<group>"; };
 		F29CC4886C9EE0EEF6E6D7ED /* RegiProbeApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RegiProbeApp.swift; sourceTree = "<group>"; };
+		766E6BC6B183C2AAF02AC560 /* EventTimelineView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventTimelineView.swift; sourceTree = "<group>"; };
 		2B1037CE2075EF19AA76BB00 /* InvariantPanelView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InvariantPanelView.swift; sourceTree = "<group>"; };
 		9A57AF13336415A604957E71 /* KeyboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardView.swift; sourceTree = "<group>"; };
 		30D4F6C1F53BB78C57C7669F /* PointerCanvasView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PointerCanvasView.swift; sourceTree = "<group>"; };
@@ -75,6 +79,7 @@
 			isa = PBXGroup;
 			children = (
 				974F8A7EEDFCF9727D8933A1 /* EventTapDecoder.swift */,
+				3B3EB1DE5AE12D16D5641B6D /* KeyboardLayoutSnapshot.swift */,
 				9D9A7E26353140CAF8127BF6 /* ProbeCaptureThread.swift */,
 				AF66EE73E2511B426AAB0B34 /* SecureInputMonitor.swift */,
 			);
@@ -94,6 +99,7 @@
 		ECBE6CA5C8EDA7DD21A43220 /* UI */ = {
 			isa = PBXGroup;
 			children = (
+				766E6BC6B183C2AAF02AC560 /* EventTimelineView.swift */,
 				2B1037CE2075EF19AA76BB00 /* InvariantPanelView.swift */,
 				9A57AF13336415A604957E71 /* KeyboardView.swift */,
 				30D4F6C1F53BB78C57C7669F /* PointerCanvasView.swift */,
@@ -186,12 +192,14 @@
 			buildActionMask = 2147483647;
 			files = (
 				8EC45DDC3DA167074ACE9037 /* EventTapDecoder.swift in Sources */,
+				B120DBEB78D3329B3FD95D6D /* KeyboardLayoutSnapshot.swift in Sources */,
 				4A5A6546EC87EE0E29495FBA /* ProbeCaptureThread.swift in Sources */,
 				C65F0B82B4DD2418FF93C348 /* SecureInputMonitor.swift in Sources */,
 				98E38BAC5B0592BD8BA82124 /* ProbeModel.swift in Sources */,
 				7DF36B6ACB435B71755A483B /* RunWindowController.swift in Sources */,
 				57521DDE3F4E7A2A6C92AF69 /* TelemetryRenderer.swift in Sources */,
 				64E4267891A6EA746057E7AE /* RegiProbeApp.swift in Sources */,
+				3F1B046A3302F502EEB0A83E /* EventTimelineView.swift in Sources */,
 				A3F651933B5BB14B992CA5F9 /* InvariantPanelView.swift in Sources */,
 				34F21C6467CDEA902EF2A37A /* KeyboardView.swift in Sources */,
 				7F408DE789EAC016AE5FDE3D /* PointerCanvasView.swift in Sources */,
