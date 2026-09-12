@@ -380,7 +380,36 @@ public actor WebRTCFacade {
     /// the unreliable channel a dropped frame is the intended behaviour;
     /// for the reliable channel SCTP retransmits until the channel
     /// closes.
-    public func sendHID(_ message: HIDRPCMessage, on channel: HIDChannel) {
+    /// Input frames libwebrtc refused to queue, per connection. A refusal is a
+    /// silently lost keypress or button transition -- "reliable" only means
+    /// SCTP retransmits what it *accepted* -- so it must never pass unnoticed
+    /// the way it did when this result was discarded. sendHostBridge below has
+    /// always checked; the input path never did.
+    public private(set) var hidSendRejections = 0
+
+    /// Order in which frames actually reached the channel.
+    ///
+    /// Deliberately separate from the trace at the call site: that one records
+    /// the order input arrived from AppKit, which is upstream of the
+    /// `Task { await ... }` hop and therefore cannot show a reordering
+    /// introduced by it. `seq` is stamped by the caller before the hop, so a
+    /// descending seq here is proof the hop resequenced the stream.
+    static let wireTrace = Logger(subsystem: "app.regi.input", category: "wire")
+
+    public func sendHID(_ message: HIDRPCMessage, on channel: HIDChannel, seq: UInt64 = 0) {
+        if seq != 0 {
+            // Carry the button bitmask too. The seq is contiguous, so this
+            // stream can be checked for completeness before it is counted —
+            // unlike the call-site trace, which os_log may drop under load
+            // with nothing to show that it did.
+            var buttons: UInt8 = 0
+            if case .pointerReport(_, _, let b) = message { buttons = b }
+            Self.wireTrace.debug("wire seq=\(seq, privacy: .public) b=\(buttons, privacy: .public)")
+        }
+        return sendHIDInner(message, on: channel)
+    }
+
+    private func sendHIDInner(_ message: HIDRPCMessage, on channel: HIDChannel) {
         let target: RTCDataChannel?
         switch channel {
         case .reliable:          target = hidrpcReliable
@@ -388,7 +417,12 @@ public actor WebRTCFacade {
         }
         guard let target else { return }
         let buffer = RTCDataBuffer(data: message.wireFormat, isBinary: true)
-        _ = target.sendData(buffer)
+        if !target.sendData(buffer) {
+            hidSendRejections += 1
+            let buffered = target.bufferedAmount
+            let total = hidSendRejections
+            log.error("[WEBRTC] sendHID REJECTED (buffered=\(buffered, privacy: .public)B total=\(total, privacy: .public))")
+        }
     }
 
     /// Send a UTF-8 text frame on the `rpc` data channel. Returns

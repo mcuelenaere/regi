@@ -1,4 +1,5 @@
 import Foundation
+import os
 import KVMCore
 import JetKVMKit
 import PiKVMKit
@@ -139,15 +140,27 @@ public final class Session {
         backend?.releaseAllHeldModifiers()
     }
 
+    /// Outbound input trace.
+    ///
+    /// Debug-level, so it costs nothing until someone runs
+    /// `log stream --predicate 'subsystem == "app.regi.input"'`. It exists
+    /// because when the target reports something unexpected, the first
+    /// question is always whether Regi sent it — and answering that from the
+    /// outside is guesswork.
+    static let inputTrace = Logger(subsystem: "app.regi.input", category: "outbound")
+
     public func sendPointerMotion(normalizedX: Int32, normalizedY: Int32, buttons: MouseButtons) {
+        Self.inputTrace.debug("motion x=\(normalizedX) y=\(normalizedY) buttons=\(buttons.rawValue)")
         backend?.sendPointerMotion(normalizedX: normalizedX, normalizedY: normalizedY, buttons: buttons)
     }
 
     public func sendPointerButtonChange(normalizedX: Int32, normalizedY: Int32, buttons: MouseButtons) {
+        Self.inputTrace.debug("button x=\(normalizedX) y=\(normalizedY) buttons=\(buttons.rawValue)")
         backend?.sendPointerButtonChange(normalizedX: normalizedX, normalizedY: normalizedY, buttons: buttons)
     }
 
     public func sendMouseRelative(dx: Int8, dy: Int8, buttons: MouseButtons) {
+        Self.inputTrace.debug("relative dx=\(dx) dy=\(dy) buttons=\(buttons.rawValue)")
         backend?.sendMouseRelative(dx: dx, dy: dy, buttons: buttons)
     }
 
