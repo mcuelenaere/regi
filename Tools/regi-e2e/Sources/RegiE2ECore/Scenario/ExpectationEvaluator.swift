@@ -74,6 +74,22 @@ public enum ExpectationEvaluator {
             return Result(passed: n >= min && n <= max,
                           detail: "\(want.label) pressed \(n)×, wanted \(min)…\(max)")
 
+        case .lastClickState(let button, let min, let max):
+            let want: PointerButton = button == .left ? .left : .right
+            let last = events.reversed().compactMap { e -> UInt32? in
+                guard case .pointer(let p) = e.payload,
+                      let (b, down) = PointerButton.transition(type: p.type,
+                                                               buttonNumber: p.buttonNumber),
+                      b == want, down else { return nil }
+                return p.clickState
+            }.first
+            guard let last else {
+                return Result(passed: false, detail: "no \(want.label) press arrived")
+            }
+            return Result(passed: Int(last) >= min && Int(last) <= max,
+                          detail: "target read the last \(want.label) press as click ×\(last), "
+                                + "wanted \(min)…\(max)")
+
         case .modifierEndsUp(let kvk):
             // Reads the last transition's flag bit rather than counting
             // transitions: parity would report the wrong answer after any

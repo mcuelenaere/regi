@@ -30,6 +30,11 @@ final class ProbeModel {
     private(set) var secureInputHolder: String?
     private(set) var captureState: ProbeCaptureThread.State = .idle
     private(set) var runActive = false
+    /// What the event log shows. Motion buries transitions — a second of hand
+    /// movement is dozens of events and a click is two — so this filters
+    /// before the tail is taken, not after: "Clicks" shows the last N clicks,
+    /// not the clicks among the last N events, which is usually none.
+    var timelineFilter: EventKindFilter = .all
 
     private(set) var heldKeys: Set<UInt16> = []
     private(set) var counters = InvariantCounters()
@@ -97,7 +102,11 @@ final class ProbeModel {
     }
 
     private func sampleForUI() {
-        let (events, _, _) = ring.recent(300)
+        // Wider than the log is long, because filtering happens before the
+        // tail: with motion filtered out, 300 events can hold only a couple of
+        // clicks, and the log would sit almost empty during exactly the
+        // hand-driven session it exists to document.
+        let (events, _, _) = ring.recent(timelineFilter == .all ? 300 : 4096)
         // Counters and violations come from the ring's cumulative tracker, not
         // from replaying this window. Replaying reported a release whose press
         // had already scrolled out of the window as a violation.
@@ -106,7 +115,7 @@ final class ProbeModel {
         heldKeys = Set(live.heldKeys.keys)
         counters = live.counters
         violations = Array(live.violations.suffix(20))
-        recentEvents = Array(events.suffix(60).reversed())
+        recentEvents = Array(events.filter(timelineFilter.matches).suffix(60).reversed())
         pointerTrail = events.suffix(120).compactMap {
             if case .pointer(let p) = $0.payload { return CGPoint(x: Int(p.x), y: Int(p.y)) }
             return nil
@@ -130,10 +139,20 @@ final class ProbeModel {
 
     // MARK: - Run lifecycle (window lifetime == shield lifetime)
 
-    func beginRun() {
+    /// Whether the active run is shielding the target.
+    ///
+    /// False in observe mode, where the operator has to keep driving the
+    /// target's own apps while telemetry runs — some bugs only show up in
+    /// real use and a shield makes exactly those unreproducible.
+    private(set) var shielded = true
+
+    func beginRun(shielded: Bool = true) {
         guard blocker == nil else { return }
         runActive = true
-        capture.swallowKeyboard = true
+        self.shielded = shielded
+        // Observe mode leaves the keyboard alone: the point is to use the
+        // target normally while the probe watches.
+        capture.swallowKeyboard = shielded
         ring.append(machAbsoluteNanos: MachClock.absoluteNanos(),
                     payload: .diagnostic(.init(kind: .runWindowOpened)))
         qrTimer = Timer.scheduledTimer(withTimeInterval: TelemetryRenderer.dwell, repeats: true) { [weak self] _ in
@@ -145,6 +164,7 @@ final class ProbeModel {
     func endRun() {
         guard runActive else { return }
         runActive = false
+        shielded = true
         capture.swallowKeyboard = false
         qrTimer?.invalidate(); qrTimer = nil
         ring.append(machAbsoluteNanos: MachClock.absoluteNanos(),

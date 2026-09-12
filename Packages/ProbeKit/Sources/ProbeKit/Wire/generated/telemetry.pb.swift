@@ -323,6 +323,16 @@ public nonisolated struct Regiprobe_Telemetry_V1_Counters: Sendable {
 
   public var droppedByRing: UInt32 = 0
 
+  /// Cumulative totals, so the driver can compare what it sent against what
+  /// arrived without needing every event to survive the QR window.
+  public var buttonDowns: UInt32 = 0
+
+  public var buttonUps: UInt32 = 0
+
+  public var keyDowns: UInt32 = 0
+
+  public var keyUps: UInt32 = 0
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
@@ -1039,7 +1049,7 @@ nonisolated extension Regiprobe_Telemetry_V1_Health: SwiftProtobuf.Message, Swif
 
 nonisolated extension Regiprobe_Telemetry_V1_Counters: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".Counters"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}up_without_down\0\u{3}duplicate_down\0\u{3}stuck_at_end\0\u{3}non_monotonic_timestamp\0\u{3}synthetic_source_events\0\u{3}dropped_by_ring\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}up_without_down\0\u{3}duplicate_down\0\u{3}stuck_at_end\0\u{3}non_monotonic_timestamp\0\u{3}synthetic_source_events\0\u{3}dropped_by_ring\0\u{3}button_downs\0\u{3}button_ups\0\u{3}key_downs\0\u{3}key_ups\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1053,6 +1063,10 @@ nonisolated extension Regiprobe_Telemetry_V1_Counters: SwiftProtobuf.Message, Sw
       case 4: try { try decoder.decodeSingularUInt32Field(value: &self.nonMonotonicTimestamp) }()
       case 5: try { try decoder.decodeSingularUInt32Field(value: &self.syntheticSourceEvents) }()
       case 6: try { try decoder.decodeSingularUInt32Field(value: &self.droppedByRing) }()
+      case 7: try { try decoder.decodeSingularUInt32Field(value: &self.buttonDowns) }()
+      case 8: try { try decoder.decodeSingularUInt32Field(value: &self.buttonUps) }()
+      case 9: try { try decoder.decodeSingularUInt32Field(value: &self.keyDowns) }()
+      case 10: try { try decoder.decodeSingularUInt32Field(value: &self.keyUps) }()
       default: break
       }
     }
@@ -1077,6 +1091,18 @@ nonisolated extension Regiprobe_Telemetry_V1_Counters: SwiftProtobuf.Message, Sw
     if self.droppedByRing != 0 {
       try visitor.visitSingularUInt32Field(value: self.droppedByRing, fieldNumber: 6)
     }
+    if self.buttonDowns != 0 {
+      try visitor.visitSingularUInt32Field(value: self.buttonDowns, fieldNumber: 7)
+    }
+    if self.buttonUps != 0 {
+      try visitor.visitSingularUInt32Field(value: self.buttonUps, fieldNumber: 8)
+    }
+    if self.keyDowns != 0 {
+      try visitor.visitSingularUInt32Field(value: self.keyDowns, fieldNumber: 9)
+    }
+    if self.keyUps != 0 {
+      try visitor.visitSingularUInt32Field(value: self.keyUps, fieldNumber: 10)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -1087,6 +1113,10 @@ nonisolated extension Regiprobe_Telemetry_V1_Counters: SwiftProtobuf.Message, Sw
     if lhs.nonMonotonicTimestamp != rhs.nonMonotonicTimestamp {return false}
     if lhs.syntheticSourceEvents != rhs.syntheticSourceEvents {return false}
     if lhs.droppedByRing != rhs.droppedByRing {return false}
+    if lhs.buttonDowns != rhs.buttonDowns {return false}
+    if lhs.buttonUps != rhs.buttonUps {return false}
+    if lhs.keyDowns != rhs.keyDowns {return false}
+    if lhs.keyUps != rhs.keyUps {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

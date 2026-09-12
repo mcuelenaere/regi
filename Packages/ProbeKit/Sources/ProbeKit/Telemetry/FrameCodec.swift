@@ -136,6 +136,10 @@ public enum FrameCodec {
         c.nonMonotonicTimestamp = frame.counters.nonMonotonicTimestamp
         c.syntheticSourceEvents = frame.counters.syntheticSourceEvents
         c.droppedByRing = frame.counters.droppedByRing
+        c.buttonDowns = frame.counters.buttonDowns
+        c.buttonUps = frame.counters.buttonUps
+        c.keyDowns = frame.counters.keyDowns
+        c.keyUps = frame.counters.keyUps
         f.counters = c
 
         if let s = frame.screen {
@@ -272,6 +276,10 @@ public enum FrameCodec {
         counters.nonMonotonicTimestamp = p.counters.nonMonotonicTimestamp
         counters.syntheticSourceEvents = p.counters.syntheticSourceEvents
         counters.droppedByRing = p.counters.droppedByRing
+        counters.buttonDowns = p.counters.buttonDowns
+        counters.buttonUps = p.counters.buttonUps
+        counters.keyDowns = p.counters.keyDowns
+        counters.keyUps = p.counters.keyUps
 
         var seq = p.baseSeq
         var micros = p.baseTMicros

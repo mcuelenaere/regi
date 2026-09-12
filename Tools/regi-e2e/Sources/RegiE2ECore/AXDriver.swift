@@ -143,18 +143,19 @@ public final class AXDriver {
         try press(item)
     }
 
-    /// Resize the app's largest window.
+    /// Resize the window that contains `identifier`.
     ///
-    /// Not cosmetic: the QR band arrives scaled by how big Regi's window is, so
-    /// a small window drops captured pixels per module below the ~4 floor and
-    /// telemetry stops decoding. Being able to set it makes a run reproducible
-    /// rather than dependent on how the window was left.
+    /// Targeting "the largest window" was wrong: with no session open, the
+    /// largest window is the Hosts list, and the harness stretched that to
+    /// 1680x1050 instead. Resize what we actually mean — the window holding
+    /// the video — or leave everything alone.
     @discardableResult
-    public func resizeLargestWindow(to size: CGSize) -> Bool {
+    public func resizeWindow(containing identifier: String, to size: CGSize) -> Bool {
         let windows = value(app, kAXWindowsAttribute as String) as? [AXUIElement] ?? []
-        guard let target = windows.max(by: { a, b in area(of: a) < area(of: b) }) else {
-            return false
-        }
+        guard let target = windows.first(where: {
+            search($0, identifier, depth: 0, maxDepth: 14) != nil
+        }) else { return false }
+
         var newSize = size
         guard let axValue = AXValueCreate(.cgSize, &newSize) else { return false }
         return AXUIElementSetAttributeValue(target, kAXSizeAttribute as CFString,

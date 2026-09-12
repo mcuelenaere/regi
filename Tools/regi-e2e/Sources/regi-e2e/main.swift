@@ -18,10 +18,25 @@ func parseSize(_ text: String) -> CGSize {
     return CGSize(width: w, height: h)
 }
 
+// Line-buffer stdout.
+//
+// `print` block-buffers when stdout is a file rather than a terminal, so a
+// redirected `watch` that is stopped with a signal loses whatever is still in
+// the buffer -- which for a short recording is all of it. Several captures of
+// a hard-to-reproduce bug came back empty that way, each one costing a
+// reproduction that had to be done by hand.
+setvbuf(stdout, nil, _IOLBF, 0)
+
+/// `--raw` appends each pointer event's CGEventType and button number, for
+/// when the question is whether the *naming* is right rather than what
+/// happened.
+let showRaw = CommandLine.arguments.contains("--raw")
+
+
 let usage = """
 regi-e2e — drives Regi and reads the probe's telemetry back over the KVM's video.
 
-  regi-e2e watch [--window=Regi] [--interval=250] [--limit=0]
+  regi-e2e watch [--window=Regi] [--interval=250] [--limit=0] [--raw]
       Continuously decode the probe's QR telemetry from Regi's window and print
       events as they arrive. --limit stops after N reads (0 = forever).
 
@@ -79,6 +94,13 @@ func renderCounters(_ c: InvariantCounters) -> String {
     if c.syntheticSourceEvents > 0 { parts.append("injected:\(c.syntheticSourceEvents)") }
     if c.droppedByRing > 0 { parts.append("droppedByRing:\(c.droppedByRing)") }
     return parts.isEmpty ? "clean" : parts.joined(separator: "  ")
+}
+
+/// Cumulative totals of what the target received. Printed separately from the
+/// violations because on their own they say nothing — they are only meaningful
+/// held against what the client reports sending.
+func renderTotals(_ c: InvariantCounters) -> String {
+    "buttons \(c.buttonDowns)↓/\(c.buttonUps)↑   keys \(c.keyDowns)↓/\(c.keyUps)↑"
 }
 
 /// Resolving every identifier is the drift check: the CLI and the app keep
@@ -152,6 +174,7 @@ func doctor(window: String) async {
         }
         print("probe      : \(renderHealth(cap.frame.health))")
         print("invariants : \(renderCounters(cap.frame.counters))")
+        print("received   : \(renderTotals(cap.frame.counters))")
         print("frame      : #\(cap.frame.frameIndex), \(cap.frame.events.count) events, "
               + "seq \(cap.frame.oldestSeqInWindow)…\(cap.frame.latestSeq)")
         if !cap.frame.heldKeys.isEmpty {
@@ -202,7 +225,7 @@ func watch(window: String, intervalMillis: Int, limit: Int) async {
             for e in try acc.ingest(cap.frame) {
                 let seq = String(e.seq).leftPadded(to: 8)
                 let kind = e.kindLabel.rightPadded(to: 7)
-                print("\(seq)  \(kind) \(e.detail)")
+                print("\(seq)  \(kind) \(showRaw ? e.rawDetail : e.detail)")
             }
             failures = 0
         } catch let fault as TelemetryAccumulator.Fault {
@@ -301,7 +324,7 @@ func runScenarios(window: String, filterID: String, tag: String,
         // Fixing it makes a run reproducible instead of quietly different.
         if windowSize.width > 0 {
             driver.activate()
-            _ = driver.resizeLargestWindow(to: windowSize)
+            _ = driver.resizeWindow(containing: AXID.videoView, to: windowSize)
             try? await Task.sleep(nanoseconds: 700_000_000)
             // Re-find it: SCWindow carries the frame from when it was looked
             // up, and the crop rectangle is computed against that frame. Using

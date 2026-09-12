@@ -110,6 +110,12 @@ message Counters {
   uint32 non_monotonic_timestamp = 4;
   uint32 synthetic_source_events = 5;
   uint32 dropped_by_ring = 6;
+  // Cumulative totals, so the driver can compare what it sent against what
+  // arrived without needing every event to survive the QR window.
+  uint32 button_downs = 7;
+  uint32 button_ups = 8;
+  uint32 key_downs = 9;
+  uint32 key_ups = 10;
 }
 
 message ScreenInfo {

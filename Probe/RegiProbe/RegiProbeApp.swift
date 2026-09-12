@@ -7,9 +7,9 @@ struct RegiProbeApp: App {
 
     var body: some Scene {
         Window("RegiProbe", id: "probe") {
-            ProbeRootView(model: delegate.model) {
-                delegate.runWindow.open()
-            }
+            ProbeRootView(model: delegate.model,
+                          onStart: { delegate.runWindow.open() },
+                          onObserve: { delegate.runWindow.open(shielded: false) })
         }
         .defaultSize(width: 620, height: 640)
     }

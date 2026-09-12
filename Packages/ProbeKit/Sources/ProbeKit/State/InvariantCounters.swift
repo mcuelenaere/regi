@@ -26,15 +26,34 @@ public struct InvariantCounters: Sendable, Equatable {
     /// Tap events with `sourcePID != 0`: something other than the KVM injected
     /// input, so the run is contaminated.
     public var syntheticSourceEvents: UInt32 = 0
-    /// Events evicted from the probe's ring before anyone read them.
+    /// Events evicted from the probe's ring before any reader saw them.
     ///
-    /// Informational, and excluded from `isClean`: the ring wraps after its
-    /// capacity no matter what, so on any long-running probe this is simply
-    /// "the session has been going a while" and says nothing about the input
-    /// under test. Whether the *driver* actually lost evidence is a separate
-    /// question, answered authoritatively by its gap detection against
+    /// Genuine loss of *evidence*, not of input: the events happened and were
+    /// counted, but no one read them before the ring wrapped past them. Stays
+    /// at zero for as long as a reader keeps up, however long the run.
+    ///
+    /// Excluded from `isClean` all the same, because it describes the capture
+    /// pipeline rather than the input under test. Whether the *driver* lost
+    /// evidence is answered authoritatively by its gap detection against
     /// `oldestSeqInWindow`.
     public var droppedByRing: UInt32 = 0
+
+    /// Cumulative totals of what the target actually received, independent of
+    /// how much of the event stream fits through the QR window.
+    ///
+    /// These exist because counting from the transmitted events cannot work
+    /// under load: the window trims to stay legible, so a busy run delivers a
+    /// fraction of what happened and any total computed from it understates
+    /// reality. Comparing these against the client's own outbound count is the
+    /// only sound way to ask "did every transition arrive?" while the input
+    /// rate is high enough to provoke the bug.
+    ///
+    /// Informational, and excluded from `isClean`: a total is only meaningful
+    /// next to the sender's.
+    public var buttonDowns: UInt32 = 0
+    public var buttonUps: UInt32 = 0
+    public var keyDowns: UInt32 = 0
+    public var keyUps: UInt32 = 0
 
     public init() {}
 

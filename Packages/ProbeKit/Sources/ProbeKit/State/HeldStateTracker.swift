@@ -44,6 +44,15 @@ public struct HeldStateTracker: Sendable {
                 counters.syntheticSourceEvents += 1
                 new.append(.init(kind: .syntheticSource(pid: k.sourcePID), seq: event.seq))
             }
+            // Autorepeats are the OS repeating a key the client pressed once.
+            // Counting them here would make keyDowns incomparable with the
+            // client's own outbound count, which is the only thing this total
+            // exists for -- and did: a run showed 209 down against 60 up.
+            if k.down {
+                if !k.autorepeat { counters.keyDowns &+= 1 }
+            } else {
+                counters.keyUps &+= 1
+            }
             if k.down {
                 if heldKeys[k.kvk] != nil {
                     // An autorepeat is the OS doing its job; a fresh press of an
@@ -94,6 +103,7 @@ public struct HeldStateTracker: Sendable {
             }
             if let (button, down) = PointerButton.transition(type: p.type,
                                                              buttonNumber: p.buttonNumber) {
+                if down { counters.buttonDowns &+= 1 } else { counters.buttonUps &+= 1 }
                 if down {
                     if heldButtons[button] == nil {
                         heldButtons[button] = Hold(firstSeq: event.seq,

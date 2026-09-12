@@ -201,3 +201,50 @@ extension HeldStateTrackerTests {
         XCTAssertFalse(c.isClean, "a lost press is a real problem and must show")
     }
 }
+
+/// The timeline is the first thing anyone reads when a scenario fails, so how
+/// an event renders is part of the interface.
+final class ProbeEventDescribeTests: XCTestCase {
+    private func pointer(type: UInt32, button: UInt32 = 0, clickState: UInt32 = 0,
+                         dx: Int32 = 0, dy: Int32 = 0) -> ProbeEvent {
+        ProbeEvent(seq: 1, machAbsoluteNanos: 1,
+                   payload: .pointer(.init(type: type, x: 960, y: 540, deltaX: dx, deltaY: dy,
+                                           buttonNumber: button, clickState: clickState)))
+    }
+
+    /// Left is button number 0, so showing the raw number made a left click
+    /// render as nothing while right and middle showed "btn 1" / "btn 2".
+    func testEveryButtonIsNamed() {
+        XCTAssertEqual(pointer(type: 1).detail, "M1↓ (960,540)")
+        XCTAssertEqual(pointer(type: 2).detail, "M1↑ (960,540)")
+        XCTAssertEqual(pointer(type: 3).detail, "M2↓ (960,540)")
+        XCTAssertEqual(pointer(type: 25, button: 2).detail, "M3↓ (960,540)")
+        XCTAssertEqual(pointer(type: 25, button: 3).detail, "M4↓ (960,540)")
+        XCTAssertEqual(pointer(type: 26, button: 4).detail, "M5↑ (960,540)")
+    }
+
+    func testPressReleaseAndMotionAreDistinguishable() {
+        XCTAssertEqual(pointer(type: 1).kindLabel, "button")
+        XCTAssertEqual(pointer(type: 5).kindLabel, "move")
+        XCTAssertEqual(pointer(type: 6).kindLabel, "drag")
+        XCTAssertTrue(pointer(type: 5, dx: 12, dy: 8).detail.hasPrefix("move"))
+        XCTAssertTrue(pointer(type: 6).detail.hasPrefix("drag M1"))
+    }
+
+    /// macOS stamps clickState onto the motion that follows a click, which made
+    /// plain movement look like it was holding a button down.
+    func testClickStateOnlyShowsOnTransitions() {
+        XCTAssertFalse(pointer(type: 5, clickState: 1).detail.contains("×"))
+        XCTAssertFalse(pointer(type: 5, clickState: 2).detail.contains("×"))
+        XCTAssertFalse(pointer(type: 1, clickState: 1).detail.contains("×"),
+                       "a single click is the normal case and needs no annotation")
+        XCTAssertTrue(pointer(type: 1, clickState: 2).detail.contains("×2"))
+    }
+
+    func testDeltaAndInjectionAreShown() {
+        XCTAssertTrue(pointer(type: 5, dx: -3, dy: 4).detail.contains("Δ(-3,4)"))
+        let injected = ProbeEvent(seq: 1, machAbsoluteNanos: 1,
+                                  payload: .pointer(.init(type: 1, x: 0, y: 0, sourcePID: 42)))
+        XCTAssertTrue(injected.detail.contains("pid 42"))
+    }
+}

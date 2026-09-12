@@ -21,6 +21,18 @@ import SwiftUI
 /// A borderless window, deliberately **not** macOS fullscreen mode: a real
 /// fullscreen space auto-hides its titlebar and its ⌘-based exits are exactly
 /// what is being swallowed.
+///
+/// **Observe mode** drops the shield on purpose. Some bugs only appear while
+/// the operator drives the target's own apps — a single click in Finder
+/// opening the file, say — and a shield that swallows the keyboard and eats
+/// every click makes precisely those unreproducible while the instrument that
+/// would measure them is running. Observe mode shows the telemetry band alone,
+/// parked in a corner, passes mouse input straight through to whatever is
+/// underneath, and leaves the keyboard alone.
+///
+/// Nothing protects the target in that mode. It is for hand-driven
+/// investigation with someone watching, never for an unattended scenario run —
+/// which is why it is a separate entry point rather than a flag on Start.
 @MainActor
 final class RunWindowController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
@@ -34,11 +46,22 @@ final class RunWindowController: NSObject, NSWindowDelegate {
 
     var isOpen: Bool { window != nil }
 
-    func open() {
+    func open(shielded: Bool = true) {
         guard window == nil, model.blocker == nil else { return }
         guard let screen = NSScreen.main else { return }
 
-        let w = NSWindow(contentRect: screen.frame,
+        // Shielded covers the screen. Observe shows only the band, top-right,
+        // leaving the rest of the target usable. The band keeps its full size
+        // either way — QR legibility depends on it and nothing downstream can
+        // recover detail the HDMI frame never carried.
+        let side = RunView.bandSide + RunView.observeChrome
+        let frame = shielded
+            ? screen.frame
+            : NSRect(x: screen.frame.maxX - side - 16,
+                     y: screen.frame.maxY - side - 16,
+                     width: side, height: side)
+
+        let w = NSWindow(contentRect: frame,
                          styleMask: [.borderless],
                          backing: .buffered,
                          defer: false,
@@ -51,20 +74,32 @@ final class RunWindowController: NSObject, NSWindowDelegate {
         // Accepts key events so ordinary typing lands here rather than in
         // whatever was focused, complementing the tap's swallowing.
         w.acceptsMouseMovedEvents = true
+        // The shield absorbs clicks onto an inert surface; the observer must
+        // not, or it would eat the very clicks under investigation. Visible
+        // but not hit-testable, so input lands in Finder underneath.
+        w.ignoresMouseEvents = !shielded
 
-        let host = NSHostingView(rootView: RunView(model: model, onStop: { [weak self] in
+        let host = NSHostingView(rootView: RunView(model: model,
+                                                   compact: !shielded,
+                                                   onStop: { [weak self] in
             self?.close()
         }))
-        host.frame = screen.frame
+        host.frame = NSRect(origin: .zero, size: frame.size)
         w.contentView = host
 
-        priorPresentationOptions = NSApp.presentationOptions
-        NSApp.presentationOptions = [.hideDock, .hideMenuBar, .disableProcessSwitching]
+        // Observe mode leaves the menu bar, the Dock and ⌘Tab alone: the
+        // operator is meant to keep using the machine.
+        if shielded {
+            priorPresentationOptions = NSApp.presentationOptions
+            NSApp.presentationOptions = [.hideDock, .hideMenuBar, .disableProcessSwitching]
+        }
 
         window = w
         w.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-        model.beginRun()
+        // Do not steal focus in observe mode — the operator is about to click
+        // in another app and taking key here would fight them for it.
+        if shielded { NSApp.activate(ignoringOtherApps: true) }
+        model.beginRun(shielded: shielded)
     }
 
     func close() {
@@ -80,6 +115,7 @@ final class RunWindowController: NSObject, NSWindowDelegate {
     }
 
     func toggle() { isOpen ? close() : open() }
+    func toggleObserve() { isOpen ? close() : open(shielded: false) }
 
     func windowWillClose(_ notification: Notification) { close() }
 

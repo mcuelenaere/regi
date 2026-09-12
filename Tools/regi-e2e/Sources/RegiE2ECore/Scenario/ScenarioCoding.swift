@@ -119,6 +119,10 @@ extension Expectation: Codable {
             let b = try c.decodeIfPresent(String.self, forKey: AnyKey("button")) ?? "left"
             self = .clickCount(button: b == "right" ? .right : .left,
                                min: try c.int("min", kind), max: try c.int("max", kind))
+        case "lastClickState":
+            let b = try c.decodeIfPresent(String.self, forKey: AnyKey("button")) ?? "left"
+            self = .lastClickState(button: b == "right" ? .right : .left,
+                                   min: try c.int("min", kind), max: try c.int("max", kind))
         case "modifierEndsUp":
             self = .modifierEndsUp(kvk: try KeyNames.keyCode(try c.str("key", kind)))
         default:
@@ -157,6 +161,10 @@ extension Expectation: Codable {
             try c.encode(min, forKey: AnyKey("min")); try c.encode(max, forKey: AnyKey("max"))
         case .clickCount(let b, let min, let max):
             try c.encode("clickCount", forKey: AnyKey("expect"))
+            try c.encode(b.rawValue, forKey: AnyKey("button"))
+            try c.encode(min, forKey: AnyKey("min")); try c.encode(max, forKey: AnyKey("max"))
+        case .lastClickState(let b, let min, let max):
+            try c.encode("lastClickState", forKey: AnyKey("expect"))
             try c.encode(b.rawValue, forKey: AnyKey("button"))
             try c.encode(min, forKey: AnyKey("min")); try c.encode(max, forKey: AnyKey("max"))
         case .modifierEndsUp(let kvk):

@@ -92,6 +92,12 @@ public enum Expectation: Equatable {
     /// Number of presses of a button. This is the "one click did not arrive as
     /// two" assertion.
     case clickCount(button: Step.Button, min: Int, max: Int)
+    /// Click count the **target** computed for the last press of this button.
+    ///
+    /// The driver's own click state never crosses the KVM — only button bits
+    /// do — so this is the target's own interpretation of the HID timing. It is
+    /// how "a single click registered as a double" is caught.
+    case lastClickState(button: Step.Button, min: Int, max: Int)
 
     public enum KindFilter: String, Equatable {
         case key, pointer, wheel, gesture, any

@@ -16,7 +16,17 @@ struct RunView: View {
     /// px/module and stopped decoding entirely once the payload grew.
     static let bandSide: CGFloat = 880
 
+    /// Chrome around the band in observe mode: just enough for a one-line
+    /// status strip so the operator can see violations climbing without
+    /// switching away from what they are doing.
+    static let observeChrome: CGFloat = 34
+
     let model: ProbeModel
+    /// Band-only layout for observe mode, where the window is a corner overlay
+    /// rather than the screen. The full layout's timeline and panels are for a
+    /// human watching through Regi; in observe mode they would only cover the
+    /// app being tested.
+    var compact: Bool = false
     let onStop: () -> Void
 
     /// The band's surroundings stay static while a run is active. Animation
@@ -25,6 +35,34 @@ struct RunView: View {
     private var quietVisuals: Bool { model.runActive }
 
     var body: some View {
+        if compact { observeBody } else { shieldedBody }
+    }
+
+    /// Band plus a status line. No Stop button: the window ignores mouse
+    /// events so the clicks under test reach the app underneath, which means
+    /// nothing in here could be clicked anyway. Stop lives in the main window.
+    private var observeBody: some View {
+        VStack(spacing: 0) {
+            bandImage
+            HStack(spacing: 10) {
+                Circle()
+                    .fill(model.counters.isClean ? Color.green : Color.red)
+                    .frame(width: 8, height: 8)
+                Text("OBSERVE — target is NOT shielded")
+                    .font(.system(size: 11, weight: .semibold))
+                Text("up-without-down \(model.counters.upWithoutDown)  ·  frame \(model.framesRendered)")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 12)
+            .frame(height: Self.observeChrome)
+        }
+        .background(Color.white)
+        .preferredColorScheme(.light)
+    }
+
+    private var shieldedBody: some View {
         VStack(spacing: 0) {
             header
             HStack(alignment: .top, spacing: 24) {
@@ -57,24 +95,31 @@ struct RunView: View {
         .background(Color.orange.opacity(0.18))
     }
 
+    /// The code itself, at exactly `bandSide`. Kept separate from the caption
+    /// so observe mode can show the band alone — there the window is sized to
+    /// the band plus a status strip, and a caption would push the strip out.
+    private var bandImage: some View {
+        ZStack {
+            // Plain white ground with a wide quiet zone: both matter for
+            // decode rate through a compressed video stream.
+            Rectangle().fill(.white)
+            if let img = model.qrImage {
+                Image(nsImage: img)
+                    .interpolation(.none)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .padding(24)
+            } else {
+                Text("waiting for telemetry").foregroundStyle(.secondary)
+            }
+        }
+        .frame(width: Self.bandSide, height: Self.bandSide)
+        .border(Color.black.opacity(0.15))
+    }
+
     private var qrBand: some View {
         VStack(spacing: 8) {
-            ZStack {
-                // Plain white ground with a wide quiet zone: both matter for
-                // decode rate through a compressed video stream.
-                Rectangle().fill(.white)
-                if let img = model.qrImage {
-                    Image(nsImage: img)
-                        .interpolation(.none)
-                        .resizable()
-                        .aspectRatio(contentMode: .fit)
-                        .padding(24)
-                } else {
-                    Text("waiting for telemetry").foregroundStyle(.secondary)
-                }
-            }
-            .frame(width: Self.bandSide, height: Self.bandSide)
-            .border(Color.black.opacity(0.15))
+            bandImage
 
             Text("telemetry — do not cover")
                 .font(.caption).foregroundStyle(.secondary)

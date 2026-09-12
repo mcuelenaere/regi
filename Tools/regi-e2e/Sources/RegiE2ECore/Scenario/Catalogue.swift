@@ -11,7 +11,8 @@ public enum Catalogue {
         pointerAccuracy, pointerSingleClick, pointerDoubleClick, pointerDrag,
         pointerRightClick, pointerSideButtons,
         wheelVertical, wheelHorizontal, wheelHorizontalDirection, wheelStaysDiscrete,
-        pinchProducesNothing, burstOrdering,
+        pinchProducesNothing, burstOrdering, rapidClickOrdering,
+        singleClickAfterDoubleClick,
     ]
 
     public static func scenario(id: String) -> Scenario? { all.first { $0.id == id } }
@@ -226,8 +227,79 @@ public enum Catalogue {
             .expect(.nothingHeld),
         ])
 
+    /// Ten deliberate press/release pairs in quick succession.
+    ///
+    /// Aimed at the unstructured `Task` dispatch in the backends: every input
+    /// send is its own `Task { await webrtc.sendHID(...) }`, and while the
+    /// actor serialises execution, nothing orders the arrival of independently
+    /// spawned tasks. A press and its release can therefore reach the wire
+    /// reversed, which shows up on the target as one click becoming two, a
+    /// button that appears held, or a release with no matching press.
+    ///
+    /// PR #16 routes *reliable keyboard* transitions through a FIFO. Pointer
+    /// events travel on the unreliable-ordered channel and are not covered, so
+    /// this exercises the half that remains.
+    public static let rapidClickOrdering = Scenario(
+        id: "ptr.rapidClickOrdering", title: "rapid clicks keep press/release order",
+        tags: [.pointer, .slow],
+        steps: [
+            .focusRegi,
+            .moveTo(x: 960, y: 540),
+            .wait(millis: 200),
+        ] + (0..<12).flatMap { _ in
+            // No gap between press and release, and only a short one between
+            // pairs. A leisurely click cannot race: the two sends have to be
+            // spawned close enough together that their tasks are in flight at
+            // the same time.
+            [Step.buttonDown(button: .left, x: 960, y: 540),
+             .buttonUp(button: .left, x: 960, y: 540),
+             .wait(millis: 20)]
+        } + [
+            settle,
+            // Exactly ten presses: more means a press was duplicated, fewer
+            // means one was lost or swallowed by reordering.
+            .expect(.clickCount(button: .left, min: 12, max: 12)),
+            // The assertion that catches a reversed pair directly.
+            .expect(.noUnmatchedReleases),
+            .expect(.nothingHeld),
+        ])
+
+    /// Reported from real use: after a double click, subsequent single clicks
+    /// keep registering as double clicks until the right button is pressed.
+    ///
+    /// That last detail is the clue. A right press sends a button mask with the
+    /// right bit set and the left bit clear, which would clear a stale left
+    /// bit — so it points at left being left down on the target rather than at
+    /// click-count bookkeeping.
+    ///
+    /// The wait is comfortably longer than the system double-click interval, so
+    /// the target has no legitimate reason to read the final press as anything
+    /// but a fresh single click.
+    public static let singleClickAfterDoubleClick = Scenario(
+        id: "ptr.singleClickAfterDoubleClick",
+        title: "a single click after a double click is still a single click",
+        tags: [.pointer],
+        steps: [
+            .focusRegi,
+            .moveTo(x: 820, y: 460),
+            .wait(millis: 200),
+            .click(button: .left, x: 820, y: 460, count: 2),
+            .wait(millis: 900),
+            .click(button: .left, x: 820, y: 460, count: 1),
+            settle,
+            .expect(.clickCount(button: .left, min: 3, max: 3)),
+            .expect(.lastClickState(button: .left, min: 1, max: 1)),
+            .expect(.nothingHeld),
+            .expect(.noUnmatchedReleases),
+        ])
+
     // MARK: - Wheel
 
+    /// PRECONDITION for every direction assertion below: the target's
+    /// "natural scrolling" setting must match the driver's. It inverts both
+    /// axes, and these scenarios assert absolute direction, so a mismatch
+    /// fails them for a reason that has nothing to do with Regi.
+    ///
     /// Three detents rather than one, deliberately.
     ///
     /// Telemetry is a sampled, lossy channel: a single event is a single
@@ -267,24 +339,23 @@ public enum Catalogue {
             .expect(.wheelTotal(axis: .vertical, min: 0, max: 0)),
         ])
 
-    /// Quarantined: horizontal scroll direction is inverted end to end.
+    /// Regression for a real bug: horizontal scroll direction used to be
+    /// inverted end to end — scrolling right in Regi scrolled the target left.
     ///
-    /// Measured on the rig — scrolling right in Regi scrolls the target left:
+    /// Confirmed by toggling "natural scrolling" on the target, which flips
+    /// *both* axes: vertical went from correct to inverted while horizontal
+    /// went from inverted to correct. No setting made both correct at once, so
+    /// the axes genuinely disagreed rather than the machines being configured
+    /// differently. USB HID AC Pan runs opposite to NSEvent.scrollingDeltaX;
+    /// JetKVMBackend.sendWheelReport now negates wheelX.
     ///
-    ///     driver scrollingDeltaX = +5   →   target lineDeltaX = -1
-    ///
-    /// Vertical is unaffected, which is what rules out the obvious confound of
-    /// a differing "natural scrolling" setting between the two machines: that
-    /// would invert both axes. The likely cause is the USB HID AC Pan sign
-    /// convention differing from macOS `scrollingDeltaX`, so the fix would be
-    /// for the backend to negate `wheelX`.
-    ///
-    /// Runs and records but does not fail the suite until that is confirmed
-    /// against the firmware and fixed.
+    /// PRECONDITION: the target must have "natural scrolling" set the same way
+    /// as the driver, since it inverts both axes and these assert absolute
+    /// direction.
     public static let wheelHorizontalDirection = Scenario(
         id: "ptr.wheel.horizontalDirection",
-        title: "horizontal wheel preserves direction (known-failing: inverted)",
-        tags: [.pointer], quarantined: true,
+        title: "horizontal wheel preserves direction",
+        tags: [.pointer],
         steps: [
             .focusRegi,
             .moveTo(x: 960, y: 540),

@@ -5,6 +5,7 @@ import SwiftUI
 struct ProbeRootView: View {
     let model: ProbeModel
     let onStart: () -> Void
+    let onObserve: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -37,6 +38,14 @@ struct ProbeRootView: View {
                 .buttonStyle(.borderedProminent)
                 .disabled(model.blocker != nil)
 
+                Button(action: onObserve) {
+                    Label("Observe", systemImage: "eye")
+                }
+                .controlSize(.large)
+                .disabled(model.blocker != nil)
+                .help("Telemetry only, in a corner. The target is NOT shielded: "
+                      + "clicks and keys reach its own apps.")
+
                 if !model.accessibilityGranted {
                     Button("Grant Accessibility…") { model.requestAccessibility() }
                     Button("Open Settings…") {
@@ -49,7 +58,11 @@ struct ProbeRootView: View {
             Text("Starting opens a full-screen window. While it is up the keyboard is "
                  + "swallowed so stray ⌘Q cannot reach this machine's other apps; the "
                  + "pointer is left alone so Stop stays clickable — including through "
-                 + "Regi. Esc ×5 always releases.")
+                 + "Regi. Esc ×5 always releases.\n\n"
+                 + "Observe shows only the telemetry band, top-right, and shields "
+                 + "nothing: input reaches this machine's own apps normally. Use it to "
+                 + "reproduce a bug by hand in Finder or anywhere else while the probe "
+                 + "records. Stop from this window.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -100,7 +113,19 @@ struct ProbeRootView: View {
                                held: model.heldKeys,
                                violations: model.violations)
 
-            Text("Recent events").font(.caption).foregroundStyle(.secondary)
+            HStack {
+                Text("Recent events").font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Picker("", selection: Binding(get: { model.timelineFilter },
+                                              set: { model.timelineFilter = $0 })) {
+                    ForEach(EventKindFilter.allCases, id: \.self) { f in
+                        Text(f.label).tag(f)
+                    }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .frame(width: 130)
+            }
             EventTimelineView(events: model.recentEvents)
                 .frame(height: 160)
                 .background(RoundedRectangle(cornerRadius: 6).fill(Color.secondary.opacity(0.06)))
