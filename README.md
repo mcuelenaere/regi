@@ -124,13 +124,24 @@ Grab `Regi.dmg` from the [latest release](https://github.com/mcuelenaere/regi/re
 
 ### Building from source
 
+`Regi.xcodeproj` is generated from [`project.yml`](project.yml) by
+[XcodeGen](https://xcodegen.com) and is not checked in, so generate it once after
+cloning:
+
 ```sh
 git clone https://github.com/mcuelenaere/regi.git
 cd regi
+brew install xcodegen
+xcodegen generate
 open Regi.xcodeproj
 ```
 
 Hit ⌘R in Xcode.
+
+`project.yml` is the source of truth for both targets — `Regi` and `RegiProbe`.
+Adding a source file needs no project edit: drop it in `App/` or
+`Probe/RegiProbe/` and run `xcodegen generate` again. Don't edit the `.xcodeproj`
+by hand; the next generate overwrites it.
 
 ## About the name
 

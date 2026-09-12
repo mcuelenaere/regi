@@ -21,13 +21,24 @@ cd "$(dirname "$0")/.."
 IDENTITY="${1:--}"
 DEST="/Applications/RegiProbe.app"
 
+if ! command -v xcodegen >/dev/null 2>&1; then
+    echo "xcodegen is required (Regi.xcodeproj is generated): brew install xcodegen" >&2
+    exit 1
+fi
+
+echo "Generating project…"
+xcodegen generate --use-cache >/dev/null
+
 echo "Building…"
-xcodebuild -project Probe/RegiProbe.xcodeproj -scheme RegiProbe \
+xcodebuild -project Regi.xcodeproj -scheme RegiProbe \
     -configuration Release -destination 'platform=macOS' \
     CODE_SIGN_IDENTITY="$IDENTITY" build >/dev/null
 
-BUILT=$(xcodebuild -project Probe/RegiProbe.xcodeproj -scheme RegiProbe \
-    -configuration Release -destination 'platform=macOS' -showBuildSettings 2>/dev/null \
+# -target, not -scheme: with -scheme xcodebuild prints one settings block per
+# target in the build graph — since the merge that includes Regi and the package
+# targets — and the awk below takes the first match it sees.
+BUILT=$(xcodebuild -project Regi.xcodeproj -target RegiProbe \
+    -configuration Release -showBuildSettings 2>/dev/null \
     | awk -F' = ' '/ BUILT_PRODUCTS_DIR/{print $2; exit}')/RegiProbe.app
 
 echo "Installing to $DEST…"

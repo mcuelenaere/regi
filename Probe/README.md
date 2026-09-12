@@ -13,13 +13,16 @@ to this machine.
 ./Probe/install.sh "RegiProbeSelfSigned"  # stable identity — grant survives rebuilds
 ```
 
-The Xcode project is **generated** from the files on disk:
+`install.sh` generates the Xcode project itself, so `brew install xcodegen` is
+the only prerequisite. RegiProbe is a target of the root `Regi.xcodeproj`, which
+[XcodeGen](https://xcodegen.com) generates from [`project.yml`](../project.yml):
 
 ```bash
-./Probe/generate_project.py
+xcodegen generate
 ```
 
-Adding a source file needs no pbxproj editing — add the file and regenerate.
+Adding a source file needs no pbxproj editing — add the file under
+`Probe/RegiProbe/` and regenerate.
 
 ## Running a session
 
