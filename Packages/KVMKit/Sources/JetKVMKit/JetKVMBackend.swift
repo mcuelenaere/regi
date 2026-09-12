@@ -532,6 +532,23 @@ public final class JetKVMBackend: KVMBackend {
     /// call sites don't have to await.
     public func sendWheelReport(wheelY: Int8, wheelX: Int8) {
         if wheelY == 0 && wheelX == 0 { return }
+        // Horizontal is inverted relative to vertical on the wire.
+        //
+        // `KVMVideoView.scrollWheel` documents why vertical needs no negation
+        // (NSEvent.scrollingDeltaY and the HID wheel share a sign convention),
+        // but nothing had ever established the horizontal convention, and it
+        // does not match: USB HID AC Pan runs opposite to
+        // NSEvent.scrollingDeltaX.
+        //
+        // Measured end to end on a JetKVM rig: scrolling right in Regi scrolled
+        // the target left. Toggling "natural scrolling" on the target flipped
+        // *both* axes together, which rules out a settings mismatch — no
+        // configuration makes both correct at once, so the two genuinely
+        // disagree.
+        //
+        // Only the JetKVM path is corrected here. PiKVM and VNC build their own
+        // horizontal reports and have not been measured against hardware.
+        let wheelX = Int8(clamping: -Int(wheelX))
         let useBinary = deviceMetadata?.firmwareIsAtLeast(Self.binaryWheelMinVersion) == true
         if useBinary {
             guard hidReady, let webrtc else { return }
