@@ -37,3 +37,30 @@ public enum KeyLabels {
         (0x36...0x3E).contains(kvk) || kvk == 0x3F
     }
 }
+
+/// Device-side modifier bits in a raw `CGEventFlags` value.
+///
+/// These are what distinguish left from right — `NSEvent.ModifierFlags` and the
+/// documented `CGEventFlags` masks both collapse the sides. They also make a
+/// `flagsChanged` event self-describing: the bit says whether that modifier is
+/// now down, so state never has to be inferred from toggle parity.
+public enum ModifierFlagBits {
+    public static let byKeyCode: [UInt16: UInt64] = [
+        0x3B: 0x0000_0001,   // left control
+        0x38: 0x0000_0002,   // left shift
+        0x3C: 0x0000_0004,   // right shift
+        0x37: 0x0000_0008,   // left command
+        0x36: 0x0000_0010,   // right command
+        0x3A: 0x0000_0020,   // left option
+        0x3D: 0x0000_0040,   // right option
+        0x3E: 0x0000_2000,   // right control
+        0x39: 0x0001_0000,   // caps lock (maskAlphaShift; has no side)
+    ]
+
+    /// Whether `kvk` is down according to `rawFlags`, or nil when the keycode
+    /// is not a modifier we can decide from flags alone.
+    public static func isDown(kvk: UInt16, rawFlags: UInt64) -> Bool? {
+        guard let bit = byKeyCode[kvk] else { return nil }
+        return rawFlags & bit != 0
+    }
+}

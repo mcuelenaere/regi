@@ -138,3 +138,50 @@ extension HeldStateTrackerTests {
         XCTAssertEqual(t.counters.upWithoutDown, 0)
     }
 }
+
+extension HeldStateTrackerTests {
+    private func flags(_ seq: UInt64, _ kvk: UInt16, _ raw: UInt64) -> ProbeEvent {
+        ProbeEvent(seq: seq, machAbsoluteNanos: seq * 1_000_000,
+                   payload: .flags(.init(kvk: kvk, rawFlags: raw)))
+    }
+
+    /// Modifier state comes from the flag bits, not from counting transitions.
+    func testModifierStateIsReadFromFlagsNotToggled() {
+        var t = HeldStateTracker()
+        t.ingest(flags(1, 0x37, 0x100108))   // left command down
+        XCTAssertEqual(Array(t.heldKeys.keys), [0x37])
+        t.ingest(flags(2, 0x37, 0x100))      // released
+        XCTAssertTrue(t.nothingHeld)
+    }
+
+    /// The reason for reading flags: a lost event must not corrupt state
+    /// permanently. With toggle parity a single miss inverts everything after.
+    func testStateResynchronisesAfterALostEvent() {
+        var t = HeldStateTracker()
+        t.ingest(flags(1, 0x38, 0x20102))    // left shift down
+        // ...its release never arrives (dropped from the window)...
+        t.ingest(flags(3, 0x38, 0x20102))    // and it is pressed again
+        XCTAssertEqual(Array(t.heldKeys.keys), [0x38], "still held — correct")
+        t.ingest(flags(4, 0x38, 0x100))      // now released
+        XCTAssertTrue(t.nothingHeld, "a flag bit re-synchronises; parity would be inverted here")
+    }
+
+    /// Left and right carry different bits, so a same-side release must not
+    /// clear the other side.
+    func testLeftAndRightModifiersUseDistinctBits() {
+        var t = HeldStateTracker()
+        t.ingest(flags(1, 0x38, 0x20102))               // left shift down
+        t.ingest(flags(2, 0x3C, 0x20106))               // right shift down too
+        XCTAssertEqual(Set(t.heldKeys.keys), [0x38, 0x3C])
+        t.ingest(flags(3, 0x38, 0x20104))               // left released, right still set
+        XCTAssertEqual(Set(t.heldKeys.keys), [0x3C])
+    }
+
+    func testUnknownModifierKeycodeStillToggles() {
+        var t = HeldStateTracker()
+        t.ingest(flags(1, 0x7F, 0))
+        XCTAssertEqual(Array(t.heldKeys.keys), [0x7F])
+        t.ingest(flags(2, 0x7F, 0))
+        XCTAssertTrue(t.nothingHeld)
+    }
+}

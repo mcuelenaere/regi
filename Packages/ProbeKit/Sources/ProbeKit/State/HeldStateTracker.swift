@@ -59,13 +59,24 @@ public struct HeldStateTracker: Sendable {
             }
 
         case .flags(let f):
-            // flagsChanged is a toggle: the keycode identifies which modifier,
-            // and whether it is now down has to come from the tracker's own
-            // state. This is the same shape ModifierTracker deals with.
-            if heldKeys.removeValue(forKey: f.kvk) == nil {
-                heldKeys[f.kvk] = Hold(firstSeq: event.seq,
-                                       firstNanos: event.machAbsoluteNanos,
-                                       repeatCount: 0)
+            // The flags payload says whether the modifier is now down, so read
+            // it rather than toggling. Toggle parity is not self-correcting:
+            // one event lost -- dropped from the ring, or missed while the
+            // driver was between reads -- inverts the parity and every
+            // subsequent modifier state is wrong for the rest of the run.
+            // A flag bit re-synchronises on the very next event.
+            let down = ModifierFlagBits.isDown(kvk: f.kvk, rawFlags: f.rawFlags)
+                // Unknown modifier keycode: fall back to toggling, which is
+                // still better than ignoring it.
+                ?? (heldKeys[f.kvk] == nil)
+            if down {
+                if heldKeys[f.kvk] == nil {
+                    heldKeys[f.kvk] = Hold(firstSeq: event.seq,
+                                           firstNanos: event.machAbsoluteNanos,
+                                           repeatCount: 0)
+                }
+            } else {
+                heldKeys.removeValue(forKey: f.kvk)
             }
 
         case .pointer(let p) where p.sourcePID != 0:
