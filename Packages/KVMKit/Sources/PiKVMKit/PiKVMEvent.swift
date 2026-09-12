@@ -1,4 +1,5 @@
 import Foundation
+import KVMCore
 
 /// Wire codec for PiKVM's `/api/ws` event protocol: outbound keyboard /
 /// mouse events and the inbound state events the client cares about.
@@ -87,9 +88,13 @@ public enum PiKVMEvent {
     /// already letterbox-corrected) into PiKVM's signed range
     /// (−32768…32767), matching kvmd's `remap(pos, 0, w-1, -32768, 32767)`.
     public static func absoluteCoordinate(fromNormalized n: Int32) -> Int {
-        let clamped = max(0, min(32767, Int(n)))
-        let mapped = Int((Double(clamped) / 32767.0) * 65535.0) - 32768
-        return max(-32768, min(32767, mapped))
+        // kvmd's own range, not the shared one: signed 16-bit, which is why
+        // these numbers stay here rather than moving to AbsolutePointer.
+        let lower = -32768, upper = 32767
+        let span = Double(upper - lower)      // 65535
+        let clamped = max(0, min(AbsolutePointer.maxInt, Int(n)))
+        let mapped = Int((Double(clamped) / Double(AbsolutePointer.maxInt)) * span) + lower
+        return max(lower, min(upper, mapped))
     }
 
     /// Convert a signed wheel tick (the App layer's accumulated detent,

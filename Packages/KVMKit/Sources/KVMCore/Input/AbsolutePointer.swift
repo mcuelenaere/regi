@@ -26,6 +26,23 @@ public enum AbsolutePointer {
         return maxValue / sourceExtent
     }
 
+    /// Largest value on either axis, as an integer, for callers clamping in
+    /// integer space.
+    public static let maxInt = Int(32767)
+
+    /// Resolve a normalized coordinate to a zero-based pixel index within a
+    /// surface `extent` pixels across.
+    ///
+    /// Note the `extent - 1`: the result indexes a pixel, so the top of the
+    /// wire range maps to the *last* pixel rather than one past the end. That
+    /// is not the inverse of `normalize`, which maps a position within the
+    /// extent, and the two are deliberately separate for that reason.
+    public static func pixelIndex(fromNormalized n: Int32, extent: Int) -> Int {
+        guard extent > 0 else { return 0 }
+        let clamped = max(0, min(maxInt, Int(n)))
+        return Int((Double(clamped) / Double(maxInt)) * Double(extent - 1))
+    }
+
     /// Normalize a position within `extent` onto the wire range.
     public static func normalize(_ value: CGFloat, extent: CGFloat) -> Int32 {
         guard extent > 0 else { return 0 }

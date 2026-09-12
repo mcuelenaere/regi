@@ -50,3 +50,27 @@ final class AbsolutePointerTests: XCTestCase {
         }
     }
 }
+
+/// The backends' coordinate mappings were written out by hand with the wire
+/// range inline. Routing them through `AbsolutePointer` must not move a single
+/// pixel, so these pin the new arithmetic against the old, exactly.
+final class AbsolutePointerEquivalenceTests: XCTestCase {
+    /// VNC: normalized → zero-based pixel index. Was
+    /// `Int((Double(n) / 32767.0) * Double(extent - 1))`.
+    func testPixelIndexMatchesTheFormulaItReplaced() {
+        for extent in [640, 1280, 1920, 2560, 3840, 1] {
+            for n in stride(from: Int32(0), through: 32767, by: 97) {
+                let old = Int((Double(n) / 32767.0) * Double(extent - 1))
+                let new = AbsolutePointer.pixelIndex(fromNormalized: n, extent: extent)
+                XCTAssertEqual(new, old, "extent \(extent), n \(n)")
+            }
+            XCTAssertEqual(AbsolutePointer.pixelIndex(fromNormalized: 32767, extent: extent),
+                           extent - 1, "the top of the range is the last pixel")
+            XCTAssertEqual(AbsolutePointer.pixelIndex(fromNormalized: 0, extent: extent), 0)
+        }
+    }
+
+    func testPixelIndexSurvivesADegenerateExtent() {
+        XCTAssertEqual(AbsolutePointer.pixelIndex(fromNormalized: 500, extent: 0), 0)
+    }
+}
