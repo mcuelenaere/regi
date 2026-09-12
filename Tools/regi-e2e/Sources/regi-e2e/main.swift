@@ -54,7 +54,7 @@ func renderCounters(_ c: InvariantCounters) -> String {
 /// Resolving every identifier is the drift check: the CLI and the app keep
 /// separate copies of these strings, so a UI refactor that drops one has to
 /// fail loudly here rather than as a mysterious scenario failure later.
-func checkAccessibility() {
+func checkAccessibility(_ failures: inout Int) {
     print("\n── Regi (accessibility) ──")
     do {
         let driver = try AXDriver()
@@ -66,8 +66,9 @@ func checkAccessibility() {
             if !ok { missing.append(id) }
         }
         if !missing.isEmpty {
-            print("\n\(missing.count) identifier(s) missing — is a session window open?")
+            print("\(missing.count) identifier(s) missing — is a session window open?")
             print("If one is open, a UI change dropped them: see App/AXIdentifiers.swift")
+            failures += 1
             return
         }
         let g = try driver.videoGeometry()
@@ -82,11 +83,18 @@ func checkAccessibility() {
         let centre = g.screenPoint(forFramebufferPixel: CGPoint(x: 959.5, y: 539.5))
         print("centre px  : (960,540) -> screen (\(Int(centre.x)),\(Int(centre.y)))")
     } catch {
-        print("FAILED: \(error)")
+        print("FAILED     : \(error)")
+        failures += 1
     }
 }
 
 func doctor(window: String) async {
+    // The two halves are reported independently on purpose: the accessibility
+    // checks are exactly what you need when the telemetry side is broken, so
+    // one failing must not hide the other.
+    var failures = 0
+
+    print("── telemetry (probe, via Regi's video) ──")
     let reader = VideoReader(windowName: window)
     do {
         let w = try await reader.findWindow()
@@ -106,14 +114,23 @@ func doctor(window: String) async {
         if !cap.frame.heldKeys.isEmpty {
             print("held       : \(cap.frame.heldKeys.map(KeyLabels.label).joined(separator: " "))")
         }
-        checkAccessibility()
         if !cap.frame.health.isUsable {
-            print("\nNOT READY — the probe cannot record reliably in this state.")
-            exit(1)
+            print("NOT READY  : the probe cannot record reliably in this state")
+            failures += 1
         }
     } catch {
-        print("FAILED: \(error)")
-        exit(2)
+        print("FAILED     : \(error)")
+        failures += 1
+    }
+
+    checkAccessibility(&failures)
+
+    print("")
+    if failures == 0 {
+        print("all checks passed")
+    } else {
+        print("\(failures) check(s) failed")
+        exit(1)
     }
 }
 
