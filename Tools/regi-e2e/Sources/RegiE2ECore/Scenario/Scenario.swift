@@ -4,7 +4,7 @@ import ProbeKit
 
 /// A scenario is **data**, not a closure: `replay` has to re-evaluate a
 /// recorded run offline, which a closure cannot be serialized into.
-public struct Scenario: Codable, Equatable {
+public struct Scenario: Equatable {
     public let id: String
     public let title: String
     public let tags: Set<Tag>
@@ -30,7 +30,7 @@ public struct Scenario: Codable, Equatable {
 
 /// Coordinates are framebuffer pixels on the target, never screen points, so a
 /// scenario reads the same wherever Regi's window happens to be.
-public enum Step: Codable, Equatable {
+public enum Step: Equatable {
     case key(kvk: UInt16, action: KeyAction)
     /// Modifiers are events, not a property of a keypress. Measured on the rig:
     /// setting `.maskShift` on a key event alone produced "a" on the target,
@@ -49,17 +49,17 @@ public enum Step: Codable, Equatable {
     case settle(quietMillis: Int, maxMillis: Int)
     case expect(Expectation)
 
-    public enum KeyAction: Codable, Equatable {
+    public enum KeyAction: Equatable {
         case down, up
         case tap(holdMillis: Int)
     }
 
-    public enum Button: String, Codable, Equatable {
+    public enum Button: String, Equatable {
         case left, right
     }
 }
 
-public enum Expectation: Codable, Equatable {
+public enum Expectation: Equatable {
     /// Exactly these key events, in order, with nothing else of that kind
     /// between them.
     case keySequence([KeyMatcher])
@@ -76,12 +76,12 @@ public enum Expectation: Codable, Equatable {
     /// assertion that catches the ⌘Tab inversion class of bug.
     case modifierEndsUp(kvk: UInt16)
 
-    public enum KindFilter: String, Codable, Equatable {
+    public enum KindFilter: String, Equatable {
         case key, pointer, wheel, gesture, any
     }
 }
 
-public struct KeyMatcher: Codable, Equatable, CustomStringConvertible {
+public struct KeyMatcher: Equatable, CustomStringConvertible {
     public let kvk: UInt16
     public let down: Bool
     /// Optional: assert the character the target produced, which is what proves

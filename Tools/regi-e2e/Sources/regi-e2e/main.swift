@@ -23,7 +23,13 @@ regi-e2e — drives Regi and reads the probe's telemetry back over the KVM's vid
   regi-e2e list
       The scenario catalogue.
 
-  regi-e2e run [--window=Regi] [--scenario=SUBSTRING] [--tag=TAG]
+  regi-e2e schema
+      The scenario file format and authoring vocabulary.
+
+  regi-e2e export
+      The built-in catalogue as JSON — worked examples in that format.
+
+  regi-e2e run [--window=Regi] [--scenario=SUBSTRING] [--tag=TAG] [--scenarios=FILE]
       Run scenarios against the rig. Quarantined failures are reported but
       do not affect the exit code.
 
@@ -254,7 +260,8 @@ func pointerCheck(window: String, tolerance: Int) async {
     exit(failures == 0 ? 0 : 1)
 }
 
-func runScenarios(window: String, filterID: String, tag: String) async {
+func runScenarios(window: String, filterID: String, tag: String,
+                  scenarioFile: String) async {
     let reader = VideoReader(windowName: window)
     guard let regiWindow = try? await reader.findWindow() else {
         print("FAILED: Regi window not found"); exit(2)
@@ -267,7 +274,17 @@ func runScenarios(window: String, filterID: String, tag: String) async {
         print("FAILED: \(error)"); exit(2)
     }
 
-    var chosen = Catalogue.all
+    var chosen: [Scenario]
+    if !scenarioFile.isEmpty {
+        do {
+            chosen = try ScenarioFile.load(contentsOf: URL(fileURLWithPath: scenarioFile))
+            print("loaded \(chosen.count) scenario(s) from \(scenarioFile)")
+        } catch {
+            print("FAILED to load \(scenarioFile): \(error)"); exit(2)
+        }
+    } else {
+        chosen = Catalogue.all
+    }
     if !filterID.isEmpty { chosen = chosen.filter { $0.id.contains(filterID) } }
     if !tag.isEmpty { chosen = chosen.filter { $0.tags.contains { $0.rawValue == tag } } }
     guard !chosen.isEmpty else { print("no scenarios matched"); exit(2) }
@@ -309,7 +326,15 @@ case "doctor":
     await doctor(window: value("window", "Regi"))
 case "run":
     await runScenarios(window: value("window", "Regi"),
-                       filterID: value("scenario", ""), tag: value("tag", ""))
+                       filterID: value("scenario", ""), tag: value("tag", ""),
+                       scenarioFile: value("scenarios", ""))
+case "schema":
+    print(ScenarioSchema.text)
+case "export":
+    // The built-in catalogue as JSON: worked examples in the exact format a
+    // generated file must use.
+    do { print(try ScenarioFile.json(for: Catalogue.all)) }
+    catch { print("FAILED: \(error)"); exit(2) }
 case "list":
     for s in Catalogue.all {
         let tags = s.tags.map(\.rawValue).sorted().joined(separator: ",")
