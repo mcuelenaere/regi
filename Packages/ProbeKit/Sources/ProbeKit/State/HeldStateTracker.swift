@@ -19,6 +19,10 @@ public struct HeldStateTracker: Sendable {
     public private(set) var heldButtons: [PointerButton: Hold] = [:]
     public private(set) var counters = InvariantCounters()
     public private(set) var violations: [Violation] = []
+    /// Kept bounded: a tracker that lives for a whole run would otherwise grow
+    /// this without limit. Only the most recent are ever displayed, and the
+    /// counters — not this list — are the record of how many there were.
+    public static let maxRetainedViolations = 200
     private var lastNanos: UInt64 = 0
 
     public init() {}
@@ -107,6 +111,9 @@ public struct HeldStateTracker: Sendable {
         }
 
         violations.append(contentsOf: new)
+        if violations.count > Self.maxRetainedViolations {
+            violations.removeFirst(violations.count - Self.maxRetainedViolations)
+        }
         return new
     }
 

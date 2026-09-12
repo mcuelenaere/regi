@@ -97,15 +97,15 @@ final class ProbeModel {
     }
 
     private func sampleForUI() {
-        let (events, _, dropped) = ring.recent(300)
-        var tracker = HeldStateTracker()
-        for e in events { tracker.ingest(e) }
-        var c = tracker.counters
-        c.droppedByRing = dropped
+        let (events, _, _) = ring.recent(300)
+        // Counters and violations come from the ring's cumulative tracker, not
+        // from replaying this window. Replaying reported a release whose press
+        // had already scrolled out of the window as a violation.
+        let live = ring.liveState()
 
-        heldKeys = Set(tracker.heldKeys.keys)
-        counters = c
-        violations = Array(tracker.violations.suffix(20))
+        heldKeys = Set(live.heldKeys.keys)
+        counters = live.counters
+        violations = Array(live.violations.suffix(20))
         recentEvents = Array(events.suffix(60).reversed())
         pointerTrail = events.suffix(120).compactMap {
             if case .pointer(let p) = $0.payload { return CGPoint(x: Int(p.x), y: Int(p.y)) }

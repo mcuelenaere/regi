@@ -46,12 +46,14 @@ final class TelemetryRenderer {
         // Ask for more than the budget allows; encodeCapped trims to fit, which
         // is what keeps the symbol at a fixed version. Letting it grow instead
         // would shrink the modules and break decoding with no error anywhere.
-        let (events, oldestSeq, dropped) = ring.recent(400)
+        let (events, oldestSeq, _) = ring.recent(400)
 
-        var tracker = HeldStateTracker()
-        for e in events { tracker.ingest(e) }
-        var counters = tracker.counters
-        counters.droppedByRing = dropped
+        // From the cumulative tracker, so the counters the driver reads
+        // describe the whole run rather than whatever still fits in the
+        // window. Replaying over the window invented `upWithoutDown`s as soon
+        // as a press aged out ahead of its release.
+        let live = ring.liveState()
+        let counters = live.counters
 
         let screen = NSScreen.main.map { s in
             TelemetryFrame.ScreenInfo(
@@ -67,7 +69,7 @@ final class TelemetryRenderer {
             oldestSeqInWindow: oldestSeq,
             health: health,
             counters: counters,
-            heldKeys: tracker.heldKeys.keys.sorted(),
+            heldKeys: live.heldKeys.keys.sorted(),
             screen: screen,
             events: events
         )

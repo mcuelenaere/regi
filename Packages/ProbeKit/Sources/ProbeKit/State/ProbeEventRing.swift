@@ -17,6 +17,31 @@ public final class ProbeEventRing: @unchecked Sendable {
     public private(set) var oldestAvailableSeq: UInt64 = 1
     public private(set) var dropped: UInt32 = 0
 
+    /// Cumulative held-state, fed exactly once per event as it is captured.
+    ///
+    /// This deliberately does not live at the read sites. Replaying a fresh
+    /// tracker over `recent(n)` — which is what the probe and the QR renderer
+    /// used to do — manufactures violations out of nothing: once a press
+    /// scrolls off the front of the window while its release is still inside,
+    /// the replay sees a release with no matching press and reports it. Every
+    /// busy run produced phantom `upWithoutDown`s that way, which is worse
+    /// than useless in a tool whose whole job is to say whether the input
+    /// arrived intact.
+    ///
+    /// Ingest is a dictionary insert or removal, which is within the budget
+    /// `append` documents; violations are appended only when one actually
+    /// occurs, and the tracker caps what it retains.
+    private var tracker = HeldStateTracker()
+
+    /// What has been held and what has gone wrong since the run began —
+    /// independent of how much of the window is still resident.
+    public struct LiveState: Sendable {
+        public var counters: InvariantCounters
+        public var violations: [Violation]
+        public var heldKeys: [UInt16: HeldStateTracker.Hold]
+        public var heldButtons: [PointerButton: HeldStateTracker.Hold]
+    }
+
     public init(capacity: Int = 4096) {
         self.capacity = capacity
         self.storage = Array(repeating: nil, count: capacity)
@@ -39,9 +64,11 @@ public final class ProbeEventRing: @unchecked Sendable {
             dropped &+= 1
             oldestAvailableSeq = evicted.seq + 1
         }
-        storage[writeIndex] = ProbeEvent(seq: seq, machAbsoluteNanos: machAbsoluteNanos,
-                                         payload: payload)
+        let event = ProbeEvent(seq: seq, machAbsoluteNanos: machAbsoluteNanos,
+                               payload: payload)
+        storage[writeIndex] = event
         writeIndex = (writeIndex + 1) % capacity
+        tracker.ingest(event)
         return seq
     }
 
@@ -61,6 +88,18 @@ public final class ProbeEventRing: @unchecked Sendable {
         return (out.reversed(), oldestAvailableSeq, dropped)
     }
 
+    /// Snapshot of the cumulative tracker. Cheap: four small copies.
+    public func liveState() -> LiveState {
+        os_unfair_lock_lock(&lock)
+        defer { os_unfair_lock_unlock(&lock) }
+        var c = tracker.counters
+        c.droppedByRing = dropped
+        return LiveState(counters: c,
+                         violations: tracker.violations,
+                         heldKeys: tracker.heldKeys,
+                         heldButtons: tracker.heldButtons)
+    }
+
     public func reset() {
         os_unfair_lock_lock(&lock)
         defer { os_unfair_lock_unlock(&lock) }
@@ -68,5 +107,6 @@ public final class ProbeEventRing: @unchecked Sendable {
         writeIndex = 0
         oldestAvailableSeq = nextSeq
         dropped = 0
+        tracker = HeldStateTracker()
     }
 }
