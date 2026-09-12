@@ -345,9 +345,40 @@ final class KVMVideoView: NSView {
         return Int8(clamping: Int(scaled.rounded()))
     }
 
+    /// Buttons currently held, tracked from the events themselves.
+    ///
+    /// This used to read `NSEvent.pressedMouseButtons`, which answers "what is
+    /// down *right now*" rather than "what does this event say". Those differ
+    /// whenever the handler runs slightly behind the input, and the press is
+    /// then reported as no-buttons and lost.
+    ///
+    /// Measured end to end against a real host: with N ms between press and
+    /// release, of 12 clicks the target received 0 at 0 ms, 7 at 4 ms, and all
+    /// 12 at 10 ms. A partial failure at the margin is what a race looks like.
+    private var heldButtons: MouseButtons = []
+
+    /// `buttonNumber` is an index; `MouseButtons` is a bitmask over the same
+    /// order (left, right, middle, back, forward), which is also the order
+    /// `NSEvent.pressedMouseButtons` uses.
+    private static func mask(for buttonNumber: Int) -> MouseButtons {
+        guard (0...4).contains(buttonNumber) else { return [] }
+        return MouseButtons(rawValue: 1 << UInt8(buttonNumber))
+    }
+
     private func sendPointer(event: NSEvent, motion: Bool) {
         guard let session else { return }
-        let buttons = MouseButtons(rawValue: UInt8(truncatingIfNeeded: NSEvent.pressedMouseButtons))
+
+        // Update from the event before sending, so a press is reported as a
+        // press no matter how quickly its release follows.
+        switch event.type {
+        case .leftMouseDown, .rightMouseDown, .otherMouseDown:
+            heldButtons.insert(Self.mask(for: event.buttonNumber))
+        case .leftMouseUp, .rightMouseUp, .otherMouseUp:
+            heldButtons.remove(Self.mask(for: event.buttonNumber))
+        default:
+            break
+        }
+        let buttons = heldButtons
 
         if pointerLocked {
             // Pointer-lock engaged: send relative deltas via MouseReport
