@@ -23,10 +23,13 @@ public final class VideoReader {
             switch self {
             case .noMatchingWindow(let n):
                 return """
-                no on-screen window matching "\(n)".
+                no on-screen window belonging to an application named "\(n)".
                   - is Regi running and showing the target?
                   - Screen Recording must be granted to whatever runs this binary
                     (SCShareableContent returns a short list rather than an error)
+                Matching is by owning application, never by window title: a
+                browser tab whose title merely contains the name would otherwise
+                be captured instead.
                 """
             case .captureFailed(let m):   return "window capture failed: \(m)"
             case .noQRFound:
@@ -74,17 +77,40 @@ public final class VideoReader {
         }
     }
 
+    /// Finds the window by **owning application**, never by title.
+    ///
+    /// Matching titles was a real trap: a browser tab called
+    /// "…mcuelenaere/regi" matched `--window=Regi` and the harness captured
+    /// that instead, failing every scenario with "no QR code". Window titles
+    /// are arbitrary text controlled by whatever the user happens to have
+    /// open; the owning application is not.
+    ///
+    /// Among that app's windows the largest wins, which distinguishes a
+    /// session window from the Hosts list.
     public func findWindow() async throws -> SCWindow {
         let content = try await SCShareableContent.excludingDesktopWindows(
             false, onScreenWindowsOnly: true)
         let needle = windowName.lowercased()
-        let match = content.windows.first { w in
-            let title = (w.title ?? "").lowercased()
-            let app = (w.owningApplication?.applicationName ?? "").lowercased()
-            return (title.contains(needle) || app.contains(needle)) && w.frame.width > 200
+
+        let byApp = content.windows.filter { w in
+            guard w.frame.width > 200, w.frame.height > 200 else { return false }
+            return (w.owningApplication?.applicationName ?? "").lowercased() == needle
         }
-        guard let match else { throw ReadError.noMatchingWindow(windowName) }
-        return match
+        if let best = byApp.max(by: { $0.frame.width * $0.frame.height
+                                    < $1.frame.width * $1.frame.height }) {
+            return best
+        }
+
+        // Fall back to a partial application-name match, still never a title.
+        let partial = content.windows.filter { w in
+            guard w.frame.width > 200, w.frame.height > 200 else { return false }
+            return (w.owningApplication?.applicationName ?? "").lowercased().contains(needle)
+        }
+        if let best = partial.max(by: { $0.frame.width * $0.frame.height
+                                      < $1.frame.width * $1.frame.height }) {
+            return best
+        }
+        throw ReadError.noMatchingWindow(windowName)
     }
 
     public func read(from window: SCWindow) async throws -> Capture {

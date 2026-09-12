@@ -20,6 +20,13 @@ regi-e2e — drives Regi and reads the probe's telemetry back over the KVM's vid
       One capture, reporting decode health and the probe's own readiness,
       plus every accessibility identifier and the derived video geometry.
 
+  regi-e2e list
+      The scenario catalogue.
+
+  regi-e2e run [--window=Regi] [--scenario=SUBSTRING] [--tag=TAG]
+      Run scenarios against the rig. Quarantined failures are reported but
+      do not affect the exit code.
+
   regi-e2e pointer-check [--window=Regi] [--tolerance=2]
       Drive the pointer to known framebuffer pixels and verify where the
       target says it landed. End-to-end check on the coordinate path.
@@ -247,6 +254,51 @@ func pointerCheck(window: String, tolerance: Int) async {
     exit(failures == 0 ? 0 : 1)
 }
 
+func runScenarios(window: String, filterID: String, tag: String) async {
+    let reader = VideoReader(windowName: window)
+    guard let regiWindow = try? await reader.findWindow() else {
+        print("FAILED: Regi window not found"); exit(2)
+    }
+    let runner: ScenarioRunner
+    do {
+        runner = try ScenarioRunner(reader: reader, regiWindow: regiWindow,
+                                    driver: try AXDriver())
+    } catch {
+        print("FAILED: \(error)"); exit(2)
+    }
+
+    var chosen = Catalogue.all
+    if !filterID.isEmpty { chosen = chosen.filter { $0.id.contains(filterID) } }
+    if !tag.isEmpty { chosen = chosen.filter { $0.tags.contains { $0.rawValue == tag } } }
+    guard !chosen.isEmpty else { print("no scenarios matched"); exit(2) }
+
+    print(String(format: "geometry: %.2f framebuffer px per screen point\n", runner.geometry.pixelsPerPoint))
+
+    var failed = 0, quarantinedFailures = 0
+    for scenario in chosen {
+        let outcome = await runner.run(scenario)
+        let mark = outcome.passed ? "✓" : (outcome.quarantined ? "~" : "✗")
+        print("\(mark) \(scenario.id.rightPadded(to: 42)) \(scenario.title)")
+
+        if !outcome.passed {
+            if let failure = outcome.failure { print("      error: \(failure)") }
+            for (_, result) in outcome.checks where !result.passed {
+                print("      \(result.detail)")
+            }
+            // The observed slice is what makes a failure diagnosable rather
+            // than merely reported.
+            let shown = outcome.events.suffix(10).map(\.detail).joined(separator: ", ")
+            if !shown.isEmpty { print("      saw: \(shown)") }
+            if outcome.quarantined { quarantinedFailures += 1 } else { failed += 1 }
+        }
+    }
+
+    print("")
+    print("\(chosen.count - failed - quarantinedFailures)/\(chosen.count) passed"
+          + (quarantinedFailures > 0 ? ", \(quarantinedFailures) quarantined failure(s)" : ""))
+    exit(failed == 0 ? 0 : 1)
+}
+
 let mode = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "help"
 switch mode {
 case "watch":
@@ -255,6 +307,15 @@ case "watch":
                 limit: intValue("limit", 0))
 case "doctor":
     await doctor(window: value("window", "Regi"))
+case "run":
+    await runScenarios(window: value("window", "Regi"),
+                       filterID: value("scenario", ""), tag: value("tag", ""))
+case "list":
+    for s in Catalogue.all {
+        let tags = s.tags.map(\.rawValue).sorted().joined(separator: ",")
+        print("\(s.id.rightPadded(to: 42)) [\(tags)]\(s.quarantined ? " (quarantined)" : "")")
+        print("  \(s.title)")
+    }
 case "pointer-check":
     await pointerCheck(window: value("window", "Regi"), tolerance: intValue("tolerance", 2))
 default:
