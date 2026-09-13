@@ -6,7 +6,7 @@
 
 [![Build](https://github.com/mcuelenaere/regi/actions/workflows/build.yml/badge.svg)](https://github.com/mcuelenaere/regi/actions/workflows/build.yml)
 
-A native macOS client for [JetKVM](https://jetkvm.com) and [PiKVM](https://pikvm.org) hardware, plus standalone VNC (RFB 3.8) servers — QEMU/libvirt consoles and Proxmox VMs reached over their VNC port.
+A native macOS client for [JetKVM](https://jetkvm.com) and [PiKVM](https://pikvm.org) hardware, plus any standalone VNC (RFB 3.8) server.
 
 <p align="center">
   <img src="docs/screenshots/hero.jpg" alt="Regi hosts list and a connected session" width="820">
@@ -28,26 +28,23 @@ is in the macOS integration around it.
 ## Features
 
 - **JetKVM, PiKVM and VNC in one app.** Core remote control — video, keyboard,
-  mouse, and scroll — works on every backend. JetKVM additionally exposes
-  ATX power, codec/quality, and clipboard sync; those device-specific
-  controls are hidden when they don't apply (PiKVM parity is on the
-  roadmap).
-- **Standalone VNC (RFB 3.8).** Connect to any plain VNC server — QEMU/libvirt
-  `-vnc`, a Proxmox VM's QEMU VNC port, or PiKVM's `kvmd-vnc`. H.264 (RFB
-  encoding 50, via VideoToolbox — as used by PiKVM and TigerVNC 1.13+) is
-  preferred where offered, then Tight (JPEG via ImageIO), with
-  ZRLE / Zlib / Hextile / CopyRect / Raw fallbacks — all decoded off the main
-  thread, with each `FramebufferUpdate` presented atomically (no tearing or
-  per-strip shimmer);
-  dynamic resolution changes (virtio-gpu / DesktopSize), QEMU extended key
-  events for layout-independent typing, and UTF-8 clipboard sync via the
-  Extended Clipboard pseudo-encoding (falling back to Latin-1 cut text).
-  Power control (shutdown / reset) is offered when the server supports XVP
-  (QEMU started with `power-control=on`).
-  Security types **None**, **VNC Authentication**, and **VeNCrypt** (TLS —
-  as PiKVM's `kvmd-vnc` requires) are supported, with the same self-signed
-  trust prompt as the other backends. Enable "Encrypted (TLS)" when adding a
-  VNC host to connect to a VeNCrypt server.
+  mouse, and scroll — works on every backend. Past that they differ: JetKVM
+  adds ATX power and codec/quality controls, JetKVM and VNC both do clipboard
+  sync and the bandwidth gate, and VNC offers power control when the server
+  negotiates XVP. PiKVM sessions are video and input only. Controls that don't
+  apply to the connected device are hidden rather than greyed out.
+- **Standalone VNC (RFB 3.8).** Connect to any plain VNC server. H.264 (RFB
+  encoding 50, decoded via VideoToolbox) is preferred where offered, then
+  Tight (JPEG via ImageIO), with ZRLE / Zlib / Hextile / CopyRect / Raw
+  fallbacks — all decoded off the main thread, with each `FramebufferUpdate`
+  presented atomically (no tearing or per-strip shimmer). Server-driven
+  resolution changes (`DesktopSize`), QEMU Extended Key Events for
+  layout-independent typing, and UTF-8 clipboard sync via the Extended
+  Clipboard pseudo-encoding (falling back to Latin-1 cut text). Power control
+  (shutdown / reset) appears when the server negotiates XVP. Security types
+  **None**, **VNC Authentication** and **VeNCrypt** (TLS) are supported, with
+  the same self-signed trust prompt as the other backends — tick "Encrypted
+  (TLS)" when adding the host to reach a VeNCrypt server.
 - **Real keyboard capture.** System shortcuts — ⌘Tab, ⌘Space (Spotlight),
   ⌘Q, ⌘H, Mission Control, function keys — route to the remote host via
   `CGEventTap`. Engages automatically when the session window is
@@ -55,7 +52,8 @@ is in the macOS integration around it.
   fighting you.
 - **mDNS / Bonjour discovery.** JetKVM (`_jetkvm._tcp`) and PiKVM
   (`_pikvm._tcp`) devices on your LAN appear in the host list
-  automatically — no URL typing, no scanning.
+  automatically — no URL typing, no scanning. VNC servers don't advertise
+  themselves, so those are added by host and port.
 - **Multi-window, multi-device.** Connect to several devices at once,
   each in its own window with its own video stream, signaling channel,
   and session state.
@@ -102,7 +100,8 @@ device there at least once.
 ## Requirements
 
 - macOS 14 (Sonoma) or later
-- A JetKVM or PiKVM device reachable on the network
+- Something to connect to: a JetKVM or PiKVM device on the network, or any
+  reachable VNC server
 - **JetKVM**: for HTTPS to default-config devices, firmware that
   produces RFC 5280-compliant certificate serial numbers (recent
   firmware does; older firmware still works over plain HTTP, and the
@@ -163,3 +162,5 @@ Apache 2.0 — see [LICENSE](LICENSE).
   documented HTTP / WebSocket / Janus interfaces.
 - [`stasel/WebRTC`](https://github.com/stasel/WebRTC) for the
   WebRTC.framework SwiftPM distribution.
+- [`apple/swift-protobuf`](https://github.com/apple/swift-protobuf) for the
+  clipboard transfer wire format.
