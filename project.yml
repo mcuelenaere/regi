@@ -1,0 +1,226 @@
+# Sole source of truth for Regi.xcodeproj.
+#
+# The .xcodeproj is generated and gitignored — never edit it by hand, and never
+# commit it. Adding a source file means adding the file; the next generate picks
+# it up.
+#
+#   brew install xcodegen && xcodegen generate
+#
+# Two targets live here: Regi (the app) and RegiProbe (the CGEventTap probe that
+# runs on the target machine, previously its own Probe/RegiProbe.xcodeproj).
+#
+# Every build setting below is transcribed from the hand-maintained projects this
+# replaced. Nothing was modernised in the migration — changes to compiler or
+# language settings belong in their own commits, where they are visible.
+
+name: Regi
+
+options:
+  # 2.45.0 fixed `supportedDestinations` presets leaking in when settingPresets
+  # is `none`, which is the mode this spec depends on.
+  minimumXcodeGenVersion: "2.46.0"
+
+  # XcodeGen injects none of its own settings: everything the build sees is
+  # written here. The default (`all`) would silently add COMBINE_HIDPI_IMAGES to
+  # Regi, ASSETCATALOG_COMPILER_APPICON_NAME to RegiProbe, two CLANG_CXX_* keys,
+  # and drop `$(inherited)` from SWIFT_ACTIVE_COMPILATION_CONDITIONS. More to the
+  # point, it would tie this project's compiler flags to whichever XcodeGen
+  # happens to be installed — a future release bumping a CLANG_WARN_* to
+  # YES_ERROR would change the build with no diff in this repo.
+  settingPresets: none
+
+  # Matches the Xcode that last touched the hand-maintained project, so Xcode
+  # does not offer to "update to recommended settings" on a fresh generate.
+  xcodeVersion: "2650"
+  createIntermediateGroups: true     # navigator mirrors the filesystem
+  developmentLanguage: en
+  defaultConfig: Release
+  projectFormat: xcode15_3           # objectVersion 63, compatibilityVersion "Xcode 14.0"
+  localPackagesGroup: Packages
+
+configs:
+  Debug: debug
+  Release: release
+
+packages:
+  KVMKit:
+    path: Packages/KVMKit
+  ProbeKit:
+    path: Packages/ProbeKit
+
+# Shared by both app targets, and identical across Debug and Release — neither
+# of the old projects had per-config target settings.
+settingGroups:
+  macApp:
+    CODE_SIGN_IDENTITY: "-"
+    CODE_SIGN_STYLE: Automatic
+    CURRENT_PROJECT_VERSION: "1"
+    ENABLE_HARDENED_RUNTIME: YES
+    GENERATE_INFOPLIST_FILE: NO      # INFOPLIST_FILE is authoritative; see targets
+    LD_RUNPATH_SEARCH_PATHS:
+      - "$(inherited)"
+      - "@executable_path/../Frameworks"
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    PRODUCT_NAME: "$(TARGET_NAME)"
+    SDKROOT: macosx
+    SWIFT_EMIT_LOC_STRINGS: YES
+    SWIFT_VERSION: "5.0"
+
+settings:
+  base:
+    ALWAYS_SEARCH_USER_PATHS: NO
+    ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS: YES
+    CLANG_ANALYZER_NONNULL: YES
+    CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION: YES_AGGRESSIVE
+    CLANG_ENABLE_MODULES: YES
+    CLANG_ENABLE_OBJC_ARC: YES
+    CLANG_ENABLE_OBJC_WEAK: YES
+    CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING: YES
+    CLANG_WARN_BOOL_CONVERSION: YES
+    CLANG_WARN_COMMA: YES
+    CLANG_WARN_CONSTANT_CONVERSION: YES
+    CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS: YES
+    CLANG_WARN_DIRECT_OBJC_ISA_USAGE: YES_ERROR
+    CLANG_WARN_DOCUMENTATION_COMMENTS: YES
+    CLANG_WARN_EMPTY_BODY: YES
+    CLANG_WARN_ENUM_CONVERSION: YES
+    CLANG_WARN_INFINITE_RECURSION: YES
+    CLANG_WARN_INT_CONVERSION: YES
+    CLANG_WARN_NON_LITERAL_NULL_CONVERSION: YES
+    CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF: YES
+    CLANG_WARN_OBJC_LITERAL_CONVERSION: YES
+    CLANG_WARN_OBJC_ROOT_CLASS: YES_ERROR
+    CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER: YES
+    CLANG_WARN_RANGE_LOOP_ANALYSIS: YES
+    CLANG_WARN_STRICT_PROTOTYPES: YES
+    CLANG_WARN_SUSPICIOUS_MOVE: YES
+    CLANG_WARN_UNGUARDED_AVAILABILITY: YES_AGGRESSIVE
+    CLANG_WARN_UNREACHABLE_CODE: YES
+    CLANG_WARN__DUPLICATE_METHOD_MATCH: YES
+    COPY_PHASE_STRIP: NO
+    ENABLE_STRICT_OBJC_MSGSEND: YES
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    GCC_C_LANGUAGE_STANDARD: gnu17
+    GCC_NO_COMMON_BLOCKS: YES
+    GCC_WARN_64_TO_32_BIT_CONVERSION: YES
+    GCC_WARN_ABOUT_RETURN_TYPE: YES_ERROR
+    GCC_WARN_UNDECLARED_SELECTOR: YES
+    GCC_WARN_UNINITIALIZED_AUTOS: YES_AGGRESSIVE
+    GCC_WARN_UNUSED_FUNCTION: YES
+    GCC_WARN_UNUSED_VARIABLE: YES
+    LOCALIZATION_PREFERS_STRING_CATALOGS: YES
+    MTL_FAST_MATH: YES
+    STRING_CATALOG_GENERATE_SYMBOLS: YES
+    # DEAD_CODE_STRIPPING and DEVELOPMENT_TEAM were project-level in the old
+    # Regi.xcodeproj, but they live on the Regi target here so RegiProbe cannot
+    # inherit them. The probe was a separate project with neither: a team plus
+    # CODE_SIGN_STYLE=Automatic invites Xcode to resolve a real identity for
+    # app.regi.probe instead of signing ad-hoc, and its Accessibility grant is
+    # keyed on the designated requirement — which for ad-hoc is path + cdhash.
+    # Changing the signing identity silently invalidates the grant. Dead-code
+    # stripping would likewise be a real linker change for a target that has
+    # never had it.
+  configs:
+    Debug:
+      DEBUG_INFORMATION_FORMAT: dwarf
+      ENABLE_TESTABILITY: YES
+      GCC_DYNAMIC_NO_PIC: NO
+      GCC_OPTIMIZATION_LEVEL: "0"
+      GCC_PREPROCESSOR_DEFINITIONS:
+        - "DEBUG=1"
+        - "$(inherited)"
+      MTL_ENABLE_DEBUG_INFO: INCLUDE_SOURCE
+      ONLY_ACTIVE_ARCH: YES
+      SWIFT_ACTIVE_COMPILATION_CONDITIONS: "DEBUG $(inherited)"
+      SWIFT_OPTIMIZATION_LEVEL: "-Onone"
+    Release:
+      DEBUG_INFORMATION_FORMAT: "dwarf-with-dsym"
+      ENABLE_NS_ASSERTIONS: NO
+      MTL_ENABLE_DEBUG_INFO: NO
+      SWIFT_COMPILATION_MODE: wholemodule
+      # SWIFT_OPTIMIZATION_LEVEL deliberately unset: Xcode's default is -O,
+      # which is what the old project resolved to.
+
+targets:
+
+  # Declared first so `xcodebuild -list` orders targets as it did before.
+  Regi:
+    type: application
+    platform: macOS
+    sources:
+      - path: App
+        excludes: ["**/.DS_Store"]
+    dependencies:
+      - package: KVMKit
+        product: KVMKit
+    settings:
+      groups: [macApp]
+      base:
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS: NO
+        DEAD_CODE_STRIPPING: YES
+        DEVELOPMENT_TEAM: C45RUW4MTB
+        ENABLE_PREVIEWS: YES
+        # App/Info.plist is hand-written and commented (ATS, the Bonjour service
+        # list, the local-network usage string). Never let XcodeGen's `info:` key
+        # synthesise one over it.
+        INFOPLIST_FILE: App/Info.plist
+        MARKETING_VERSION: "0.1.0"
+        PRODUCT_BUNDLE_IDENTIFIER: app.regi.mac
+
+  RegiProbe:
+    type: application
+    platform: macOS
+    # Scoped to the app directory, not Probe/ — the README lives one level up
+    # and must not be swept into the target.
+    sources:
+      - path: Probe/RegiProbe
+        excludes: ["**/.DS_Store"]
+    dependencies:
+      - package: ProbeKit
+        product: ProbeKit
+    settings:
+      groups: [macApp]
+      base:
+        # No App Sandbox and no entitlements file, on purpose: the sandbox blocks
+        # session event taps outright, and the tap is the probe's only means of
+        # capture.
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        COMBINE_HIDPI_IMAGES: YES
+        INFOPLIST_FILE: Probe/RegiProbe/Info.plist
+        MARKETING_VERSION: "0.1"
+        PRODUCT_BUNDLE_IDENTIFIER: app.regi.probe
+
+# Both schemes are referenced by name from CI and from the install command in
+# Probe/README.md, so the names here are load-bearing. No testables: the package
+# tests run via `swift test`.
+schemes:
+  Regi:
+    build:
+      targets:
+        Regi: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release
+
+  RegiProbe:
+    build:
+      targets:
+        RegiProbe: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release

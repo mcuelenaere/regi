@@ -22,6 +22,16 @@ jobs:
           xcodebuild -version
           swift --version
 
+      # Regi.xcodeproj is generated from project.yml and is not in the repo.
+      # `settingPresets: none` in the spec means no build setting comes from
+      # XcodeGen itself, so an unpinned install can't silently shift compiler
+      # flags; project.yml's minimumXcodeGenVersion guards the lower bound.
+      - name: Generate Xcode project
+        run: |
+          brew install xcodegen
+          xcodegen --version
+          xcodegen generate
+
       # The WebRTC binary target is ~100MB. SwiftPM caches it under
       # the project's DerivedData; key on KVMKit's Package.swift so a
       # pin change invalidates the cache. That manifest is the only
@@ -57,5 +67,24 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             build
 
+      # RegiProbe was never built by CI while it lived in its own project, so it
+      # could break unnoticed. It only depends on ProbeKit — no WebRTC — so this
+      # costs little.
+      - name: Build probe
+        run: |
+          xcodebuild \
+            -project Regi.xcodeproj \
+            -scheme RegiProbe \
+            -configuration Debug \
+            -destination 'platform=macOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
       - name: Test KVMKit
         run: swift test --package-path Packages/KVMKit
+
+      - name: Test ProbeKit
+        run: swift test --package-path Packages/ProbeKit
+
+      - name: Test regi-e2e
+        run: swift test --package-path Tools/regi-e2e
