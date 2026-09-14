@@ -48,10 +48,78 @@ public struct NSPasteboardClipboardSource: ClipboardSource {
                 ClipboardFormatDescriptor(mime: mime, size: UInt64(data.count))
             )
         }
-        let summary = descriptors.map { "\($0.mime)(\($0.size))" }.joined(separator: ", ")
+        // Files are a separate axis from the content forms above: a
+        // representation with a name IS a file, and the peer's file target
+        // takes all of them. Announced by name + size from a `stat` — the
+        // bytes are streamed off disk when the peer pulls.
+        descriptors.append(contentsOf: Self.fileDescriptors(on: pb))
+
+        let summary = descriptors.map { "\($0.fileName ?? $0.mime)(\($0.size))" }.joined(separator: ", ")
         let skippedDesc = skipped.joined(separator: ", ")
         log.debug("[SOURCE] snapshot: token=\(token.value, privacy: .public) raw_types=\(rawTypes.count, privacy: .public) descriptors=[\(summary, privacy: .public)] skipped=[\(skippedDesc, privacy: .public)]")
         return ClipboardSnapshot(token: token, formats: descriptors)
+    }
+
+    public func fileURL(fileName: String, token: ClipboardSnapshotToken) async -> URL? {
+        let pb = NSPasteboard.general
+        let currentCount = pb.changeCount
+        guard currentCount == token.value else {
+            log.debug("[SOURCE] fileURL '\(fileName, privacy: .public)' token=\(token.value, privacy: .public): stale (current changeCount=\(currentCount, privacy: .public))")
+            return nil
+        }
+        // Re-derive from the pasteboard rather than caching a map from the
+        // snapshot: the token already guarantees we're looking at the same
+        // clipboard, and it keeps the source stateless.
+        let url = Self.fileURLs(on: pb).first { $0.lastPathComponent == fileName }
+        log.debug("[SOURCE] fileURL '\(fileName, privacy: .public)': \(url?.path ?? "not found", privacy: .public)")
+        return url
+    }
+
+    /// File URLs currently on the pasteboard, in pasteboard order.
+    static func fileURLs(on pb: NSPasteboard) -> [URL] {
+        let objects = pb.readObjects(
+            forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]
+        ) as? [URL]
+        return objects ?? []
+    }
+
+    /// One descriptor per copied file, skipping anything we can't stream
+    /// as a single named file: a directory, a name the receiver would
+    /// reject, a path that has gone away, or a duplicate name (two files
+    /// with the same name would be indistinguishable to `fileURL`).
+    static func fileDescriptors(on pb: NSPasteboard) -> [ClipboardFormatDescriptor] {
+        var descriptors: [ClipboardFormatDescriptor] = []
+        var seen: Set<String> = []
+        for url in fileURLs(on: pb) {
+            let name = url.lastPathComponent
+            guard (try? ClipboardFileRules.validate(fileName: name)) != nil else {
+                log.debug("[SOURCE] snapshot: file '\(name, privacy: .public)' is not transferable; skipping")
+                continue
+            }
+            guard seen.insert(name).inserted else {
+                log.debug("[SOURCE] snapshot: duplicate file name '\(name, privacy: .public)'; skipping")
+                continue
+            }
+            let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+            guard let attributes,
+                  (attributes[.type] as? FileAttributeType) == .typeRegular
+            else {
+                // Directories need recursive-copy protocol work nobody has
+                // done yet; anything else isn't streamable at all.
+                log.debug("[SOURCE] snapshot: '\(name, privacy: .public)' is not a regular file; skipping")
+                continue
+            }
+            let size = (attributes[.size] as? NSNumber)?.uint64Value ?? 0
+            descriptors.append(
+                ClipboardFormatDescriptor(
+                    mime: ClipboardFileRules.mime(forFileName: name),
+                    size: size,
+                    fileName: name
+                )
+            )
+        }
+        return descriptors
     }
 
     public func fetchData(mime: String, token: ClipboardSnapshotToken) async -> Data? {
@@ -85,8 +153,8 @@ public struct NSPasteboardClipboardSource: ClipboardSource {
     /// `.fileURL` is deliberately absent. A copied file's URL is a path
     /// in *our* filesystem: it means nothing on the host and needlessly
     /// discloses our directory layout. The protocol carries files as
-    /// named representations streamed from disk instead — which Regi
-    /// doesn't implement yet — so a file copy contributes no
+    /// named representations streamed from disk instead (see
+    /// `fileDescriptors(on:)`), so a file copy contributes no
     /// `text/uri-list` at all rather than a broken one.
     public static func wireMime(for type: NSPasteboard.PasteboardType) -> String? {
         switch type {
