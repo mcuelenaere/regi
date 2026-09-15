@@ -19,9 +19,17 @@ public struct ClipboardSnapshotToken: Sendable, Equatable, Hashable {
 public struct ClipboardFormatDescriptor: Sendable {
     public let mime: String
     public let size: UInt64
-    public init(mime: String, size: UInt64) {
+    /// Present ⇒ this descriptor is a *file*, not a content form. Per the
+    /// spec a file is just a named representation; the receiver is
+    /// target-driven and a file target (Finder, Explorer) takes all the
+    /// named ones. A file's bytes are streamed straight off disk, so its
+    /// `size` comes from a `stat`, not from reading it.
+    public let fileName: String?
+
+    public init(mime: String, size: UInt64, fileName: String? = nil) {
         self.mime = mime
         self.size = size
+        self.fileName = fileName
     }
 }
 
@@ -52,6 +60,21 @@ public protocol ClipboardSource: Sendable {
     /// Fetch one format's bytes if `token` is still current.
     /// Returns nil if the clipboard has changed since.
     func fetchData(mime: String, token: ClipboardSnapshotToken) async -> Data?
+
+    /// Locate the file backing a *named* representation, if `token` is
+    /// still current. Returns nil if the clipboard has moved on or the
+    /// name isn't on it.
+    ///
+    /// Deliberately a URL rather than bytes: a file representation is
+    /// streamed off disk a chunk at a time, so a 10 GiB file costs the
+    /// same resident memory as a 10 KiB one. `fetchData` can't express
+    /// that — it would have to materialize the whole thing.
+    func fileURL(fileName: String, token: ClipboardSnapshotToken) async -> URL?
+}
+
+extension ClipboardSource {
+    /// Sources with no files to offer get this for free.
+    public func fileURL(fileName: String, token: ClipboardSnapshotToken) async -> URL? { nil }
 }
 
 public struct ResolvedFormat: Sendable, Equatable {
@@ -63,15 +86,35 @@ public struct ResolvedFormat: Sendable, Equatable {
     }
 }
 
+/// One inbound file representation, already written to disk under a name
+/// we claimed exclusively.
+public struct ResolvedFile: Sendable, Equatable {
+    /// The name the peer asked for. `url.lastPathComponent` differs when
+    /// the name was taken and we disambiguated with a ` (2)` suffix.
+    public let requestedName: String
+    public let url: URL
+    public init(requestedName: String, url: URL) {
+        self.requestedName = requestedName
+        self.url = url
+    }
+}
+
 /// One inbound clipboard event delivered to the App layer with every
 /// representation either inlined or streamed to completion. Drives the
 /// "host clipboard just changed; here's what's on it" UI flow.
 public struct ResolvedOffer: Sendable, Equatable {
     public let clipboardId: UInt32
+    /// Content forms, in the sender's preference order.
     public let formats: [ResolvedFormat]
-    public init(clipboardId: UInt32, formats: [ResolvedFormat]) {
+    /// Files, in offer order, each already committed to disk. The App
+    /// layer puts these on NSPasteboard as file references so the user
+    /// can paste them in Finder.
+    public let files: [ResolvedFile]
+
+    public init(clipboardId: UInt32, formats: [ResolvedFormat], files: [ResolvedFile] = []) {
         self.clipboardId = clipboardId
         self.formats = formats
+        self.files = files
     }
 }
 
@@ -94,10 +137,17 @@ public struct ResolvedOffer: Sendable, Equatable {
 /// offer. Both roles are implemented here: we pull streams for inbound
 /// offers, and serve them for our own outbound offers.
 ///
-/// Not implemented in v1: `FEATURE_DRAG_V1` (we never advertise it, and
-/// reject `DragItem` stream opens), and file representations — one with
-/// `file_name` set is skipped, since NSPasteboard file promises are a
-/// separate mechanism from the content forms we sync.
+/// Files (representations with `file_name` set) ride the same layer.
+/// Inbound they're written to disk under `inboundFileRoot` subject to the
+/// spec's receiving rules — see `ClipboardFileRules` — and surface on
+/// `ResolvedOffer.files`; outbound they're read from disk a chunk at a
+/// time and never materialized whole.
+///
+/// `FEATURE_DRAG_V1` is implemented in the **origin** role only: the
+/// operator picks a drag up in Regi and drops it on the remote surface,
+/// so we send `DragOffer` / `DragEnd` and serve the resulting `DragItem`
+/// pulls. tinypipe never originates a drag (it answers any `DragItem`
+/// open with `UNAVAILABLE`), so there is no proxy role to implement here.
 @MainActor
 public final class ClipboardBridge {
     /// Wire MIMEs we both accept inbound and ship outbound. Narrower
@@ -121,10 +171,28 @@ public final class ClipboardBridge {
     /// headroom for the envelope around it.
     public static let streamChunkBytes: Int = 63 * 1024
 
-    /// Ceiling on a single inbound representation. The streaming layer
+    /// Ceiling on a single inbound *content form*. The streaming layer
     /// has no length prefix we can trust before the fact, so this caps
-    /// what a misbehaving peer can make us buffer.
+    /// what a misbehaving peer can make us buffer. Files aren't bound by
+    /// it — they stream to disk and are bounded by
+    /// `ClipboardFileRules.maxFileBytes` plus a free-space preflight.
     public static let maxInboundRepresentationBytes: Int = 64 * 1024 * 1024
+
+    /// Most files one drag or one clipboard offer may carry. A copy of a
+    /// whole directory tree would arrive as an enormous representation
+    /// list; refuse rather than fan out that far. Matches tinypipe's own
+    /// per-drag limit, and it matters inbound too: every accepted file
+    /// holds an open descriptor for the length of its transfer.
+    public static let maxFilesPerPayload: Int = 256
+
+    /// Most drags we'll track at once. Drags are concurrent rather than
+    /// superseding, and a dropped one lingers until its pulls finish, so
+    /// the map needs a bound. Oldest is evicted.
+    public static let maxTrackedDrags: Int = 8
+
+    /// Temp files older than this are a previous run's debris, not a live
+    /// transfer, so `sweepOrphans` may remove them.
+    static let orphanMinAge: TimeInterval = 60 * 60
 
     /// Compress text payloads at or above this raw size when the peer
     /// advertised deflate. Smaller payloads don't compress meaningfully.
@@ -140,6 +208,20 @@ public final class ClipboardBridge {
     /// the bridge can ship outbound offers. When nil, `sendOffer()` is
     /// a no-op; inbound offers still resolve and reach `inboundOffers`.
     public var source: ClipboardSource?
+
+    /// Where inbound files land. Each offer gets its own subdirectory, so
+    /// two clipboard events carrying `report.pdf` don't have to fight over
+    /// the name. The App layer points this somewhere durable; the default
+    /// keeps the bridge usable (and the tests hermetic) on its own.
+    public var inboundFileRoot: URL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("RegiClipboardFiles", isDirectory: true) {
+        didSet { hasSweptFileRoot = false }
+    }
+
+    /// Distinguishes this bridge's landing directories from a previous
+    /// run's. See `prepareFilesDirectory`.
+    private let sessionTag = UUID().uuidString.prefix(8)
+    private var hasSweptFileRoot = false
 
     /// What the peer's `Hello` told us they can decode. `nil` until the
     /// peer's `Hello` is parsed; sender compression defaults to `.none`
@@ -171,6 +253,7 @@ public final class ClipboardBridge {
     /// Ids for streams *we* open (pulling inbound offers). Per the
     /// spec's two-id-space rule this never collides with the peer's.
     private var nextStreamId: UInt32 = 1
+    private var nextDragId: UInt32 = 1
 
     /// The most recently sent offer — the only one we serve stream
     /// opens against, since a new offer supersedes its predecessor.
@@ -184,6 +267,14 @@ public final class ClipboardBridge {
     private var outboundStreamsInFlight: Set<UInt32> = []
     /// Subset of the above the peer has asked us to abort.
     private var cancelledOutboundStreams: Set<UInt32> = []
+    /// Which drag each in-flight outbound stream is serving, so
+    /// `DragEnd{CANCELLED}` can abort exactly that drag's transfers.
+    private var outboundStreamDrag: [UInt32: UInt32] = [:]
+    /// One task per stream the peer opened on us. Serving runs off the
+    /// inbound-frame path — see `handleStreamOpen`.
+    private var outboundServeTasks: [UInt32: Task<Void, Never>] = [:]
+    /// Drags we originated, by `drag_id`. Concurrent, not superseding.
+    private var outboundDrags: [UInt32: OutboundDrag] = [:]
 
     private struct OutboundOffer {
         let clipboardId: UInt32
@@ -194,6 +285,34 @@ public final class ClipboardBridge {
 
     private struct OutboundRepresentation {
         let mime: String
+        let compression: Compression
+        /// Set ⇒ this representation is a file, served from disk rather
+        /// than from `fetchData`.
+        let fileName: String?
+        /// The `size` we announced. Only meaningful for a file: a
+        /// content form's bytes are re-read whole, but a file's can
+        /// change on disk without the clipboard token noticing.
+        let announcedSize: UInt64
+    }
+
+    /// A drag the operator started locally and dragged onto the remote
+    /// surface. We are the origin: we hold the payload and answer the
+    /// proxy's pulls.
+    private struct OutboundDrag {
+        let dragId: UInt32
+        /// Announced files by `index`. URLs are the user's own files, so
+        /// "keeping the paths alive" is just keeping this entry around.
+        let files: [UInt32: OutboundDragFile]
+        /// nil while the operator is still dragging.
+        var endStatus: DragEnd.Status?
+        /// Indices whose stream has already closed, one way or another.
+        var servedIndices: Set<UInt32> = []
+    }
+
+    private struct OutboundDragFile {
+        let url: URL
+        let name: String
+        let size: UInt64
         let compression: Compression
     }
 
@@ -207,7 +326,10 @@ public final class ClipboardBridge {
         struct Slot {
             let index: UInt32
             let mime: String
+            /// Set ⇒ a file; its landed URL goes in `fileURL`, not `data`.
+            let fileName: String?
             var data: Data?
+            var fileURL: URL?
             var isPending: Bool
         }
 
@@ -215,7 +337,15 @@ public final class ClipboardBridge {
 
         var resolvedFormats: [ResolvedFormat] {
             slots.compactMap { slot in
-                slot.data.map { ResolvedFormat(mime: slot.mime, data: $0) }
+                guard slot.fileName == nil, let data = slot.data else { return nil }
+                return ResolvedFormat(mime: slot.mime, data: data)
+            }
+        }
+
+        var resolvedFiles: [ResolvedFile] {
+            slots.compactMap { slot in
+                guard let name = slot.fileName, let url = slot.fileURL else { return nil }
+                return ResolvedFile(requestedName: name, url: url)
             }
         }
     }
@@ -225,7 +355,14 @@ public final class ClipboardBridge {
         let index: UInt32
         let compression: Compression
         let expectedSize: UInt64
+        /// Content forms accumulate here; files leave it empty.
         var buffer: Data
+        /// Set ⇒ a file. Releasing it unlinks the partial, which is what
+        /// makes every abort path self-cleaning.
+        let file: ClipboardFileWriter?
+        /// Incremental inflater for a compressed file. Content forms
+        /// decompress in one shot once the stream closes.
+        let inflater: RawDeflateStream?
     }
 
     public init(send: @escaping @Sendable (Data) async -> Bool) {
@@ -297,11 +434,15 @@ public final class ClipboardBridge {
     /// outstanding offers. Used both on channel close and on an inbound
     /// Hello (which the spec defines as a full per-connection reset).
     private func resetConnectionState(reason: String) {
-        let counts = "pendingInbound=\(pendingInbound != nil) inboundStreams=\(inboundStreams.count) outboundInFlight=\(outboundStreamsInFlight.count) lastOutbound=\(lastOutboundOffer != nil)"
+        let counts = "pendingInbound=\(pendingInbound != nil) inboundStreams=\(inboundStreams.count) outboundInFlight=\(outboundStreamsInFlight.count) lastOutbound=\(lastOutboundOffer != nil) drags=\(outboundDrags.count)"
         log.info("[BRIDGE] reset (\(reason, privacy: .public)): \(counts, privacy: .public)")
         pendingInbound = nil
+        // Dropping the streams releases their `ClipboardFileWriter`s, which
+        // unlink the partial files — the spec's "clean up on disconnect".
         inboundStreams.removeAll()
         lastOutboundOffer = nil
+        outboundDrags.removeAll()
+        outboundStreamDrag.removeAll()
         // Marking in-flight sends cancelled makes their loops bail at
         // the next chunk boundary instead of streaming into the void.
         cancelledOutboundStreams.formUnion(outboundStreamsInFlight)
@@ -348,12 +489,14 @@ public final class ClipboardBridge {
             await handleStreamCancel(cancel)
 
         case .dragOffer(let d):
-            // We never advertise FEATURE_DRAG_V1, so a conforming peer
-            // won't send these.
-            log.debug("[BRIDGE] inbound: drag offer id=\(d.dragID, privacy: .public) ignored (drag unsupported)")
+            // Regi is always the drag *origin* in this phase: we send
+            // DragOffer, we never receive one. tinypipe doesn't originate
+            // drags either, so a conforming peer won't send these.
+            log.debug("[BRIDGE] inbound: drag offer id=\(d.dragID, privacy: .public) ignored (no proxy role)")
 
         case .dragEnd(let d):
-            log.debug("[BRIDGE] inbound: drag end id=\(d.dragID, privacy: .public) ignored (drag unsupported)")
+            // DragEnd travels client→agent: the operator releases here.
+            log.debug("[BRIDGE] inbound: drag end id=\(d.dragID, privacy: .public) ignored (no proxy role)")
         }
     }
 
@@ -384,7 +527,20 @@ public final class ClipboardBridge {
         var nextIndex: UInt32 = 0
 
         for descriptor in snapshot.formats {
-            guard Self.acceptedMimes.contains(canonicalMime(descriptor.mime)) else {
+            // A file's MIME is informational — it lands as an OS file
+            // reference, not a rendered flavor — so `acceptedMimes` (which
+            // is about what NSPasteboard can map) applies to content forms
+            // only. Its *name* is what has to be acceptable.
+            if let fileName = descriptor.fileName {
+                do {
+                    _ = try ClipboardFileRules.validate(fileName: fileName)
+                } catch {
+                    // Check against the same rules the receiver enforces, so
+                    // we never announce a transfer guaranteed to be refused.
+                    log.error("[BRIDGE] sendOffer[\(clipboardId, privacy: .public)]: file '\(fileName, privacy: .public)' is not transferable: \(String(describing: error), privacy: .public)")
+                    continue
+                }
+            } else if !Self.acceptedMimes.contains(canonicalMime(descriptor.mime)) {
                 log.debug("[BRIDGE] sendOffer[\(clipboardId, privacy: .public)]: drop unaccepted MIME '\(descriptor.mime, privacy: .public)'")
                 continue
             }
@@ -397,6 +553,22 @@ public final class ClipboardBridge {
             rep.mime = descriptor.mime
             rep.size = descriptor.size
             rep.compression = compression
+
+            if let fileName = descriptor.fileName {
+                rep.fileName = fileName
+                // Files always stream: inlining would mean reading the file
+                // during the snapshot, which is exactly what we're avoiding.
+                log.debug("[BRIDGE] sendOffer[\(clipboardId, privacy: .public)]: idx=\(index, privacy: .public) file '\(fileName, privacy: .public)' size=\(descriptor.size, privacy: .public) → stream (compression=\(compression.rawValue, privacy: .public))")
+                representations.append(rep)
+                metadata[index] = OutboundRepresentation(
+                    mime: descriptor.mime,
+                    compression: compression,
+                    fileName: fileName,
+                    announcedSize: descriptor.size
+                )
+                nextIndex += 1
+                continue
+            }
 
             // Inline only when the raw bytes could plausibly fit what's
             // left of the budget. Reading is not free (it copies the
@@ -412,7 +584,7 @@ public final class ClipboardBridge {
                     inlineBudget -= body.count
                     log.debug("[BRIDGE] sendOffer[\(clipboardId, privacy: .public)]: idx=\(index, privacy: .public) '\(descriptor.mime, privacy: .public)' inline raw=\(raw.count, privacy: .public) body=\(body.count, privacy: .public) compression=\(actual.rawValue, privacy: .public)")
                     representations.append(rep)
-                    metadata[index] = OutboundRepresentation(mime: descriptor.mime, compression: actual)
+                    metadata[index] = OutboundRepresentation(mime: descriptor.mime, compression: actual, fileName: nil, announcedSize: 0)
                     nextIndex += 1
                     continue
                 }
@@ -422,7 +594,7 @@ public final class ClipboardBridge {
             // serve them when the peer opens a stream.
             log.debug("[BRIDGE] sendOffer[\(clipboardId, privacy: .public)]: idx=\(index, privacy: .public) '\(descriptor.mime, privacy: .public)' size=\(descriptor.size, privacy: .public) → stream (compression=\(compression.rawValue, privacy: .public))")
             representations.append(rep)
-            metadata[index] = OutboundRepresentation(mime: descriptor.mime, compression: compression)
+            metadata[index] = OutboundRepresentation(mime: descriptor.mime, compression: compression, fileName: nil, announcedSize: 0)
             nextIndex += 1
         }
 
@@ -466,15 +638,49 @@ public final class ClipboardBridge {
 
     // MARK: - Serving streams for our own offers
 
+    /// Start serving a stream the peer opened, in its own task.
+    ///
+    /// Deliberately not inline: the backend's frame pump awaits
+    /// `handleInboundFrame`, so serving an 8 GiB file here would park the
+    /// pump for the whole transfer — nothing else could be decoded,
+    /// including the peer's `StreamCancel` for this very stream (making
+    /// the cancel polls in the serve loops dead code) and the
+    /// `StreamData` of anything we're receiving at the same time.
     private func handleStreamOpen(_ open: StreamOpen) async {
         let streamId = open.streamID
-
-        guard case .clipboardItem(let item) = open.source else {
-            // A DragItem, or a source variant added after this build.
-            log.debug("[BRIDGE] stream_open \(streamId, privacy: .public): unsupported source; closing UNAVAILABLE")
+        guard outboundServeTasks[streamId] == nil else {
+            // Two live streams can't share an id; the opener allocates
+            // them monotonically, so this is a misbehaving peer.
+            log.error("[BRIDGE] stream_open \(streamId, privacy: .public): id already in flight; closing UNAVAILABLE")
             await sendStreamClose(streamId: streamId, status: .streamStatusUnavailable)
             return
         }
+        outboundServeTasks[streamId] = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.outboundServeTasks.removeValue(forKey: streamId) }
+            switch open.source {
+            case .clipboardItem(let item):
+                await self.serveClipboardItem(streamId: streamId, item: item)
+            case .dragItem(let item):
+                await self.serveDragItem(streamId: streamId, item: item)
+            case .none:
+                // A source variant added after this build, or an unset oneof.
+                log.debug("[BRIDGE] stream_open \(streamId, privacy: .public): unsupported source; closing UNAVAILABLE")
+                await self.sendStreamClose(streamId: streamId, status: .streamStatusUnavailable)
+            }
+        }
+    }
+
+    /// Wait for every stream we're currently serving to finish. Tests use
+    /// it to observe a transfer that `handleStreamOpen` deliberately
+    /// pushed off the inbound-frame path.
+    func drainOutboundStreams() async {
+        while let task = outboundServeTasks.values.first {
+            await task.value
+        }
+    }
+
+    private func serveClipboardItem(streamId: UInt32, item: StreamOpen.ClipboardItem) async {
         guard let offer = lastOutboundOffer, offer.clipboardId == item.clipboardID else {
             let known = lastOutboundOffer?.clipboardId.description ?? "nil"
             log.debug("[BRIDGE] stream_open \(streamId, privacy: .public): clipboard_id=\(item.clipboardID, privacy: .public) is not our current offer (=\(known, privacy: .public)); closing UNAVAILABLE")
@@ -491,6 +697,24 @@ public final class ClipboardBridge {
             await sendStreamClose(streamId: streamId, status: .streamStatusError)
             return
         }
+
+        if let fileName = rep.fileName {
+            guard let url = await source.fileURL(fileName: fileName, token: offer.token) else {
+                log.debug("[BRIDGE] stream_open \(streamId, privacy: .public): file '\(fileName, privacy: .public)' gone from the clipboard (token=\(offer.token.value, privacy: .public)); closing UNAVAILABLE")
+                await sendStreamClose(streamId: streamId, status: .streamStatusUnavailable)
+                return
+            }
+            await serveFile(
+                streamId: streamId,
+                url: url,
+                name: fileName,
+                compression: rep.compression,
+                declaredSize: rep.announcedSize,
+                dragId: nil
+            )
+            return
+        }
+
         guard let raw = await source.fetchData(mime: rep.mime, token: offer.token) else {
             log.debug("[BRIDGE] stream_open \(streamId, privacy: .public): source raced (token=\(offer.token.value, privacy: .public)); closing UNAVAILABLE")
             await sendStreamClose(streamId: streamId, status: .streamStatusUnavailable)
@@ -541,9 +765,339 @@ public final class ClipboardBridge {
         await sendStreamClose(streamId: streamId, status: .streamStatusComplete)
     }
 
+    /// Serve one file representation straight off disk.
+    ///
+    /// Never reads the whole file: one `streamChunkBytes` slice at a time,
+    /// pushed through an incremental deflater when the representation
+    /// declared compression. `declaredSize`, when known, is verified
+    /// against what we actually read — a file that changed under us would
+    /// otherwise fail the receiver's completeness check with no
+    /// explanation from our side.
+    private func serveFile(
+        streamId: UInt32,
+        url: URL,
+        name: String,
+        compression: Compression,
+        declaredSize: UInt64?,
+        dragId: UInt32?
+    ) async {
+        let reader: ClipboardFileReader
+        do {
+            reader = try ClipboardFileReader(url: url)
+        } catch {
+            log.error("[BRIDGE] stream \(streamId, privacy: .public): cannot open '\(name, privacy: .public)': \(String(describing: error), privacy: .public); closing NOT_FOUND")
+            await sendStreamClose(streamId: streamId, status: .streamStatusNotFound)
+            if let dragId { noteDragIndexServed(dragId: dragId) }
+            return
+        }
+        defer { reader.close() }
+
+        var deflater: RawDeflateStream?
+        if compression == .deflate {
+            deflater = try? RawDeflateStream(mode: .compress)
+            guard deflater != nil else {
+                log.error("[BRIDGE] stream \(streamId, privacy: .public): deflate init failed; closing ERROR")
+                await sendStreamClose(streamId: streamId, status: .streamStatusError)
+                if let dragId { noteDragIndexServed(dragId: dragId) }
+                return
+            }
+        }
+
+        outboundStreamsInFlight.insert(streamId)
+        if let dragId { outboundStreamDrag[streamId] = dragId }
+        defer {
+            outboundStreamsInFlight.remove(streamId)
+            cancelledOutboundStreams.remove(streamId)
+            outboundStreamDrag.removeValue(forKey: streamId)
+            if let dragId { noteDragIndexServed(dragId: dragId) }
+        }
+        log.debug("[BRIDGE] stream \(streamId, privacy: .public): serving file '\(name, privacy: .public)' compression=\(compression.rawValue, privacy: .public)")
+
+        /// Frames whatever the codec handed back and ships it.
+        enum Emit {
+            /// Keep going.
+            case sent
+            /// Stop and close the stream with this status.
+            case stop(StreamClose.Status)
+            /// The channel is gone; a close would go nowhere either.
+            case channelDead
+        }
+        func emit(_ body: Data) async -> Emit {
+            var offset = 0
+            while offset < body.count {
+                if cancelledOutboundStreams.contains(streamId) { return .stop(.streamStatusCancelled) }
+                let end = min(offset + Self.streamChunkBytes, body.count)
+                do {
+                    let frame = try ClipboardCodec.encodeStreamData(
+                        streamId: streamId,
+                        data: body.subdata(in: offset..<end)
+                    )
+                    guard await sendFrame(frame) else {
+                        log.error("[BRIDGE] stream \(streamId, privacy: .public): sendFrame failed; abandoning")
+                        return .channelDead
+                    }
+                } catch {
+                    log.error("[BRIDGE] stream \(streamId, privacy: .public): encode failed: \(String(describing: error), privacy: .public)")
+                    return .stop(.streamStatusError)
+                }
+                offset = end
+            }
+            return .sent
+        }
+
+        var readTotal: UInt64 = 0
+        while true {
+            if cancelledOutboundStreams.contains(streamId) {
+                await sendStreamClose(streamId: streamId, status: .streamStatusCancelled)
+                return
+            }
+            let slice: Data
+            do {
+                slice = try reader.read(upTo: Self.streamChunkBytes)
+            } catch {
+                log.error("[BRIDGE] stream \(streamId, privacy: .public): read failed at \(readTotal, privacy: .public): \(String(describing: error), privacy: .public)")
+                await sendStreamClose(streamId: streamId, status: .streamStatusIoError)
+                return
+            }
+            if slice.isEmpty { break }
+            readTotal &+= UInt64(slice.count)
+
+            let body: Data
+            if let deflater {
+                do { body = try deflater.push(slice) } catch {
+                    log.error("[BRIDGE] stream \(streamId, privacy: .public): deflate failed: \(String(describing: error), privacy: .public)")
+                    await sendStreamClose(streamId: streamId, status: .streamStatusError)
+                    return
+                }
+            } else {
+                body = slice
+            }
+            switch await emit(body) {
+            case .sent: break
+            case .channelDead: return
+            case .stop(let status):
+                await sendStreamClose(streamId: streamId, status: status)
+                return
+            }
+        }
+
+        if let deflater {
+            do {
+                let tail = try deflater.finish()
+                switch await emit(tail) {
+                case .sent: break
+                case .channelDead: return
+                case .stop(let status):
+                    await sendStreamClose(streamId: streamId, status: status)
+                    return
+                }
+            } catch {
+                log.error("[BRIDGE] stream \(streamId, privacy: .public): deflate finish failed: \(String(describing: error), privacy: .public)")
+                await sendStreamClose(streamId: streamId, status: .streamStatusError)
+                return
+            }
+        }
+
+        if cancelledOutboundStreams.contains(streamId) {
+            await sendStreamClose(streamId: streamId, status: .streamStatusCancelled)
+            return
+        }
+        if let declaredSize, declaredSize != readTotal {
+            // The file changed between the offer's `stat` and this pull. The
+            // receiver would discard it on the length check anyway; saying so
+            // is more useful than a COMPLETE it has to reject.
+            log.error("[BRIDGE] stream \(streamId, privacy: .public): '\(name, privacy: .public)' changed under us (declared \(declaredSize, privacy: .public), read \(readTotal, privacy: .public)); closing IO_ERROR")
+            await sendStreamClose(streamId: streamId, status: .streamStatusIoError)
+            return
+        }
+        log.debug("[BRIDGE] stream \(streamId, privacy: .public): file '\(name, privacy: .public)' COMPLETE (\(readTotal, privacy: .public) bytes)")
+        await sendStreamClose(streamId: streamId, status: .streamStatusComplete)
+    }
+
+    // MARK: - Drag origin (FEATURE_DRAG_V1)
+
+    /// Announce a drag the operator picked up locally and moved onto the
+    /// remote surface. Lazy by design: this moves no bytes: the proxy only
+    /// pulls once `endDrag(_:status:)` reports `DROPPED`.
+    ///
+    /// Returns the `drag_id` to pass back to `endDrag`, or nil when the
+    /// drag can't be announced (not engaged, peer lacks `FEATURE_DRAG_V1`,
+    /// or nothing in `fileURLs` survived the checks).
+    @discardableResult
+    public func beginDrag(fileURLs: [URL]) async -> UInt32? {
+        guard isEngaged else {
+            log.debug("[BRIDGE] beginDrag: not engaged; ignoring")
+            return nil
+        }
+        guard peerSupportsDrag else {
+            log.debug("[BRIDGE] beginDrag: peer did not advertise FEATURE_DRAG_V1; ignoring")
+            return nil
+        }
+        guard !fileURLs.isEmpty else { return nil }
+        if fileURLs.count > Self.maxFilesPerPayload {
+            log.error("[BRIDGE] beginDrag: \(fileURLs.count, privacy: .public) files exceeds the \(Self.maxFilesPerPayload, privacy: .public)-file cap; ignoring")
+            return nil
+        }
+
+        var representations: [Representation] = []
+        var files: [UInt32: OutboundDragFile] = [:]
+        var index: UInt32 = 0
+        for url in fileURLs {
+            let name = url.lastPathComponent
+            do {
+                _ = try ClipboardFileRules.validate(fileName: name)
+            } catch {
+                log.error("[BRIDGE] beginDrag: '\(name, privacy: .public)' is not transferable: \(String(describing: error), privacy: .public)")
+                continue
+            }
+            let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+            guard let attributes, (attributes[.type] as? FileAttributeType) == .typeRegular else {
+                // A directory needs recursive-copy protocol work we haven't
+                // done; anything else we can't stream at all.
+                log.debug("[BRIDGE] beginDrag: skipping non-regular file '\(name, privacy: .public)'")
+                continue
+            }
+            let size = (attributes[.size] as? NSNumber)?.uint64Value ?? 0
+            let mime = ClipboardFileRules.mime(forFileName: name)
+            let compression = chooseCompression(mime: mime, size: size)
+
+            var rep = Representation()
+            rep.index = index
+            rep.fileName = name
+            rep.mime = mime
+            rep.size = size
+            rep.compression = compression
+            representations.append(rep)
+            files[index] = OutboundDragFile(url: url, name: name, size: size, compression: compression)
+            index += 1
+        }
+
+        guard !representations.isEmpty else {
+            log.debug("[BRIDGE] beginDrag: nothing announceable; ignoring")
+            return nil
+        }
+
+        let dragId = nextDragId
+        nextDragId &+= 1
+
+        var offer = DragOffer()
+        offer.dragID = dragId
+        var payload = Payload()
+        payload.representations = representations
+        offer.payload = payload
+
+        do {
+            let frame = try ClipboardCodec.encode(.dragOffer(offer))
+            log.info("[BRIDGE] outbound: drag offer id=\(dragId, privacy: .public) files=\(representations.count, privacy: .public) wire=\(frame.count, privacy: .public)")
+            guard await sendFrame(frame) else {
+                log.error("[BRIDGE] beginDrag[\(dragId, privacy: .public)]: sendFrame returned false")
+                return nil
+            }
+        } catch {
+            log.error("[BRIDGE] beginDrag[\(dragId, privacy: .public)]: encode failed: \(String(describing: error), privacy: .public)")
+            return nil
+        }
+
+        evictOldestDragIfNeeded()
+        outboundDrags[dragId] = OutboundDrag(dragId: dragId, files: files, endStatus: nil)
+        return dragId
+    }
+
+    /// Report the operator's release. `DROPPED` keeps the drag's files
+    /// available so the proxy's `StreamOpen{DragItem}` pulls can be served;
+    /// `CANCELLED` forgets it and aborts anything already in flight.
+    public func endDrag(_ dragId: UInt32, status: DragEnd.Status) async {
+        guard var drag = outboundDrags[dragId] else {
+            log.debug("[BRIDGE] endDrag \(dragId, privacy: .public): unknown drag; ignoring")
+            return
+        }
+        guard drag.endStatus == nil else {
+            log.debug("[BRIDGE] endDrag \(dragId, privacy: .public): already ended; ignoring")
+            return
+        }
+        drag.endStatus = status
+        outboundDrags[dragId] = drag
+
+        var end = DragEnd()
+        end.dragID = dragId
+        end.status = status
+        do {
+            let frame = try ClipboardCodec.encode(.dragEnd(end))
+            log.info("[BRIDGE] outbound: drag end id=\(dragId, privacy: .public) status=\(status.rawValue, privacy: .public)")
+            _ = await sendFrame(frame)
+        } catch {
+            log.error("[BRIDGE] endDrag[\(dragId, privacy: .public)]: encode failed: \(String(describing: error), privacy: .public)")
+        }
+
+        if status != .dragStatusDropped {
+            // Cancelled (Esc, or released over no valid target): no streams
+            // will open, and any already running should stop at their next
+            // chunk boundary.
+            for (streamId, owner) in outboundStreamDrag where owner == dragId {
+                cancelledOutboundStreams.insert(streamId)
+            }
+            outboundDrags.removeValue(forKey: dragId)
+        }
+    }
+
+    private func serveDragItem(streamId: UInt32, item: StreamOpen.DragItem) async {
+        guard let drag = outboundDrags[item.dragID] else {
+            log.debug("[BRIDGE] stream_open \(streamId, privacy: .public): drag \(item.dragID, privacy: .public) is not ours (or already torn down); closing UNAVAILABLE")
+            await sendStreamClose(streamId: streamId, status: .streamStatusUnavailable)
+            return
+        }
+        guard let file = drag.files[item.index] else {
+            log.debug("[BRIDGE] stream_open \(streamId, privacy: .public): drag \(item.dragID, privacy: .public) has no representation at index \(item.index, privacy: .public); closing UNAVAILABLE")
+            await sendStreamClose(streamId: streamId, status: .streamStatusUnavailable)
+            return
+        }
+        // Mark the index claimed up front: a pull that never reaches its
+        // `defer` (channel death) must not strand the drag forever.
+        markDragIndexClaimed(dragId: item.dragID, index: item.index)
+        await serveFile(
+            streamId: streamId,
+            url: file.url,
+            name: file.name,
+            compression: file.compression,
+            declaredSize: file.size,
+            dragId: item.dragID
+        )
+    }
+
+    private func markDragIndexClaimed(dragId: UInt32, index: UInt32) {
+        guard var drag = outboundDrags[dragId] else { return }
+        drag.servedIndices.insert(index)
+        outboundDrags[dragId] = drag
+    }
+
+    /// Forget a dropped drag once every file it announced has been pulled
+    /// *and* nothing is still streaming from it. A target that takes only
+    /// some of the files leaves the rest pending until the channel cycles,
+    /// which `maxTrackedDrags` bounds.
+    private func noteDragIndexServed(dragId: UInt32) {
+        guard let drag = outboundDrags[dragId] else { return }
+        guard drag.endStatus == .dragStatusDropped else { return }
+        guard drag.servedIndices.count >= drag.files.count else { return }
+        // Indices are claimed at open, so with concurrent pulls the last
+        // index can be claimed while an earlier stream is still running.
+        guard !outboundStreamDrag.values.contains(dragId) else { return }
+        log.debug("[BRIDGE] drag \(dragId, privacy: .public): all \(drag.files.count, privacy: .public) file(s) pulled; forgetting")
+        outboundDrags.removeValue(forKey: dragId)
+    }
+
+    private func evictOldestDragIfNeeded() {
+        guard outboundDrags.count >= Self.maxTrackedDrags else { return }
+        guard let oldest = outboundDrags.keys.min() else { return }
+        log.error("[BRIDGE] drag table full (\(Self.maxTrackedDrags, privacy: .public)); evicting drag \(oldest, privacy: .public)")
+        for (streamId, owner) in outboundStreamDrag where owner == oldest {
+            cancelledOutboundStreams.insert(streamId)
+        }
+        outboundDrags.removeValue(forKey: oldest)
+    }
+
     private func handleStreamCancel(_ cancel: StreamCancel) async {
         let streamId = cancel.streamID
-        guard outboundStreamsInFlight.contains(streamId) else {
+        guard outboundStreamsInFlight.contains(streamId) || outboundServeTasks[streamId] != nil else {
             // Already finished (we sent its one StreamClose) or never
             // existed — the spec allows exactly one close per stream, so
             // stay quiet.
@@ -567,21 +1121,127 @@ public final class ClipboardBridge {
 
         var partial = PartialInboundOffer(clipboardId: offer.clipboardID, slots: [])
         var opens: [(streamId: UInt32, index: UInt32)] = []
+        // Materialized lazily: only an offer that actually carries files
+        // needs a directory on disk.
+        var filesDirectory: URL?
+        var acceptedFiles = 0
+        /// `index` is as untrusted as `file_name`. Two representations
+        /// sharing one would make two slots that both resolve to the first
+        /// on close, so the second could never settle and the whole offer
+        /// would hang (holding its file writers open with it).
+        var seenIndices: Set<UInt32> = []
+        /// Running total of what we've agreed to accept, so a 20-file offer
+        /// can't pass 20 independent free-space preflights and then fill
+        /// the volume between them.
+        var reservedBytes: UInt64 = 0
 
         for rep in offer.payload.representations {
-            guard !rep.hasFileName else {
-                log.debug("[BRIDGE] inbound offer \(offer.clipboardID, privacy: .public): skip file representation '\(rep.fileName, privacy: .public)' (files unsupported in v1)")
+            guard seenIndices.insert(rep.index).inserted else {
+                log.error("[BRIDGE] inbound offer \(offer.clipboardID, privacy: .public): duplicate index \(rep.index, privacy: .public); skipping")
                 continue
             }
-            guard Self.acceptedMimes.contains(canonicalMime(rep.mime)) else {
-                log.debug("[BRIDGE] inbound offer \(offer.clipboardID, privacy: .public): drop unaccepted MIME '\(rep.mime, privacy: .public)'")
+            let fileName: String?
+            if rep.hasFileName {
+                // A file is applicable whatever its MIME — tinypipe guesses
+                // it from the extension and will send anything — so
+                // `acceptedMimes` (which is about what NSPasteboard can
+                // render) must not gate it. The *name* is what has to pass.
+                do {
+                    fileName = try ClipboardFileRules.validate(fileName: rep.fileName)
+                } catch {
+                    log.error("[BRIDGE] inbound offer \(offer.clipboardID, privacy: .public): rejecting unsafe file name: \(String(describing: error), privacy: .public)")
+                    continue
+                }
+            } else {
+                guard Self.acceptedMimes.contains(canonicalMime(rep.mime)) else {
+                    log.debug("[BRIDGE] inbound offer \(offer.clipboardID, privacy: .public): drop unaccepted MIME '\(rep.mime, privacy: .public)'")
+                    continue
+                }
+                fileName = nil
+            }
+
+            if let fileName {
+                guard acceptedFiles < Self.maxFilesPerPayload else {
+                    log.error("[BRIDGE] inbound offer \(offer.clipboardID, privacy: .public): over the \(Self.maxFilesPerPayload, privacy: .public)-file cap; ignoring the rest")
+                    continue
+                }
+                acceptedFiles += 1
+                if filesDirectory == nil {
+                    filesDirectory = prepareFilesDirectory(clipboardId: offer.clipboardID)
+                }
+                guard let directory = filesDirectory else { continue }
+                // Creating the writer *is* the preflight: it validates the
+                // name, rejects an implausible size, checks free space, and
+                // claims a temp file. Failing here means we never open the
+                // stream, so the sender isn't left streaming into the void.
+                let writer: ClipboardFileWriter
+                do {
+                    writer = try ClipboardFileWriter(
+                        directory: directory,
+                        rawName: fileName,
+                        declaredSize: rep.size,
+                        alreadyReserved: reservedBytes
+                    )
+                    reservedBytes = reservedBytes.addingReportingOverflow(rep.size).partialValue
+                } catch {
+                    log.error("[BRIDGE] inbound offer \(offer.clipboardID, privacy: .public): cannot accept file '\(fileName, privacy: .public)': \(String(describing: error), privacy: .public)")
+                    continue
+                }
+
+                if rep.hasInline {
+                    // A tiny file may inline, but it still has to reach the
+                    // disk: the clipboard hands out file references, not bytes.
+                    guard let decoded = decompress(rep.inline, using: rep.compression),
+                          let url = commit(writer: writer, bytes: decoded, name: fileName)
+                    else {
+                        log.error("[BRIDGE] inbound offer \(offer.clipboardID, privacy: .public): could not materialize inlined file '\(fileName, privacy: .public)'")
+                        continue
+                    }
+                    partial.slots.append(.init(
+                        index: rep.index, mime: rep.mime, fileName: fileName,
+                        data: nil, fileURL: url, isPending: false
+                    ))
+                    continue
+                }
+
+                var inflater: RawDeflateStream?
+                if rep.compression == .deflate {
+                    inflater = try? RawDeflateStream(mode: .decompress)
+                    guard inflater != nil else {
+                        log.error("[BRIDGE] inbound offer \(offer.clipboardID, privacy: .public): inflate init failed for '\(fileName, privacy: .public)'")
+                        continue
+                    }
+                } else if rep.compression != .none && rep.compression != .unspecified {
+                    log.error("[BRIDGE] inbound offer \(offer.clipboardID, privacy: .public): file '\(fileName, privacy: .public)' uses compression \(rep.compression.rawValue, privacy: .public) we never advertised; skipping")
+                    continue
+                }
+
+                let streamId = nextStreamId
+                nextStreamId &+= 1
+                inboundStreams[streamId] = InboundStream(
+                    clipboardId: offer.clipboardID,
+                    index: rep.index,
+                    compression: rep.compression,
+                    expectedSize: rep.size,
+                    buffer: Data(),
+                    file: writer,
+                    inflater: inflater
+                )
+                partial.slots.append(.init(
+                    index: rep.index, mime: rep.mime, fileName: fileName,
+                    data: nil, fileURL: nil, isPending: true
+                ))
+                opens.append((streamId, rep.index))
                 continue
             }
 
             if rep.hasInline {
                 // `inline` present (even empty) ⇒ apply directly.
                 if let decoded = decompress(rep.inline, using: rep.compression) {
-                    partial.slots.append(.init(index: rep.index, mime: rep.mime, data: decoded, isPending: false))
+                    partial.slots.append(.init(
+                        index: rep.index, mime: rep.mime, fileName: nil,
+                        data: decoded, fileURL: nil, isPending: false
+                    ))
                     log.debug("[BRIDGE] inbound offer \(offer.clipboardID, privacy: .public): idx=\(rep.index, privacy: .public) inline '\(rep.mime, privacy: .public)' wire=\(rep.inline.count, privacy: .public) decoded=\(decoded.count, privacy: .public)")
                 } else {
                     log.error("[BRIDGE] inbound offer \(offer.clipboardID, privacy: .public): failed to decode inline '\(rep.mime, privacy: .public)'")
@@ -601,9 +1261,14 @@ public final class ClipboardBridge {
                 index: rep.index,
                 compression: rep.compression,
                 expectedSize: rep.size,
-                buffer: Data()
+                buffer: Data(),
+                file: nil,
+                inflater: nil
             )
-            partial.slots.append(.init(index: rep.index, mime: rep.mime, data: nil, isPending: true))
+            partial.slots.append(.init(
+                index: rep.index, mime: rep.mime, fileName: nil,
+                data: nil, fileURL: nil, isPending: true
+            ))
             opens.append((streamId, rep.index))
         }
 
@@ -617,15 +1282,85 @@ public final class ClipboardBridge {
 
         for open in opens {
             log.debug("[BRIDGE] inbound offer \(offer.clipboardID, privacy: .public): opening stream \(open.streamId, privacy: .public) for idx=\(open.index, privacy: .public)")
-            await sendStreamOpen(
+            let sent = await sendStreamOpen(
                 streamId: open.streamId,
                 clipboardId: offer.clipboardID,
                 index: open.index
             )
+            guard !sent else { continue }
+            // The peer never learned of the pull, so no StreamData or
+            // StreamClose is coming: resolve the slot now rather than
+            // leave the offer (and this file's writer) pending forever.
+            log.error("[BRIDGE] inbound offer \(offer.clipboardID, privacy: .public): stream_open \(open.streamId, privacy: .public) did not go out; failing idx=\(open.index, privacy: .public)")
+            inboundStreams.removeValue(forKey: open.streamId)
+            failInboundSlot(index: open.index, clipboardId: offer.clipboardID)
         }
 
         // All-inline offers settle immediately.
         settleIfComplete()
+    }
+
+    /// Per-offer landing directory. Each clipboard event gets its own, so
+    /// two events carrying `report.pdf` don't have to disambiguate against
+    /// each other, and a crashed run's debris gets swept on the way in.
+    private func prepareFilesDirectory(clipboardId: UInt32) -> URL? {
+        sweepOrphansOnce()
+        let directory = filesDirectory(forClipboardId: clipboardId)
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        } catch {
+            log.error("[BRIDGE] cannot create \(directory.path, privacy: .public): \(String(describing: error), privacy: .public)")
+            return nil
+        }
+        return directory
+    }
+
+    /// Where one offer's files land.
+    ///
+    /// Keyed by our own session tag as well as the peer's `clipboard_id`:
+    /// those restart at 1 on every reconnect, so without the tag a
+    /// long-lived cache directory would accumulate `report (2).pdf` …
+    /// `report (999).pdf` in one folder and eventually run out of names.
+    func filesDirectory(forClipboardId clipboardId: UInt32) -> URL {
+        inboundFileRoot.appendingPathComponent(
+            "\(sessionTag)-clipboard-\(clipboardId)", isDirectory: true
+        )
+    }
+
+    /// Clear temp files a previous run's hard kill left behind — its
+    /// `ClipboardFileWriter`s never got to unlink them. Walks the whole
+    /// root, since the directory we're about to create is by definition
+    /// empty; done once per bridge, on the first offer that carries a file.
+    private func sweepOrphansOnce() {
+        guard !hasSweptFileRoot else { return }
+        hasSweptFileRoot = true
+        let fm = FileManager.default
+        let children = (try? fm.contentsOfDirectory(
+            at: inboundFileRoot,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsSubdirectoryDescendants]
+        )) ?? []
+        var removed = ClipboardFileRules.sweepOrphans(in: inboundFileRoot, olderThan: Self.orphanMinAge)
+        for child in children {
+            let isDirectory = (try? child.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory
+            guard isDirectory == true else { continue }
+            removed += ClipboardFileRules.sweepOrphans(in: child, olderThan: Self.orphanMinAge)
+        }
+        if removed > 0 {
+            log.info("[BRIDGE] swept \(removed, privacy: .public) orphaned partial file(s) under \(self.inboundFileRoot.path, privacy: .public)")
+        }
+    }
+
+    /// Write an already-decoded body through `writer` and commit it.
+    private func commit(writer: ClipboardFileWriter, bytes: Data, name: String) -> URL? {
+        do {
+            try writer.write(bytes)
+            return try writer.commit()
+        } catch {
+            log.error("[BRIDGE] file '\(name, privacy: .public)': \(String(describing: error), privacy: .public)")
+            writer.discard()
+            return nil
+        }
     }
 
     private func handleStreamData(_ frame: StreamData) {
@@ -633,6 +1368,29 @@ public final class ClipboardBridge {
             log.debug("[BRIDGE] stream_data \(frame.streamID, privacy: .public): unknown/stale stream; dropping \(frame.data.count, privacy: .public)B")
             return
         }
+
+        if let writer = stream.file {
+            // Files never buffer: inflate (if any) and append straight to
+            // the temp file, which enforces the declared size incrementally.
+            do {
+                let body: Data
+                if let inflater = stream.inflater {
+                    body = try inflater.push(frame.data)
+                } else {
+                    body = frame.data
+                }
+                try writer.write(body)
+            } catch {
+                log.error("[BRIDGE] stream_data \(frame.streamID, privacy: .public): file '\(writer.requestedName, privacy: .public)' failed: \(String(describing: error), privacy: .public); cancelling")
+                inboundStreams.removeValue(forKey: frame.streamID)
+                writer.discard()
+                failInboundSlot(index: stream.index, clipboardId: stream.clipboardId)
+                let streamId = frame.streamID
+                Task { @MainActor [weak self] in await self?.sendStreamCancel(streamId: streamId) }
+            }
+            return
+        }
+
         guard stream.buffer.count + frame.data.count <= Self.maxInboundRepresentationBytes else {
             log.error("[BRIDGE] stream_data \(frame.streamID, privacy: .public): exceeds \(Self.maxInboundRepresentationBytes, privacy: .public)B cap; cancelling")
             inboundStreams.removeValue(forKey: frame.streamID)
@@ -652,9 +1410,35 @@ public final class ClipboardBridge {
         }
         guard var partial = pendingInbound, partial.clipboardId == stream.clipboardId else {
             log.debug("[BRIDGE] stream_close \(close.streamID, privacy: .public): offer \(stream.clipboardId, privacy: .public) no longer pending; ignoring")
+            // Releasing `stream` unlinks any partial file it was writing.
             return
         }
         guard let slotIdx = partial.slots.firstIndex(where: { $0.index == stream.index }) else { return }
+
+        if let writer = stream.file {
+            partial.slots[slotIdx].isPending = false
+            defer {
+                pendingInbound = partial
+                settleIfComplete()
+            }
+            guard close.status == .streamStatusComplete else {
+                log.debug("[BRIDGE] stream \(close.streamID, privacy: .public): file '\(writer.requestedName, privacy: .public)' closed status=\(close.status.rawValue, privacy: .public); discarding partial")
+                writer.discard()
+                return
+            }
+            do {
+                // Flush the inflater's tail, then let `commit` do the
+                // length check and the atomic move into place.
+                if let inflater = stream.inflater {
+                    try writer.write(try inflater.finish())
+                }
+                partial.slots[slotIdx].fileURL = try writer.commit()
+            } catch {
+                log.error("[BRIDGE] stream \(close.streamID, privacy: .public): file '\(writer.requestedName, privacy: .public)' not published: \(String(describing: error), privacy: .public)")
+                writer.discard()
+            }
+            return
+        }
 
         switch close.status {
         case .streamStatusComplete:
@@ -698,9 +1482,10 @@ public final class ClipboardBridge {
         guard let partial = pendingInbound, partial.isSettled else { return }
         pendingInbound = nil
         let formats = partial.resolvedFormats
-        log.debug("[BRIDGE] inbound offer \(partial.clipboardId, privacy: .public): settled with \(formats.count, privacy: .public)/\(partial.slots.count, privacy: .public) representation(s); yielding")
+        let files = partial.resolvedFiles
+        log.debug("[BRIDGE] inbound offer \(partial.clipboardId, privacy: .public): settled with \(formats.count, privacy: .public) content form(s) + \(files.count, privacy: .public) file(s) of \(partial.slots.count, privacy: .public) representation(s); yielding")
         inboundOffersContinuation.yield(
-            ResolvedOffer(clipboardId: partial.clipboardId, formats: formats)
+            ResolvedOffer(clipboardId: partial.clipboardId, formats: formats, files: files)
         )
     }
 
@@ -782,6 +1567,12 @@ public final class ClipboardBridge {
         peerHello?.supportedCompressions.contains(.deflate) ?? false
     }
 
+    /// A sender MUST NOT send a feature-gated message the peer's latest
+    /// Hello didn't advertise, so `DragOffer` waits on this.
+    private var peerSupportsDrag: Bool {
+        peerHello?.supportedFeatures.contains(.dragV1) ?? false
+    }
+
     private func isTextMime(_ mime: String) -> Bool {
         let canon = canonicalMime(mime)
         return canon == "text/plain" || canon == "text/html" || canon == "text/uri-list"
@@ -804,25 +1595,28 @@ public final class ClipboardBridge {
             let frame = try ClipboardCodec.encodeHello(
                 userAgent: Self.userAgent,
                 compressions: [.none, .deflate],
-                features: [.clipboardV1]
+                features: [.clipboardV1, .dragV1]
             )
-            log.debug("[BRIDGE] outbound: hello ua='\(Self.userAgent, privacy: .public)' compressions=[none, deflate] features=[clipboardV1] wire=\(frame.count, privacy: .public)")
+            log.debug("[BRIDGE] outbound: hello ua='\(Self.userAgent, privacy: .public)' compressions=[none, deflate] features=[clipboardV1, dragV1] wire=\(frame.count, privacy: .public)")
             _ = await sendFrame(frame)
         } catch {
             log.error("[BRIDGE] sendHello: encode failed: \(String(describing: error), privacy: .public)")
         }
     }
 
-    private func sendStreamOpen(streamId: UInt32, clipboardId: UInt32, index: UInt32) async {
+    /// Returns whether the open actually reached the wire — a pull the
+    /// peer never saw will never be answered.
+    private func sendStreamOpen(streamId: UInt32, clipboardId: UInt32, index: UInt32) async -> Bool {
         do {
             let frame = try ClipboardCodec.encodeClipboardStreamOpen(
                 streamId: streamId,
                 clipboardId: clipboardId,
                 index: index
             )
-            _ = await sendFrame(frame)
+            return await sendFrame(frame)
         } catch {
             log.error("[BRIDGE] sendStreamOpen: encode failed: \(String(describing: error), privacy: .public)")
+            return false
         }
     }
 

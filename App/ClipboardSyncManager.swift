@@ -148,6 +148,7 @@ final class ClipboardSyncManager {
         // Wire our pasteboard source into the bridge so outbound +
         // outbound-request reads find it.
         bridge.source = source
+        bridge.inboundFileRoot = Self.inboundFileRoot
 
         // The monitor resets its own baselines on start, so we don't
         // immediately ship whatever is currently on the pasteboard.
@@ -203,29 +204,63 @@ final class ClipboardSyncManager {
             log.debug("[MANAGER] applyInboundOffer offer=\(offer.clipboardId, privacy: .public): not active; dropping (toggle off?)")
             return
         }
-        guard !offer.formats.isEmpty else {
-            log.debug("[MANAGER] applyInboundOffer offer=\(offer.clipboardId, privacy: .public): no formats to apply")
+        guard !offer.formats.isEmpty || !offer.files.isEmpty else {
+            log.debug("[MANAGER] applyInboundOffer offer=\(offer.clipboardId, privacy: .public): nothing to apply")
+            return
+        }
+
+        // One pasteboard item per content-form set, plus one per file. The
+        // pasteboard is target-driven the same way the wire payload is: a
+        // text field reads the first item's string, Finder scans every item
+        // for a file URL. Written in one `writeObjects` call so the two
+        // kinds land as siblings on a single clipboard generation.
+        var objects: [NSPasteboardWriting] = []
+        var applied: [(mime: String, type: String, size: Int)] = []
+        var dropped: [String] = []
+
+        if !offer.formats.isEmpty {
+            let item = NSPasteboardItem()
+            for format in offer.formats {
+                guard let type = NSPasteboardClipboardSource.macOSType(for: format.mime) else {
+                    dropped.append(format.mime)
+                    continue
+                }
+                item.setData(format.data, forType: type)
+                applied.append((format.mime, type.rawValue, format.data.count))
+            }
+            if !applied.isEmpty { objects.append(item) }
+        }
+        objects.append(contentsOf: offer.files.map { $0.url as NSURL })
+
+        guard !objects.isEmpty else {
+            log.debug("[MANAGER] applyInboundOffer offer=\(offer.clipboardId, privacy: .public): nothing mappable; leaving the pasteboard alone")
             return
         }
 
         let pb = NSPasteboard.general
         let beforeCount = pb.changeCount
         pb.clearContents()
-        var applied: [(mime: String, type: String, size: Int)] = []
-        var dropped: [String] = []
-        for format in offer.formats {
-            guard let type = NSPasteboardClipboardSource.macOSType(for: format.mime) else {
-                dropped.append(format.mime)
-                continue
-            }
-            pb.setData(format.data, forType: type)
-            applied.append((format.mime, type.rawValue, format.data.count))
-        }
+        pb.writeObjects(objects)
         let newCount = pb.changeCount
         monitor.noteApplied(changeCount: newCount)
 
         let appliedDesc = applied.map { "\($0.mime)→\($0.type)(\($0.size))" }.joined(separator: ", ")
+        let filesDesc = offer.files.map(\.url.lastPathComponent).joined(separator: ", ")
         let droppedDesc = dropped.joined(separator: ", ")
-        log.debug("[MANAGER] applyInboundOffer offer=\(offer.clipboardId, privacy: .public): changeCount \(beforeCount, privacy: .public) → \(newCount, privacy: .public) applied=[\(appliedDesc, privacy: .public)] dropped=[\(droppedDesc, privacy: .public)]")
+        log.debug("[MANAGER] applyInboundOffer offer=\(offer.clipboardId, privacy: .public): changeCount \(beforeCount, privacy: .public) → \(newCount, privacy: .public) applied=[\(appliedDesc, privacy: .public)] files=[\(filesDesc, privacy: .public)] dropped=[\(droppedDesc, privacy: .public)]")
     }
+
+    // MARK: - Inbound file storage
+
+    /// Where files pasted from the host land. Caches rather than temp: the
+    /// user pastes the clipboard whenever they get round to it, and a
+    /// reboot clearing `/tmp` underneath them would be a surprise. Nothing
+    /// here is precious — pasting into Finder copies the file out.
+    static let inboundFileRoot: URL = {
+        let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        return base
+            .appendingPathComponent(Bundle.main.bundleIdentifier ?? "app.regi.mac", isDirectory: true)
+            .appendingPathComponent("ClipboardFiles", isDirectory: true)
+    }()
 }
