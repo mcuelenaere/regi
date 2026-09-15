@@ -58,6 +58,9 @@ targets:
     dependencies:
       - package: KVMKit
         product: KVMKit
+      - target: RegiFileProvider
+        embed: true
+        codeSign: true
     settings:
       groups: [macApp]
       base:
@@ -68,6 +71,28 @@ targets:
         DEAD_CODE_STRIPPING: YES
         INFOPLIST_FILE: App/Info.plist
         PRODUCT_BUNDLE_IDENTIFIER: app.regi.mac
+
+  # On-demand materialisation for files pasted from the host. A File
+  # Provider is the only macOS mechanism that streams a file's bytes when
+  # something actually reads it: a promised `public.file-url` on the
+  # pasteboard does not stay promised, because Universal Clipboard
+  # force-resolves that flavour about 100ms after every clipboard change
+  # (pboard logs it under CFPasteboard:remote).
+  RegiFileProvider:
+    type: app-extension
+    platform: macOS
+    sources:
+      - path: FileProvider
+        excludes: ["**/.DS_Store"]
+    settings:
+      groups: [macApp]
+      base:
+        CODE_SIGN_ENTITLEMENTS: FileProvider/RegiFileProvider.entitlements
+        DEVELOPMENT_TEAM: C45RUW4MTB
+        INFOPLIST_FILE: FileProvider/Info.plist
+        MARKETING_VERSION: "0.1.0"
+        PRODUCT_BUNDLE_IDENTIFIER: app.regi.mac.fileprovider
+        SKIP_INSTALL: YES
 
   RegiProbe:
     type: application

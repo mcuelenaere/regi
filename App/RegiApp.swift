@@ -73,6 +73,12 @@ struct KVMSessionWindowID: Hashable, Codable {
 /// `openWindow(id: "hosts")` under the hood whether or not an
 /// instance currently exists.
 private final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // Registering early: the domain has to exist before an inbound
+        // offer can publish a URL into it.
+        Task { await ClipboardFileProviderDomain.register() }
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
     }
