@@ -13,8 +13,8 @@ import Foundation
 /// redeemable while its offer is still the host's current clipboard.
 @objc protocol ClipboardFileHosting {
 
-    /// The files the host clipboard is currently offering, as JSON-encoded
-    /// `[ClipboardFileDescriptor]`.
+    /// What the host clipboard is currently offering, as a JSON-encoded
+    /// `ClipboardFileManifest`.
     ///
     /// JSON rather than `NSSecureCoding` types: it keeps the XPC interface
     /// to primitives, so neither side needs a class allowlist that has to
@@ -48,6 +48,8 @@ struct ClipboardFileDescriptor: Codable, Equatable, Sendable {
     /// Encodes the offer so a stale item can never resolve against a
     /// newer one — see `ClipboardFilePromise.clipboardId`.
     let identifier: String
+    /// The name as it appears in the domain. Usually the name the peer
+    /// sent, but disambiguated when one offer carries repeats.
     let filename: String
     let size: UInt64
 
@@ -55,6 +57,29 @@ struct ClipboardFileDescriptor: Codable, Equatable, Sendable {
         self.identifier = identifier
         self.filename = filename
         self.size = size
+    }
+}
+
+/// One offer's files, and the folder they live in.
+///
+/// The folder is what keeps names from colliding. Files sit inside a
+/// directory named for the offer rather than loose in the domain root,
+/// which matters twice: a superseded offer's items are deleted
+/// asynchronously, so two offers carrying `report.pdf` would otherwise
+/// briefly share a parent; and the offer id stays out of the file's own
+/// name, which is what the user sees after pasting.
+struct ClipboardFileManifest: Codable, Equatable, Sendable {
+    let folderIdentifier: String
+    let folderName: String
+    let files: [ClipboardFileDescriptor]
+
+    static let empty = ClipboardFileManifest(folderIdentifier: "", folderName: "", files: [])
+    var isEmpty: Bool { files.isEmpty }
+
+    init(folderIdentifier: String, folderName: String, files: [ClipboardFileDescriptor]) {
+        self.folderIdentifier = folderIdentifier
+        self.folderName = folderName
+        self.files = files
     }
 }
 

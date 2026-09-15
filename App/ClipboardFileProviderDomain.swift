@@ -44,6 +44,7 @@ enum ClipboardFileProviderDomain {
             try await NSFileProviderManager.add(domain)
             log.info("[FP] domain registered OK: \(identifier.rawValue, privacy: .public)")
             await connectToExtension()
+            startKeepAlive()
             if let manager = NSFileProviderManager(for: domain) {
                 let root = try await manager.getUserVisibleURL(for: .rootContainer)
                 log.info("[FP] user-visible root: \(root.path, privacy: .public)")
@@ -65,6 +66,11 @@ enum ClipboardFileProviderDomain {
     /// restart, which drops both the interruption and the invalidation
     /// handler on us at once.
     private static var isReconnecting = false
+    private static var keepAlive: Task<Void, Never>?
+
+    /// How often to check the extension is still reachable while we have
+    /// files on offer.
+    private static let keepAliveInterval = Duration.seconds(5)
 
     /// Open (or re-open) the channel the extension uses to reach us.
     ///
@@ -122,6 +128,55 @@ enum ClipboardFileProviderDomain {
         }
     }
 
+    /// Make sure the extension can reach us, connecting if it cannot.
+    ///
+    /// Necessary because the system creates and destroys extension
+    /// instances as it pleases, and a fresh instance starts with no
+    /// connection. Nothing tells the app that happened — the extension
+    /// cannot call us to say so, which is the whole problem — so the app
+    /// has to check. Without this, a paste minutes after the copy reaches
+    /// an extension that has been recycled in the meantime and answers
+    /// "Regi is not running".
+    @discardableResult
+    static func ensureConnected() async -> Bool {
+        if await pingSucceeds() { return true }
+        await reconnect()
+        return await pingSucceeds()
+    }
+
+    private static func pingSucceeds() async -> Bool {
+        guard let connection else { return false }
+        return await withCheckedContinuation { continuation in
+            var resumed = false
+            let finish: (Bool) -> Void = { value in
+                guard !resumed else { return }
+                resumed = true
+                continuation.resume(returning: value)
+            }
+            let proxy = connection.remoteObjectProxyWithErrorHandler { _ in
+                finish(false)
+            } as? ClipboardFileProviderPinging
+            guard let proxy else { return finish(false) }
+            proxy.ping { _ in finish(true) }
+        }
+    }
+
+    /// Keep the channel up for as long as there is something to serve. A
+    /// paste can come minutes after the copy, and it has to find us.
+    private static func startKeepAlive() {
+        guard keepAlive == nil else { return }
+        keepAlive = Task { @MainActor in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: keepAliveInterval)
+                guard !ClipboardFilePromiseRegistry.shared.manifest.isEmpty else { continue }
+                if !(await pingSucceeds()) {
+                    log.info("[FP] keepalive: extension unreachable; reconnecting")
+                    await reconnect()
+                }
+            }
+        }
+    }
+
     /// Re-open the channel after the extension has been torn down and
     /// relaunched. Deliberately unhurried — there is nothing to serve until
     /// something asks, and hammering a failing connect helps no one.
@@ -169,23 +224,12 @@ enum ClipboardFileProviderDomain {
         return cachedRoot
     }
 
-    /// Where a file we are offering will appear.
-    ///
-    /// Composed rather than resolved per item on purpose. Asking the
-    /// system for an item's URL only works once it has enumerated that
-    /// item, which happens a moment after we signal — and making the
-    /// pasteboard wait for it is exactly the latency this whole exercise
-    /// set out to remove. Our items live flat in the root under their own
-    /// names, so the path is known in advance; by the time anyone pastes,
-    /// the item is there.
-    static func userVisibleURL(forFileNamed filename: String) async -> URL? {
-        await rootURL()?.appendingPathComponent(filename)
-    }
-
     /// Take the domain away entirely. Called on quit: with Regi gone the
     /// files cannot be fetched, and a domain left in the Finder sidebar
     /// serving nothing but errors is worse than no domain at all.
     static func teardown() async {
+        keepAlive?.cancel()
+        keepAlive = nil
         disconnect()
         await unregister()
     }

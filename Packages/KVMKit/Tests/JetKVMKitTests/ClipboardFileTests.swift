@@ -230,4 +230,51 @@ final class ClipboardFileTests: XCTestCase {
         XCTAssertEqual(ClipboardFileRules.sweepOrphans(in: scratch, olderThan: 60), 1)
         XCTAssertEqual(try contents(of: scratch), ["keep.txt"])
     }
+
+    // MARK: - Disambiguating one offer's names
+
+    func testDisambiguatedLeavesUniqueNamesAlone() {
+        XCTAssertEqual(
+            ClipboardFileRules.disambiguated(fileNames: ["a.txt", "b.txt", "c.txt"]),
+            ["a.txt", "b.txt", "c.txt"]
+        )
+    }
+
+    /// One offer can carry two files of the same name from different
+    /// directories. The first keeps the name; the rest step aside.
+    func testDisambiguatedRenamesRepeats() {
+        XCTAssertEqual(
+            ClipboardFileRules.disambiguated(fileNames: ["report.pdf", "report.pdf", "report.pdf"]),
+            ["report.pdf", "report (2).pdf", "report (3).pdf"]
+        )
+    }
+
+    func testDisambiguatedKeepsCompoundExtensions() {
+        XCTAssertEqual(
+            ClipboardFileRules.disambiguated(fileNames: ["archive.tar.gz", "archive.tar.gz"]),
+            ["archive.tar.gz", "archive.tar (2).gz"]
+        )
+    }
+
+    /// The destination file system is usually case-insensitive, so two
+    /// names differing only in case would still collide once written.
+    func testDisambiguatedIsCaseInsensitive() {
+        XCTAssertEqual(
+            ClipboardFileRules.disambiguated(fileNames: ["README", "readme"]),
+            ["README", "readme (2)"]
+        )
+    }
+
+    /// A name already carrying the suffix we would have picked must not
+    /// push a later file onto the same one.
+    func testDisambiguatedSkipsNamesAlreadyTaken() {
+        XCTAssertEqual(
+            ClipboardFileRules.disambiguated(fileNames: ["a.txt", "a (2).txt", "a.txt"]),
+            ["a.txt", "a (2).txt", "a (3).txt"]
+        )
+    }
+
+    func testDisambiguatedHandlesEmptyList() {
+        XCTAssertEqual(ClipboardFileRules.disambiguated(fileNames: []), [])
+    }
 }

@@ -287,6 +287,11 @@ final class ClipboardSyncManager {
         redeem: @escaping ClipboardFilePromiseRegistry.Redeem
     ) async -> [URL] {
         let changed = ClipboardFilePromiseRegistry.shared.publish(promises, redeem: redeem)
+        if !promises.isEmpty {
+            // The extension may have been recycled since the last offer;
+            // reconnect now rather than discover it when the user pastes.
+            await ClipboardFileProviderDomain.ensureConnected()
+        }
         if changed {
             // Publishing replaces the previous offer's files wholesale, so
             // the system has to be told even when this offer carries none —
@@ -295,15 +300,23 @@ final class ClipboardSyncManager {
         }
         guard !promises.isEmpty else { return [] }
 
-        var urls: [URL] = []
-        for promise in promises {
-            if let url = await ClipboardFileProviderDomain.userVisibleURL(forFileNamed: promise.fileName) {
-                urls.append(url)
-            } else {
-                log.error("[MANAGER] no domain root; leaving '\(promise.fileName, privacy: .public)' off the pasteboard")
-            }
+        guard let root = await ClipboardFileProviderDomain.rootURL() else {
+            log.error("[MANAGER] no File Provider domain root; inbound files cannot be offered")
+            return []
         }
-        return urls
+        // Composed, not resolved per item: `getUserVisibleURL` only answers
+        // once the system has enumerated the item, a moment after we
+        // signal, and making the pasteboard wait for that is the latency
+        // this whole line of work set out to remove. The layout is known
+        // in advance, and is valid by the time anyone pastes.
+        return promises.compactMap { promise in
+            let id = ClipboardFilePromiseRegistry.identifier(for: promise)
+            guard let path = ClipboardFilePromiseRegistry.shared.relativePath(forIdentifier: id) else {
+                log.error("[MANAGER] no path for '\(promise.fileName, privacy: .public)'; leaving it off the pasteboard")
+                return nil
+            }
+            return root.appendingPathComponent(path)
+        }
     }
 
     // MARK: - Inbound file storage

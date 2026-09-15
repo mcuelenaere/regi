@@ -55,14 +55,18 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
             completionHandler(RootItem(), nil)
             return Progress()
         }
-        host.listFiles { descriptors in
-            guard let descriptor = descriptors.first(where: { $0.identifier == identifier.rawValue }) else {
+        host.manifest { manifest in
+            if !manifest.isEmpty, identifier.rawValue == manifest.folderIdentifier {
+                completionHandler(OfferFolderItem(manifest), nil)
+                return
+            }
+            guard let descriptor = manifest.files.first(where: { $0.identifier == identifier.rawValue }) else {
                 // Either Regi is gone or the offer was superseded; both mean
                 // this item no longer exists.
                 completionHandler(nil, NSFileProviderError(.noSuchItem))
                 return
             }
-            completionHandler(ClipboardFileItem(descriptor), nil)
+            completionHandler(ClipboardFileItem(descriptor, parent: manifest.folderIdentifier), nil)
         }
         return Progress()
     }
@@ -77,12 +81,12 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         log.info("[FP] fetchContents for \(itemIdentifier.rawValue, privacy: .public)")
         let progress = Progress(totalUnitCount: 1)
 
-        host.listFiles { [weak self] descriptors in
+        host.manifest { [weak self] manifest in
             guard let self else {
                 completionHandler(nil, nil, NSFileProviderError(.noSuchItem))
                 return
             }
-            guard let descriptor = descriptors.first(where: { $0.identifier == itemIdentifier.rawValue }) else {
+            guard let descriptor = manifest.files.first(where: { $0.identifier == itemIdentifier.rawValue }) else {
                 log.error("[FP] fetchContents: \(itemIdentifier.rawValue, privacy: .public) is not on offer any more")
                 completionHandler(nil, nil, NSFileProviderError(.noSuchItem))
                 return
@@ -97,7 +101,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
                     let staged = try self.stage(handle, named: descriptor.filename)
                     progress.completedUnitCount = 1
                     log.info("[FP] fetchContents: materialised '\(descriptor.filename, privacy: .public)'")
-                    completionHandler(staged, ClipboardFileItem(descriptor), nil)
+                    completionHandler(staged, ClipboardFileItem(descriptor, parent: manifest.folderIdentifier), nil)
                 } catch {
                     log.error("[FP] fetchContents: staging failed: \(String(describing: error), privacy: .public)")
                     completionHandler(nil, nil, error)
@@ -209,17 +213,19 @@ private final class HostConnection: @unchecked Sendable {
 
     /// Empty when Regi isn't running — which is the honest answer, since a
     /// promise is only redeemable while its offer is the live clipboard.
-    func listFiles(_ completion: @escaping ([ClipboardFileDescriptor]) -> Void) {
+    func manifest(_ completion: @escaping (ClipboardFileManifest) -> Void) {
         guard let proxy = proxyOrNil else {
-            log.error("[FP] listFiles: no connection to Regi")
-            return completion([])
+            log.error("[FP] manifest: no connection to Regi")
+            return completion(.empty)
         }
         proxy.listPromisedFiles { data in
-            guard let data, let decoded = try? JSONDecoder().decode([ClipboardFileDescriptor].self, from: data) else {
-                log.error("[FP] listFiles: no/undecodable reply")
-                return completion([])
+            guard let data,
+                  let decoded = try? JSONDecoder().decode(ClipboardFileManifest.self, from: data)
+            else {
+                log.error("[FP] manifest: no/undecodable reply")
+                return completion(.empty)
             }
-            log.info("[FP] listFiles → \(decoded.count, privacy: .public): \(decoded.map(\.filename).joined(separator: ", "), privacy: .public)")
+            log.debug("[FP] manifest → \(decoded.files.count, privacy: .public) in '\(decoded.folderName, privacy: .public)'")
             completion(decoded)
         }
     }
@@ -298,18 +304,48 @@ private final class RootItem: NSObject, NSFileProviderItem {
     }
 }
 
+/// The folder one offer's files live in.
+///
+/// Files sit inside it rather than loose in the domain root so that two
+/// offers carrying the same name cannot collide — a superseded offer's
+/// items are deleted asynchronously, so the two can briefly coexist —
+/// and so the offer id stays out of the file's own name, which is what
+/// the user sees once they paste.
+private final class OfferFolderItem: NSObject, NSFileProviderItem {
+    private let manifest: ClipboardFileManifest
+
+    init(_ manifest: ClipboardFileManifest) {
+        self.manifest = manifest
+        super.init()
+    }
+
+    var itemIdentifier: NSFileProviderItemIdentifier { .init(manifest.folderIdentifier) }
+    var parentItemIdentifier: NSFileProviderItemIdentifier { .rootContainer }
+    var filename: String { manifest.folderName }
+    var contentType: UTType { .folder }
+    var capabilities: NSFileProviderItemCapabilities { [.allowsReading, .allowsContentEnumerating] }
+    var itemVersion: NSFileProviderItemVersion {
+        // Folded over the contents, so replacing an offer's files under an
+        // unchanged folder still reads as a change.
+        let stamp = Data((manifest.folderIdentifier + "|" + manifest.files.map(\.identifier).joined(separator: ",")).utf8)
+        return NSFileProviderItemVersion(contentVersion: stamp, metadataVersion: stamp)
+    }
+}
+
 /// One file the host clipboard is offering. Read-only, and dataless until
 /// something opens it.
 private final class ClipboardFileItem: NSObject, NSFileProviderItem {
     private let descriptor: ClipboardFileDescriptor
+    private let parent: String
 
-    init(_ descriptor: ClipboardFileDescriptor) {
+    init(_ descriptor: ClipboardFileDescriptor, parent: String) {
         self.descriptor = descriptor
+        self.parent = parent
         super.init()
     }
 
     var itemIdentifier: NSFileProviderItemIdentifier { .init(descriptor.identifier) }
-    var parentItemIdentifier: NSFileProviderItemIdentifier { .rootContainer }
+    var parentItemIdentifier: NSFileProviderItemIdentifier { .init(parent) }
     var filename: String { descriptor.filename }
     var documentSize: NSNumber? { NSNumber(value: descriptor.size) }
     var contentType: UTType {
@@ -332,7 +368,7 @@ private final class ClipboardFileItem: NSObject, NSFileProviderItem {
 private final class ClipboardEnumerator: NSObject, NSFileProviderEnumerator {
     private let host: HostConnection
     private let container: NSFileProviderItemIdentifier
-    /// What we last told the system about, so a superseded offer's files
+    /// What we last told the system about, so a superseded offer's items
     /// can be reported as deleted rather than lingering in Finder.
     private var lastReported: Set<String> = []
     private let lock = NSLock()
@@ -345,50 +381,69 @@ private final class ClipboardEnumerator: NSObject, NSFileProviderEnumerator {
 
     func invalidate() {}
 
+    /// What this container holds right now.
+    private func contents(of manifest: ClipboardFileManifest) -> [NSFileProviderItem] {
+        if manifest.isEmpty { return [] }
+        if container == .rootContainer { return [OfferFolderItem(manifest)] }
+        guard container.rawValue == manifest.folderIdentifier else { return [] }
+        return manifest.files.map { ClipboardFileItem($0, parent: manifest.folderIdentifier) }
+    }
+
     func enumerateItems(for observer: NSFileProviderEnumerationObserver, startingAt page: NSFileProviderPage) {
-        log.info("[FP] enumerateItems container=\(self.container.rawValue, privacy: .public)")
-        guard container == .rootContainer else {
-            observer.finishEnumerating(upTo: nil)
-            return
-        }
-        host.listFiles { [weak self] descriptors in
-            self?.remember(descriptors)
-            observer.didEnumerate(descriptors.map(ClipboardFileItem.init))
+        log.debug("[FP] enumerateItems container=\(self.container.rawValue, privacy: .public)")
+        host.manifest { [weak self] manifest in
+            guard let self else { return observer.finishEnumerating(upTo: nil) }
+            let items = self.contents(of: manifest)
+            self.remember(items)
+            observer.didEnumerate(items)
             observer.finishEnumerating(upTo: nil)
         }
     }
 
     func enumerateChanges(for observer: NSFileProviderChangeObserver, from anchor: NSFileProviderSyncAnchor) {
-        log.info("[FP] enumerateChanges container=\(self.container.rawValue, privacy: .public)")
-        host.listFiles { [weak self] descriptors in
-            guard let self else { return }
-            let current = Set(descriptors.map(\.identifier))
-            let gone = self.remember(descriptors).subtracting(current)
+        log.debug("[FP] enumerateChanges container=\(self.container.rawValue, privacy: .public)")
+        host.manifest { [weak self] manifest in
+            guard let self else {
+                return observer.finishEnumeratingChanges(upTo: anchor, moreComing: false)
+            }
+            // The working set is asked about everything, not one container,
+            // so report the whole offer there.
+            let items = self.container == .workingSet
+                ? Self.everything(in: manifest)
+                : self.contents(of: manifest)
+            let current = Set(items.map(\.itemIdentifier.rawValue))
+            let gone = self.remember(items).subtracting(current)
             if !gone.isEmpty {
+                log.debug("[FP] enumerateChanges: \(gone.count, privacy: .public) item(s) gone")
                 observer.didDeleteItems(withIdentifiers: gone.map { NSFileProviderItemIdentifier($0) })
             }
-            observer.didUpdate(descriptors.map(ClipboardFileItem.init))
-            observer.finishEnumeratingChanges(upTo: Self.anchor(for: current), moreComing: false)
+            observer.didUpdate(items)
+            observer.finishEnumeratingChanges(upTo: Self.anchor(for: manifest), moreComing: false)
         }
     }
 
     func currentSyncAnchor(completionHandler: @escaping (NSFileProviderSyncAnchor?) -> Void) {
-        host.listFiles { descriptors in
-            completionHandler(Self.anchor(for: Set(descriptors.map(\.identifier))))
-        }
+        host.manifest { completionHandler(Self.anchor(for: $0)) }
+    }
+
+    private static func everything(in manifest: ClipboardFileManifest) -> [NSFileProviderItem] {
+        guard !manifest.isEmpty else { return [] }
+        return [OfferFolderItem(manifest)]
+            + manifest.files.map { ClipboardFileItem($0, parent: manifest.folderIdentifier) }
     }
 
     /// Anchor derived from the offered set, so the system re-enumerates
     /// exactly when the host clipboard has moved on.
-    private static func anchor(for identifiers: Set<String>) -> NSFileProviderSyncAnchor {
-        NSFileProviderSyncAnchor(Data(identifiers.sorted().joined(separator: ",").utf8))
+    private static func anchor(for manifest: ClipboardFileManifest) -> NSFileProviderSyncAnchor {
+        let stamp = manifest.folderIdentifier + "|" + manifest.files.map(\.identifier).joined(separator: ",")
+        return NSFileProviderSyncAnchor(Data(stamp.utf8))
     }
 
     @discardableResult
-    private func remember(_ descriptors: [ClipboardFileDescriptor]) -> Set<String> {
+    private func remember(_ items: [NSFileProviderItem]) -> Set<String> {
         lock.lock(); defer { lock.unlock() }
         let previous = lastReported
-        lastReported = Set(descriptors.map(\.identifier))
+        lastReported = Set(items.map(\.itemIdentifier.rawValue))
         return previous
     }
 }

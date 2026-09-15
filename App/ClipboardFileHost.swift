@@ -12,9 +12,9 @@ final class ClipboardFileHost: NSObject, ClipboardFileHosting, @unchecked Sendab
 
     func listPromisedFiles(reply: @escaping (Data?) -> Void) {
         Task { @MainActor in
-            let descriptors = ClipboardFilePromiseRegistry.shared.descriptors
-            log.debug("[FP] host: listPromisedFiles → \(descriptors.count, privacy: .public)")
-            reply(try? JSONEncoder().encode(descriptors))
+            let manifest = ClipboardFilePromiseRegistry.shared.manifest
+            log.debug("[FP] host: listPromisedFiles → \(manifest.files.count, privacy: .public) in '\(manifest.folderName, privacy: .public)'")
+            reply(try? JSONEncoder().encode(manifest))
         }
     }
 

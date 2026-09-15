@@ -23,7 +23,10 @@ final class ClipboardFilePromiseRegistry {
     typealias Redeem = @MainActor (ClipboardFilePromise) async throws -> URL
 
     private var promises: [String: ClipboardFilePromise] = [:]
-    private var order: [String] = []
+    /// Offer order, and the name each file shows under.
+    private var entries: [(identifier: String, filename: String, size: UInt64)] = []
+    private var folderIdentifier = ""
+    private var folderName = ""
     private var redeem: Redeem?
 
     /// The File Provider item identifier for a promise. Carries the
@@ -36,39 +39,67 @@ final class ClipboardFilePromiseRegistry {
     /// Replace the current offer's files. Called on every inbound offer,
     /// including ones carrying no files at all — that still clears the
     /// previous offer's, which is the point.
+    ///
     /// Returns whether the offered set actually changed — a text-only
     /// offer following another text-only offer changes nothing, and must
     /// not pay for an XPC round trip before the pasteboard is written.
     @discardableResult
     func publish(_ promises: [ClipboardFilePromise], redeem: @escaping Redeem) -> Bool {
-        let incoming = promises.map(Self.identifier(for:))
-        let changed = incoming != order
+        // One offer may carry two files of the same name, copied from
+        // different directories. On disk `O_EXCL` sorts that out; here the
+        // names are only ever presented, so nothing would.
+        let names = ClipboardFileRules.disambiguated(fileNames: promises.map(\.fileName))
+        let incoming = zip(promises, names).map { promise, name in
+            (identifier: Self.identifier(for: promise), filename: name, size: promise.size)
+        }
+        let changed = incoming.map(\.identifier) != entries.map(\.identifier)
+            || incoming.map(\.filename) != entries.map(\.filename)
+
         self.promises = Dictionary(
             uniqueKeysWithValues: promises.map { (Self.identifier(for: $0), $0) }
         )
-        self.order = incoming
+        self.entries = incoming
+        // Everything in one offer shares a clipboard id; an empty offer
+        // needs no folder at all.
+        if let first = promises.first {
+            folderName = "\(first.clipboardId)"
+            folderIdentifier = "offer-\(first.clipboardId)"
+        } else {
+            folderName = ""
+            folderIdentifier = ""
+        }
         self.redeem = redeem
         if changed {
-            log.info("[FP] registry now offering \(promises.count, privacy: .public) file(s): \(promises.map(\.fileName).joined(separator: ", "), privacy: .public)")
+            log.info("[FP] registry now offering \(promises.count, privacy: .public) file(s) in '\(self.folderName, privacy: .public)': \(names.joined(separator: ", "), privacy: .public)")
         }
         return changed
     }
 
     func clear() {
-        guard !order.isEmpty else { return }
+        guard !entries.isEmpty else { return }
         log.info("[FP] registry cleared")
         promises.removeAll()
-        order.removeAll()
+        entries.removeAll()
+        folderName = ""
+        folderIdentifier = ""
         redeem = nil
     }
 
-    var descriptors: [ClipboardFileDescriptor] {
-        order.compactMap { id in
-            guard let promise = promises[id] else { return nil }
-            return ClipboardFileDescriptor(
-                identifier: id, filename: promise.fileName, size: promise.size
-            )
-        }
+    var manifest: ClipboardFileManifest {
+        guard !entries.isEmpty else { return .empty }
+        return ClipboardFileManifest(
+            folderIdentifier: folderIdentifier,
+            folderName: folderName,
+            files: entries.map {
+                ClipboardFileDescriptor(identifier: $0.identifier, filename: $0.filename, size: $0.size)
+            }
+        )
+    }
+
+    /// Where a file we are offering appears, relative to the domain root.
+    func relativePath(forIdentifier identifier: String) -> String? {
+        guard let entry = entries.first(where: { $0.identifier == identifier }) else { return nil }
+        return "\(folderName)/\(entry.filename)"
     }
 
     /// Pull one file. Throws if the identifier belongs to an offer that
