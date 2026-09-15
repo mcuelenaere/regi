@@ -85,6 +85,39 @@ final class SignalingMessageTests: XCTestCase {
         XCTAssertFalse(DeviceMetadata(deviceVersion: "0.5.x").firmwareIsAtLeast("0.5.9"))
     }
 
+    func testFirmwareIsAtLeastIgnoresDevChannelSuffix() {
+        // The shape every dev-channel device reports: the Makefile's
+        // VERSION_DEV is `<VERSION>-dev<UTC timestamp>`. Before the
+        // suffix was stripped this failed to parse and silently put
+        // dev firmware on the JSON-RPC wheel path.
+        let m = DeviceMetadata(deviceVersion: "0.5.9-dev202609150904")
+        XCTAssertTrue(m.firmwareIsAtLeast("0.5.9"))
+        XCTAssertTrue(DeviceMetadata(deviceVersion: "v0.5.9-dev202609150904").firmwareIsAtLeast("0.5.9"))
+        XCTAssertTrue(DeviceMetadata(deviceVersion: "0.5.9-dev").firmwareIsAtLeast("0.5.9"))
+    }
+
+    func testFirmwareIsAtLeastComparesNumericCoreOfSuffixedVersions() {
+        // A suffix must not promote a version that's genuinely older…
+        XCTAssertFalse(DeviceMetadata(deviceVersion: "0.5.8-dev202609150904").firmwareIsAtLeast("0.5.9"))
+        // …nor demote one that's newer.
+        XCTAssertTrue(DeviceMetadata(deviceVersion: "0.6.0-dev202609150904").firmwareIsAtLeast("0.5.9"))
+        XCTAssertTrue(DeviceMetadata(deviceVersion: "1.0.0-rc1").firmwareIsAtLeast("0.5.9"))
+    }
+
+    func testFirmwareIsAtLeastIgnoresBuildMetadataSuffix() {
+        XCTAssertTrue(DeviceMetadata(deviceVersion: "0.5.9+build7").firmwareIsAtLeast("0.5.9"))
+        // `ota.go`'s compiled-in default when the Makefile didn't stamp
+        // a version. Its numeric core is real and genuinely old, so it
+        // must still fail the gate.
+        XCTAssertFalse(DeviceMetadata(deviceVersion: "0.1.0+dev").firmwareIsAtLeast("0.5.9"))
+    }
+
+    func testFirmwareIsAtLeastStillFailsClosedOnSuffixOnlyVersion() {
+        // Nothing numeric left after the cut — stay off.
+        XCTAssertFalse(DeviceMetadata(deviceVersion: "-dev202609150904").firmwareIsAtLeast("0.5.9"))
+        XCTAssertFalse(DeviceMetadata(deviceVersion: "v-dev").firmwareIsAtLeast("0.5.9"))
+    }
+
     // MARK: - offer
 
     func testEncodeOfferWrapsSdpInSdField() throws {

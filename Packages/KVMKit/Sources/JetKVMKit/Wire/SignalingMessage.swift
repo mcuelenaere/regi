@@ -58,7 +58,23 @@ public struct DeviceMetadata: Codable, Sendable, Equatable {
     }
 
     private static func parseVersion(_ s: String) -> [Int]? {
-        let stripped = s.hasPrefix("v") ? String(s.dropFirst()) : s
+        var stripped = s.hasPrefix("v") ? String(s.dropFirst()) : s
+        // Drop any pre-release / build-metadata suffix before parsing.
+        // JetKVM's dev channel stamps `<VERSION>-dev<timestamp>` (the
+        // Makefile's `VERSION_DEV`), which `web.go` sends verbatim as
+        // `deviceVersion`. Without this the last component fails Int
+        // parsing, the whole parse returns nil, and the fail-closed
+        // branch below puts every dev-channel device on the fallback
+        // path for features its firmware actually has.
+        //
+        // This deliberately departs from SemVer ordering, where
+        // `0.5.9-dev` sorts *below* `0.5.9`. In JetKVM's scheme the
+        // suffix marks a build *of* the 0.5.9 line rather than a
+        // pre-release heading toward it, so for feature gating it
+        // should count as 0.5.9.
+        if let cut = stripped.firstIndex(where: { $0 == "-" || $0 == "+" }) {
+            stripped = String(stripped[..<cut])
+        }
         guard !stripped.isEmpty else { return nil }
         var result: [Int] = []
         for part in stripped.split(separator: ".") {
