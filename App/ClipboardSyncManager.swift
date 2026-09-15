@@ -49,18 +49,6 @@ final class ClipboardSyncManager {
     private var inboundTask: Task<Void, Never>?
     private var inboundTaskBridgeID: ObjectIdentifier?
 
-    /// Backs the `NSFilePromiseProvider`s we put on the pasteboard for
-    /// inbound files. One per manager; the providers hold it alive
-    /// themselves (see `ClipboardFilePromiseContext`) so a promise stays
-    /// redeemable after the session window closes — it just fails
-    /// cleanly once the bridge is gone.
-    private lazy var filePromises = ClipboardFilePromiseProvider { [weak self] promise in
-        guard let bridge = await self?.session.clipboardBridge else {
-            throw ClipboardPromiseError.superseded
-        }
-        return try await bridge.fetchPromisedFile(promise)
-    }
-
     init(session: Session, initialEnabled: Bool) {
         self.session = session
         self.enabled = initialEnabled
@@ -228,12 +216,12 @@ final class ClipboardSyncManager {
         // so the two kinds land as siblings on a single clipboard
         // generation.
         //
-        // The files are promises rather than URLs on purpose. Pulling one
-        // takes as long as it takes — three seconds for 12 MB on real
-        // hardware — and until the pasteboard is written the user still
-        // has the *previous* clipboard, with nothing to say a transfer is
-        // in flight. Announcing costs one frame; the bytes move only if
-        // something actually asks for the file.
+        // Each file's `public.file-url` is promised rather than present.
+        // Pulling one takes as long as it takes — three seconds for
+        // 12 MB on real hardware — and until the pasteboard is written
+        // the user still has the *previous* clipboard, with nothing to
+        // say a transfer is in flight. Declaring the type costs nothing;
+        // the bytes move only if something actually pastes.
         var objects: [NSPasteboardWriting] = []
         var applied: [(mime: String, type: String, size: Int)] = []
         var dropped: [String] = []
@@ -250,7 +238,14 @@ final class ClipboardSyncManager {
             }
             if !applied.isEmpty { objects.append(item) }
         }
-        objects.append(contentsOf: offer.files.map { filePromises.makeProvider(for: $0) })
+        objects.append(contentsOf: offer.files.map { promise in
+            ClipboardFilePasteProvider.makeItem(for: promise) { [weak self] promise in
+                guard let bridge = self?.session.clipboardBridge else {
+                    throw ClipboardPromiseError.superseded
+                }
+                return try await bridge.fetchPromisedFile(promise)
+            }
+        })
 
         guard !objects.isEmpty else {
             log.debug("[MANAGER] applyInboundOffer offer=\(offer.clipboardId, privacy: .public): nothing mappable; leaving the pasteboard alone")
