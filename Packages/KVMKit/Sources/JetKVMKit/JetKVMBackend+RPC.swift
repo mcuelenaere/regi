@@ -40,16 +40,25 @@ extension JetKVMBackend {
     //
     // Lets the client gate WebRTC RTP traffic to keepalive levels
     // without renegotiating the session, e.g. when the KVM window
-    // is occluded or minimized. The server pauses encoder feed and
-    // forces an IDR on resume so the decoder never sees half-dependent
-    // frames. Both calls are idempotent server-side.
-
-    public func pauseVideoRPC() async throws {
-        try await rpcCallVoid(method: "pauseVideo")
-    }
-
-    public func resumeVideoRPC() async throws {
-        try await rpcCallVoid(method: "resumeVideo")
+    // is occluded or minimized. Paused means the device's encoder is
+    // stopped outright (`VideoStop`); resuming restarts it, so the
+    // stream comes back on a fresh keyframe. The data channels stay
+    // open throughout, so input keeps working through a pause.
+    //
+    // The pause is *owned by the session that set it*: the firmware
+    // records us in `videoPausedBy` and ignores a resume from anyone
+    // else, and a session connecting while a pause is held does not
+    // get video. Our disconnect releases it, so we never need to
+    // unwind the pause on teardown. Repeat calls with the same value
+    // are harmless.
+    //
+    // Named for the firmware method, which is a single setter rather
+    // than the `pauseVideo` / `resumeVideo` pair proposed in
+    // jetkvm/kvm#1455 — that PR was superseded and never merged, so
+    // those two methods exist in no released firmware.
+    public func setVideoStreamPausedRPC(_ paused: Bool) async throws {
+        struct Params: Encodable, Sendable { let paused: Bool }
+        try await rpcCallVoid(method: "setVideoStreamPaused", params: Params(paused: paused))
     }
 
     // MARK: - Scroll wheel
