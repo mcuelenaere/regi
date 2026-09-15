@@ -12,8 +12,13 @@ final class ClipboardBridgeTests: XCTestCase {
     /// Records every frame the bridge tries to send.
     final class CapturingSink {
         var frames: [Data] = []
+        /// Runs on the actor right after a frame is captured but before
+        /// the send "completes", so a test can interleave peer traffic at
+        /// an exact point in a suspension the bridge is sitting in.
+        var onSend: ((Int) async -> Void)?
         func send(_ data: Data) async -> Bool {
             frames.append(data)
+            await onSend?(frames.count - 1)
             // A real send suspends (the data channel's write is async), and
             // the bridge's cancel handling depends on that: a serve loop
             // that never yields can't observe a StreamCancel that arrives
@@ -211,6 +216,57 @@ final class ClipboardBridgeTests: XCTestCase {
         await bridge.handleInboundFrame(
             try ClipboardCodec.encodeStreamClose(streamId: streamId, status: status)
         )
+    }
+
+    /// Every stream id the bridge has opened so far, in order.
+    private func streamOpenIds(_ sink: CapturingSink) throws -> [UInt32] {
+        try sink.messages().compactMap { message -> UInt32? in
+            if case .streamOpen(let open) = message { return open.streamID }
+            return nil
+        }
+    }
+
+    /// Redeem a file promise the way AppKit does — on its own task — and
+    /// return once the resulting `StreamOpen` is on the wire, which is
+    /// the point from which the test can play the peer.
+    ///
+    /// The task is still running: feed it with `feedStream`, then await
+    /// `task.value` for the landed URL (or the error).
+    private func beginPull(
+        _ bridge: ClipboardBridge,
+        _ promise: ClipboardFilePromise,
+        sink: CapturingSink
+    ) async throws -> (task: Task<URL, Error>, streamId: UInt32) {
+        let before = try streamOpenIds(sink).count
+        let task = Task { try await bridge.fetchPromisedFile(promise) }
+        for _ in 0..<200 {
+            await Task.yield()
+            let ids = try streamOpenIds(sink)
+            if ids.count > before { return (task, ids[before]) }
+        }
+        task.cancel()
+        throw XCTSkip("promise '\(promise.fileName)' never opened a stream")
+    }
+
+    /// Redeem a promise and play the peer answering it in full.
+    @discardableResult
+    private func pull(
+        _ bridge: ClipboardBridge,
+        _ promise: ClipboardFilePromise,
+        sink: CapturingSink,
+        body: Data,
+        chunk: Int = 4096,
+        status: StreamClose.Status = .streamStatusComplete
+    ) async throws -> Result<URL, Error> {
+        let (task, streamId) = try await beginPull(bridge, promise, sink: sink)
+        try await feedStream(bridge, streamId: streamId, body: body, chunk: chunk, status: status)
+        return await task.result
+    }
+
+    /// The `ClipboardPromiseError` a failed redemption produced.
+    private func promiseError(_ result: Result<URL, Error>) -> ClipboardPromiseError? {
+        guard case .failure(let error) = result else { return nil }
+        return error as? ClipboardPromiseError
     }
 
     /// The stream id the bridge allocated for the single pull it opened.
@@ -414,12 +470,17 @@ final class ClipboardBridgeTests: XCTestCase {
         let resolved = await task.value
         XCTAssertEqual(resolved.formats.map(\.mime), ["text/plain"])
         XCTAssertEqual(resolved.formats.first?.data, Data("content".utf8))
-        XCTAssertEqual(resolved.files.map(\.requestedName), ["note.txt"])
-        XCTAssertEqual(
-            try resolved.files.first.map { try Data(contentsOf: $0.url) },
-            Data("in a file".utf8)
+        XCTAssertEqual(resolved.files.map(\.fileName), ["note.txt"])
+        // The content form is resolved; the file is only promised, and
+        // an inlined one hasn't even touched the disk yet.
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: filesDirectory(bridge, clipboardId: 4).path)
         )
-        // Both rode inline, so nothing had to be pulled.
+
+        let promise = try XCTUnwrap(resolved.files.first)
+        let url = try await bridge.fetchPromisedFile(promise)
+        XCTAssertEqual(try Data(contentsOf: url), Data("in a file".utf8))
+        // Both rode inline, so nothing had to be pulled off the wire.
         XCTAssertEqual(sink.frames.count, 0)
     }
 
@@ -987,7 +1048,37 @@ final class ClipboardBridgeTests: XCTestCase {
 
     // MARK: - Inbound: files
 
-    func testInboundStreamedFileLandsOnDisk() async throws {
+    /// The regression this whole design exists for: an offer carrying a
+    /// file settles — and so the App layer writes the pasteboard —
+    /// without a single byte of the file moving. Before, a 12 MB file
+    /// held the pasteboard on the *previous* clipboard for three seconds.
+    func testFileOfferSettlesImmediatelyWithoutPulling() async throws {
+        let sink = CapturingSink()
+        let bridge = makeBridge(sink: sink)
+        let scratch = try makeScratchDirectory()
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        bridge.inboundFileRoot = scratch
+        let task = firstResolvedOffer(bridge)
+
+        await bridge.handleInboundFrame(
+            try makeOffer(clipboardId: 1, [
+                streamedFileRep(index: 0, fileName: "huge.bin", size: 12_400_000),
+            ])
+        )
+
+        let resolved = await task.value
+        XCTAssertEqual(resolved.formats.count, 0)
+        XCTAssertEqual(resolved.files.map(\.fileName), ["huge.bin"])
+        XCTAssertEqual(resolved.files.first?.size, 12_400_000)
+        XCTAssertEqual(resolved.files.first?.clipboardId, 1)
+        XCTAssertEqual(sink.frames.count, 0, "announcing a file must not open a stream")
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: filesDirectory(bridge, clipboardId: 1).path),
+            "nor touch the disk"
+        )
+    }
+
+    func testRedeemedPromiseLandsOnDisk() async throws {
         let sink = CapturingSink()
         let bridge = makeBridge(sink: sink)
         let scratch = try makeScratchDirectory()
@@ -1001,13 +1092,10 @@ final class ClipboardBridgeTests: XCTestCase {
                 streamedFileRep(index: 0, fileName: "payload.bin", size: UInt64(body.count)),
             ])
         )
-        let streamId = try soleStreamOpenId(sink)
-        try await feedStream(bridge, streamId: streamId, body: body)
-
         let resolved = await task.value
-        XCTAssertEqual(resolved.formats.count, 0)
-        XCTAssertEqual(resolved.files.map(\.requestedName), ["payload.bin"])
-        let url = try XCTUnwrap(resolved.files.first?.url)
+        let promise = try XCTUnwrap(resolved.files.first)
+
+        let url = try await pull(bridge, promise, sink: sink, body: body).get()
         XCTAssertEqual(url.lastPathComponent, "payload.bin")
         XCTAssertEqual(try Data(contentsOf: url), body)
         // The temp file is gone; only the committed name remains.
@@ -1017,7 +1105,62 @@ final class ClipboardBridgeTests: XCTestCase {
         )
     }
 
-    func testInboundDeflatedFileIsInflatedToDisk() async throws {
+    /// Redeeming twice — two paste destinations, or a second paste of the
+    /// same clipboard — reuses the file instead of pulling it again.
+    func testSecondRedemptionReusesTheLandedFile() async throws {
+        let sink = CapturingSink()
+        let bridge = makeBridge(sink: sink)
+        let scratch = try makeScratchDirectory()
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        bridge.inboundFileRoot = scratch
+        let task = firstResolvedOffer(bridge)
+
+        let body = Data("once is enough".utf8)
+        await bridge.handleInboundFrame(
+            try makeOffer(clipboardId: 2, [
+                streamedFileRep(index: 0, fileName: "once.txt", size: UInt64(body.count)),
+            ])
+        )
+        let resolved = await task.value
+        let promise = try XCTUnwrap(resolved.files.first)
+
+        let first = try await pull(bridge, promise, sink: sink, body: body).get()
+        let second = try await bridge.fetchPromisedFile(promise)
+        XCTAssertEqual(first, second)
+        XCTAssertEqual(try streamOpenIds(sink).count, 1, "one pull, not two")
+    }
+
+    /// AppKit asks for one promise once per destination, concurrently.
+    /// Both callers ride the same transfer.
+    func testConcurrentRedemptionsShareOnePull() async throws {
+        let sink = CapturingSink()
+        let bridge = makeBridge(sink: sink)
+        let scratch = try makeScratchDirectory()
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        bridge.inboundFileRoot = scratch
+        let task = firstResolvedOffer(bridge)
+
+        let body = Self.incompressibleBytes(9_000, seed: 21)
+        await bridge.handleInboundFrame(
+            try makeOffer(clipboardId: 3, [
+                streamedFileRep(index: 0, fileName: "shared.bin", size: UInt64(body.count)),
+            ])
+        )
+        let resolved = await task.value
+        let promise = try XCTUnwrap(resolved.files.first)
+
+        let (first, streamId) = try await beginPull(bridge, promise, sink: sink)
+        let second = Task { try await bridge.fetchPromisedFile(promise) }
+        await Task.yield()
+        try await feedStream(bridge, streamId: streamId, body: body)
+
+        let firstURL = try await first.value
+        let secondURL = try await second.value
+        XCTAssertEqual(firstURL, secondURL)
+        XCTAssertEqual(try streamOpenIds(sink).count, 1)
+    }
+
+    func testRedeemedDeflatedFileIsInflatedToDisk() async throws {
         let sink = CapturingSink()
         let bridge = makeBridge(sink: sink)
         let scratch = try makeScratchDirectory()
@@ -1028,18 +1171,17 @@ final class ClipboardBridgeTests: XCTestCase {
         let raw = Data(String(repeating: "log line\n", count: 5_000).utf8)
         let wire = try RawDeflate.compress(raw)
         await bridge.handleInboundFrame(
-            try makeOffer(clipboardId: 2, [
+            try makeOffer(clipboardId: 4, [
                 streamedFileRep(
                     index: 0, fileName: "app.log", size: UInt64(raw.count), compression: .deflate
                 ),
             ])
         )
-        let streamId = try soleStreamOpenId(sink)
-        // Frame boundaries that have nothing to do with the deflate blocks.
-        try await feedStream(bridge, streamId: streamId, body: wire, chunk: 997)
-
         let resolved = await task.value
-        let url = try XCTUnwrap(resolved.files.first?.url)
+        let promise = try XCTUnwrap(resolved.files.first)
+
+        // Frame boundaries that have nothing to do with the deflate blocks.
+        let url = try await pull(bridge, promise, sink: sink, body: wire, chunk: 997).get()
         XCTAssertEqual(try Data(contentsOf: url), raw)
     }
 
@@ -1057,15 +1199,16 @@ final class ClipboardBridgeTests: XCTestCase {
         XCTAssertFalse(ClipboardBridge.acceptedMimes.contains("application/pdf"))
         var rep = inlineRep(index: 0, mime: "application/pdf", body: Data("%PDF-1.7".utf8))
         rep.fileName = "paper.pdf"
-        await bridge.handleInboundFrame(try makeOffer(clipboardId: 3, [rep]))
+        await bridge.handleInboundFrame(try makeOffer(clipboardId: 5, [rep]))
 
         let resolved = await task.value
-        XCTAssertEqual(resolved.files.map(\.requestedName), ["paper.pdf"])
+        XCTAssertEqual(resolved.files.map(\.fileName), ["paper.pdf"])
+        XCTAssertEqual(resolved.files.first?.mime, "application/pdf")
     }
 
-    /// Reject, don't sanitize — and don't open a stream for something we
-    /// were never going to be able to write.
-    func testInboundUnsafeFileNameIsRejectedWithoutPulling() async throws {
+    /// Reject, don't sanitize — and never publish a promise we were never
+    /// going to be able to redeem.
+    func testInboundUnsafeFileNameIsNeverPromised() async throws {
         let sink = CapturingSink()
         let bridge = makeBridge(sink: sink)
         let scratch = try makeScratchDirectory()
@@ -1074,7 +1217,7 @@ final class ClipboardBridgeTests: XCTestCase {
         let task = firstResolvedOffer(bridge)
 
         await bridge.handleInboundFrame(
-            try makeOffer(clipboardId: 4, [
+            try makeOffer(clipboardId: 6, [
                 streamedFileRep(index: 0, fileName: "../../etc/passwd", size: 10),
                 streamedFileRep(index: 1, fileName: "CON", size: 10),
                 inlineRep(index: 2, mime: "text/plain", body: Data("ok".utf8)),
@@ -1086,68 +1229,15 @@ final class ClipboardBridgeTests: XCTestCase {
         XCTAssertEqual(resolved.formats.map(\.mime), ["text/plain"])
         XCTAssertEqual(sink.frames.count, 0, "an unsafe name must not be pulled at all")
         XCTAssertFalse(
-            FileManager.default.fileExists(atPath: filesDirectory(bridge, clipboardId: 4).path),
+            FileManager.default.fileExists(atPath: filesDirectory(bridge, clipboardId: 6).path),
             "an offer whose only file is unsafe should not even make a directory"
         )
     }
 
-    func testInboundFileNeverOverwritesAnExistingOne() async throws {
-        let sink = CapturingSink()
-        let bridge = makeBridge(sink: sink)
-        let scratch = try makeScratchDirectory()
-        defer { try? FileManager.default.removeItem(at: scratch) }
-        bridge.inboundFileRoot = scratch
-        let directory = filesDirectory(bridge, clipboardId: 5)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try Data("mine".utf8).write(to: directory.appendingPathComponent("notes.txt"))
-        let task = firstResolvedOffer(bridge)
-
-        var rep = inlineRep(index: 0, mime: "text/plain", body: Data("theirs".utf8))
-        rep.fileName = "notes.txt"
-        await bridge.handleInboundFrame(try makeOffer(clipboardId: 5, [rep]))
-
-        let resolved = await task.value
-        let landed = try XCTUnwrap(resolved.files.first)
-        XCTAssertEqual(landed.requestedName, "notes.txt")
-        XCTAssertEqual(landed.url.lastPathComponent, "notes (2).txt")
-        XCTAssertEqual(
-            try Data(contentsOf: directory.appendingPathComponent("notes.txt")),
-            Data("mine".utf8)
-        )
-        XCTAssertEqual(try Data(contentsOf: landed.url), Data("theirs".utf8))
-    }
-
-    /// A transfer whose final length differs from `size` is discarded, not
-    /// published — and leaves nothing behind.
-    func testInboundShortFileIsDiscardedNotPublished() async throws {
-        let sink = CapturingSink()
-        let bridge = makeBridge(sink: sink)
-        let scratch = try makeScratchDirectory()
-        defer { try? FileManager.default.removeItem(at: scratch) }
-        bridge.inboundFileRoot = scratch
-        let task = firstResolvedOffer(bridge)
-
-        await bridge.handleInboundFrame(
-            try makeOffer(clipboardId: 6, [
-                streamedFileRep(index: 0, fileName: "truncated.bin", size: 1_000),
-            ])
-        )
-        let streamId = try soleStreamOpenId(sink)
-        // The sender claims COMPLETE after only part of what it declared.
-        try await feedStream(bridge, streamId: streamId, body: Data(repeating: 0x5A, count: 100))
-
-        let resolved = await task.value
-        XCTAssertEqual(resolved.files.count, 0)
-        XCTAssertEqual(
-            try FileManager.default.contentsOfDirectory(atPath: filesDirectory(bridge, clipboardId: 6).path),
-            []
-        )
-    }
-
-    /// A peer streaming more than it declared fails on the offending write
-    /// rather than after filling the volume, and we cancel rather than let
-    /// it keep going.
-    func testInboundFileOverrunIsCancelledAndCleanedUp() async throws {
+    /// The absolute size ceiling is checked when the offer lands, not when
+    /// it's redeemed — a promise the pasteboard shows must be one we can
+    /// actually keep.
+    func testFileOverTheSizeCapIsNeverPromised() async throws {
         let sink = CapturingSink()
         let bridge = makeBridge(sink: sink)
         let scratch = try makeScratchDirectory()
@@ -1157,17 +1247,156 @@ final class ClipboardBridgeTests: XCTestCase {
 
         await bridge.handleInboundFrame(
             try makeOffer(clipboardId: 7, [
+                streamedFileRep(
+                    index: 0, fileName: "absurd.bin", size: ClipboardFileRules.maxFileBytes + 1
+                ),
+                inlineRep(index: 1, mime: "text/plain", body: Data("ok".utf8)),
+            ])
+        )
+
+        let resolved = await task.value
+        XCTAssertEqual(resolved.files.count, 0)
+        XCTAssertEqual(resolved.formats.map(\.mime), ["text/plain"])
+    }
+
+    /// Likewise a compression we never advertised: refuse it up front
+    /// rather than publish a promise that is guaranteed to fail.
+    func testFileWithUnadvertisedCompressionIsNeverPromised() async throws {
+        let sink = CapturingSink()
+        let bridge = makeBridge(sink: sink)
+        let scratch = try makeScratchDirectory()
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        bridge.inboundFileRoot = scratch
+        let task = firstResolvedOffer(bridge)
+
+        await bridge.handleInboundFrame(
+            try makeOffer(clipboardId: 8, [
+                streamedFileRep(index: 0, fileName: "zstd.bin", size: 100, compression: .zstd),
+                inlineRep(index: 1, mime: "text/plain", body: Data("ok".utf8)),
+            ])
+        )
+
+        let resolved = await task.value
+        XCTAssertEqual(resolved.files.count, 0)
+        XCTAssertEqual(resolved.formats.map(\.mime), ["text/plain"])
+    }
+
+    func testInboundFileNeverOverwritesAnExistingOne() async throws {
+        let sink = CapturingSink()
+        let bridge = makeBridge(sink: sink)
+        let scratch = try makeScratchDirectory()
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        bridge.inboundFileRoot = scratch
+        let directory = filesDirectory(bridge, clipboardId: 9)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data("mine".utf8).write(to: directory.appendingPathComponent("notes.txt"))
+        let task = firstResolvedOffer(bridge)
+
+        var rep = inlineRep(index: 0, mime: "text/plain", body: Data("theirs".utf8))
+        rep.fileName = "notes.txt"
+        await bridge.handleInboundFrame(try makeOffer(clipboardId: 9, [rep]))
+
+        let resolved = await task.value
+        let promise = try XCTUnwrap(resolved.files.first)
+        XCTAssertEqual(promise.fileName, "notes.txt")
+        let landed = try await bridge.fetchPromisedFile(promise)
+        XCTAssertEqual(landed.lastPathComponent, "notes (2).txt")
+        XCTAssertEqual(
+            try Data(contentsOf: directory.appendingPathComponent("notes.txt")),
+            Data("mine".utf8)
+        )
+        XCTAssertEqual(try Data(contentsOf: landed), Data("theirs".utf8))
+    }
+
+    /// A transfer whose final length differs from `size` is discarded, not
+    /// published — and leaves nothing behind.
+    func testRedeemedShortFileIsDiscardedNotPublished() async throws {
+        let sink = CapturingSink()
+        let bridge = makeBridge(sink: sink)
+        let scratch = try makeScratchDirectory()
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        bridge.inboundFileRoot = scratch
+        let task = firstResolvedOffer(bridge)
+
+        await bridge.handleInboundFrame(
+            try makeOffer(clipboardId: 10, [
+                streamedFileRep(index: 0, fileName: "truncated.bin", size: 1_000),
+            ])
+        )
+        let resolved = await task.value
+        let promise = try XCTUnwrap(resolved.files.first)
+
+        // The sender claims COMPLETE after only part of what it declared.
+        let result = try await pull(
+            bridge, promise, sink: sink, body: Data(repeating: 0x5A, count: 100)
+        )
+        guard case .failed = promiseError(result) else {
+            return XCTFail("expected a local failure, got \(result)")
+        }
+        XCTAssertEqual(
+            try FileManager.default.contentsOfDirectory(atPath: filesDirectory(bridge, clipboardId: 10).path),
+            []
+        )
+    }
+
+    /// The peer answering a pull with UNAVAILABLE — its clipboard moved on
+    /// between announcing the file and our asking for it — reaches the
+    /// caller as such, so the promise can fail rather than hang.
+    func testPeerRefusingAPullSurfacesAsRefused() async throws {
+        let sink = CapturingSink()
+        let bridge = makeBridge(sink: sink)
+        let scratch = try makeScratchDirectory()
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        bridge.inboundFileRoot = scratch
+        let task = firstResolvedOffer(bridge)
+
+        await bridge.handleInboundFrame(
+            try makeOffer(clipboardId: 11, [
+                streamedFileRep(index: 0, fileName: "gone.bin", size: 500),
+            ])
+        )
+        let resolved = await task.value
+        let promise = try XCTUnwrap(resolved.files.first)
+
+        let result = try await pull(
+            bridge, promise, sink: sink, body: Data(), status: .streamStatusUnavailable
+        )
+        XCTAssertEqual(promiseError(result), .refused(.streamStatusUnavailable))
+        XCTAssertEqual(
+            try FileManager.default.contentsOfDirectory(atPath: filesDirectory(bridge, clipboardId: 11).path),
+            []
+        )
+    }
+
+    /// A peer streaming more than it declared fails on the offending write
+    /// rather than after filling the volume, and we cancel rather than let
+    /// it keep going.
+    func testRedeemedFileOverrunIsCancelledAndCleanedUp() async throws {
+        let sink = CapturingSink()
+        let bridge = makeBridge(sink: sink)
+        let scratch = try makeScratchDirectory()
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        bridge.inboundFileRoot = scratch
+        let task = firstResolvedOffer(bridge)
+
+        await bridge.handleInboundFrame(
+            try makeOffer(clipboardId: 12, [
                 streamedFileRep(index: 0, fileName: "liar.bin", size: 10),
             ])
         )
-        let streamId = try soleStreamOpenId(sink)
+        let resolved = await task.value
+        let promise = try XCTUnwrap(resolved.files.first)
+
+        let (pullTask, streamId) = try await beginPull(bridge, promise, sink: sink)
         sink.frames.removeAll()
         await bridge.handleInboundFrame(
             try ClipboardCodec.encodeStreamData(streamId: streamId, data: Data(repeating: 0x11, count: 64))
         )
 
-        let resolved = await task.value
-        XCTAssertEqual(resolved.files.count, 0)
+        let outcome = await pullTask.result
+        guard case .failed = promiseError(outcome) else {
+            return XCTFail("expected the overrun to fail the promise")
+        }
         // Give the cancel's detached Task a turn.
         await Task.yield()
         let cancels = try sink.messages().compactMap { message -> StreamCancel? in
@@ -1176,64 +1405,160 @@ final class ClipboardBridgeTests: XCTestCase {
         }
         XCTAssertEqual(cancels.map(\.streamID), [streamId])
         XCTAssertEqual(
-            try FileManager.default.contentsOfDirectory(atPath: filesDirectory(bridge, clipboardId: 7).path),
+            try FileManager.default.contentsOfDirectory(atPath: filesDirectory(bridge, clipboardId: 12).path),
             []
         )
     }
 
-    /// A superseding offer drops the pending pull; the half-written file
-    /// must go with it.
-    func testSupersedingOfferRemovesThePartialFile() async throws {
+    /// A superseding offer drops a redemption in flight; the half-written
+    /// file must go with it, and whoever was waiting must be told.
+    func testSupersedingOfferAbortsARedemptionInFlight() async throws {
         let sink = CapturingSink()
         let bridge = makeBridge(sink: sink)
         let scratch = try makeScratchDirectory()
         defer { try? FileManager.default.removeItem(at: scratch) }
         bridge.inboundFileRoot = scratch
+        let offerTask = firstResolvedOffer(bridge)
 
         await bridge.handleInboundFrame(
-            try makeOffer(clipboardId: 8, [
+            try makeOffer(clipboardId: 13, [
                 streamedFileRep(index: 0, fileName: "abandoned.bin", size: 5_000),
             ])
         )
-        let streamId = try soleStreamOpenId(sink)
+        let announced = await offerTask.value
+        let promise = try XCTUnwrap(announced.files.first)
+
+        let (pullTask, streamId) = try await beginPull(bridge, promise, sink: sink)
         await bridge.handleInboundFrame(
             try ClipboardCodec.encodeStreamData(streamId: streamId, data: Data(repeating: 1, count: 500))
         )
-        let directory = filesDirectory(bridge, clipboardId: 8)
+        let directory = filesDirectory(bridge, clipboardId: 13)
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: directory.path).count, 1)
 
-        let task = firstResolvedOffer(bridge)
+        let next = firstResolvedOffer(bridge)
         await bridge.handleInboundFrame(
-            try makeOffer(clipboardId: 9, [
+            try makeOffer(clipboardId: 14, [
                 inlineRep(index: 0, mime: "text/plain", body: Data("newer".utf8)),
             ])
         )
-        _ = await task.value
+        _ = await next.value
 
+        let outcome = await pullTask.result
+        XCTAssertEqual(promiseError(outcome), .superseded)
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: directory.path), [])
+        // And the abandoned pull is cancelled on the wire.
+        let cancels = try sink.messages().compactMap { message -> StreamCancel? in
+            if case .streamCancel(let c) = message { return c }
+            return nil
+        }
+        XCTAssertEqual(cancels.map(\.streamID), [streamId])
     }
 
-    /// The channel dropping is one of the cleanup triggers the spec lists.
-    func testChannelDropRemovesPartialFiles() async throws {
+    /// The narrow window where a superseding offer lands while the pull's
+    /// own `StreamOpen` is still in flight. Nothing will ever answer that
+    /// stream, so the redemption has to fail rather than park forever
+    /// waiting for a `StreamClose` the peer was never asked for.
+    func testSupersedingOfferDuringTheOpenDoesNotHangTheRedemption() async throws {
         let sink = CapturingSink()
         let bridge = makeBridge(sink: sink)
         let scratch = try makeScratchDirectory()
         defer { try? FileManager.default.removeItem(at: scratch) }
         bridge.inboundFileRoot = scratch
+        let first = firstResolvedOffer(bridge)
 
         await bridge.handleInboundFrame(
-            try makeOffer(clipboardId: 10, [
+            try makeOffer(clipboardId: 18, [
+                streamedFileRep(index: 0, fileName: "racing.bin", size: 400),
+            ])
+        )
+        let announced = await first.value
+        let promise = try XCTUnwrap(announced.files.first)
+
+        let superseding = try makeOffer(clipboardId: 19, [
+            inlineRep(index: 0, mime: "text/plain", body: Data("newer".utf8)),
+        ])
+        let next = firstResolvedOffer(bridge)
+        // Deliver it from inside the send of the StreamOpen itself.
+        sink.onSend = { [weak sink, weak bridge] _ in
+            sink?.onSend = nil
+            await bridge?.handleInboundFrame(superseding)
+        }
+
+        do {
+            _ = try await bridge.fetchPromisedFile(promise)
+            XCTFail("expected the redemption to fail, not park")
+        } catch {
+            XCTAssertEqual(error as? ClipboardPromiseError, .superseded)
+        }
+        _ = await next.value
+        XCTAssertEqual(
+            try FileManager.default.contentsOfDirectory(atPath: filesDirectory(bridge, clipboardId: 18).path),
+            []
+        )
+    }
+
+    /// A promise from an offer the peer has already replaced is refused
+    /// without touching the wire — the host's clipboard has moved on.
+    func testPromiseFromASupersededOfferIsRefused() async throws {
+        let sink = CapturingSink()
+        let bridge = makeBridge(sink: sink)
+        let scratch = try makeScratchDirectory()
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        bridge.inboundFileRoot = scratch
+        let first = firstResolvedOffer(bridge)
+
+        await bridge.handleInboundFrame(
+            try makeOffer(clipboardId: 15, [
+                streamedFileRep(index: 0, fileName: "stale.bin", size: 100),
+            ])
+        )
+        let announced = await first.value
+        let promise = try XCTUnwrap(announced.files.first)
+
+        let second = firstResolvedOffer(bridge)
+        await bridge.handleInboundFrame(
+            try makeOffer(clipboardId: 16, [
+                inlineRep(index: 0, mime: "text/plain", body: Data("newer".utf8)),
+            ])
+        )
+        _ = await second.value
+
+        do {
+            _ = try await bridge.fetchPromisedFile(promise)
+            XCTFail("expected the stale promise to be refused")
+        } catch {
+            XCTAssertEqual(error as? ClipboardPromiseError, .superseded)
+        }
+        XCTAssertEqual(sink.frames.count, 0)
+    }
+
+    /// The channel dropping is one of the cleanup triggers the spec lists.
+    func testChannelDropAbortsARedemptionAndRemovesPartials() async throws {
+        let sink = CapturingSink()
+        let bridge = makeBridge(sink: sink)
+        let scratch = try makeScratchDirectory()
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        bridge.inboundFileRoot = scratch
+        let offerTask = firstResolvedOffer(bridge)
+
+        await bridge.handleInboundFrame(
+            try makeOffer(clipboardId: 17, [
                 streamedFileRep(index: 0, fileName: "interrupted.bin", size: 5_000),
             ])
         )
-        let streamId = try soleStreamOpenId(sink)
+        let announced = await offerTask.value
+        let promise = try XCTUnwrap(announced.files.first)
+
+        let (pullTask, streamId) = try await beginPull(bridge, promise, sink: sink)
         await bridge.handleInboundFrame(
             try ClipboardCodec.encodeStreamData(streamId: streamId, data: Data(repeating: 2, count: 500))
         )
         await bridge.handleChannelReadyChange(false)
 
+        let outcome = await pullTask.result
+        XCTAssertEqual(promiseError(outcome), .superseded)
         XCTAssertEqual(
-            try FileManager.default.contentsOfDirectory(atPath: filesDirectory(bridge, clipboardId: 10).path),
+            try FileManager.default.contentsOfDirectory(atPath: filesDirectory(bridge, clipboardId: 17).path),
             []
         )
     }
@@ -1757,7 +2082,8 @@ final class ClipboardBridgeTests: XCTestCase {
 
     /// A hard kill skips `ClipboardFileWriter`'s cleanup, so a previous
     /// run's partials can be anywhere under the root — including
-    /// directories this run will never touch.
+    /// directories this run will never touch. The sweep rides the first
+    /// redemption, since that's the first time this bridge touches disk.
     func testSweepsPartialsLeftByAPreviousRun() async throws {
         let sink = CapturingSink()
         let bridge = makeBridge(sink: sink)
@@ -1781,7 +2107,9 @@ final class ClipboardBridgeTests: XCTestCase {
         var rep = inlineRep(index: 0, mime: "text/plain", body: Data("hi".utf8))
         rep.fileName = "new.txt"
         await bridge.handleInboundFrame(try makeOffer(clipboardId: 1, [rep]))
-        _ = await task.value
+        let resolved = await task.value
+        let promise = try XCTUnwrap(resolved.files.first)
+        _ = try await bridge.fetchPromisedFile(promise)
 
         XCTAssertFalse(FileManager.default.fileExists(atPath: debris.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: keeper.path), "only our own partials go")

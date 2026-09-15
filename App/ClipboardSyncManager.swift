@@ -49,6 +49,18 @@ final class ClipboardSyncManager {
     private var inboundTask: Task<Void, Never>?
     private var inboundTaskBridgeID: ObjectIdentifier?
 
+    /// Backs the `NSFilePromiseProvider`s we put on the pasteboard for
+    /// inbound files. One per manager; the providers hold it alive
+    /// themselves (see `ClipboardFilePromiseContext`) so a promise stays
+    /// redeemable after the session window closes — it just fails
+    /// cleanly once the bridge is gone.
+    private lazy var filePromises = ClipboardFilePromiseProvider { [weak self] promise in
+        guard let bridge = await self?.session.clipboardBridge else {
+            throw ClipboardPromiseError.superseded
+        }
+        return try await bridge.fetchPromisedFile(promise)
+    }
+
     init(session: Session, initialEnabled: Bool) {
         self.session = session
         self.enabled = initialEnabled
@@ -209,11 +221,19 @@ final class ClipboardSyncManager {
             return
         }
 
-        // One pasteboard item per content-form set, plus one per file. The
-        // pasteboard is target-driven the same way the wire payload is: a
-        // text field reads the first item's string, Finder scans every item
-        // for a file URL. Written in one `writeObjects` call so the two
-        // kinds land as siblings on a single clipboard generation.
+        // One pasteboard item per content-form set, plus one *promise* per
+        // file. The pasteboard is target-driven the same way the wire
+        // payload is: a text field reads the first item's string, Finder
+        // scans every item for a file. Written in one `writeObjects` call
+        // so the two kinds land as siblings on a single clipboard
+        // generation.
+        //
+        // The files are promises rather than URLs on purpose. Pulling one
+        // takes as long as it takes — three seconds for 12 MB on real
+        // hardware — and until the pasteboard is written the user still
+        // has the *previous* clipboard, with nothing to say a transfer is
+        // in flight. Announcing costs one frame; the bytes move only if
+        // something actually asks for the file.
         var objects: [NSPasteboardWriting] = []
         var applied: [(mime: String, type: String, size: Int)] = []
         var dropped: [String] = []
@@ -230,7 +250,7 @@ final class ClipboardSyncManager {
             }
             if !applied.isEmpty { objects.append(item) }
         }
-        objects.append(contentsOf: offer.files.map { $0.url as NSURL })
+        objects.append(contentsOf: offer.files.map { filePromises.makeProvider(for: $0) })
 
         guard !objects.isEmpty else {
             log.debug("[MANAGER] applyInboundOffer offer=\(offer.clipboardId, privacy: .public): nothing mappable; leaving the pasteboard alone")
@@ -245,17 +265,20 @@ final class ClipboardSyncManager {
         monitor.noteApplied(changeCount: newCount)
 
         let appliedDesc = applied.map { "\($0.mime)→\($0.type)(\($0.size))" }.joined(separator: ", ")
-        let filesDesc = offer.files.map(\.url.lastPathComponent).joined(separator: ", ")
+        let filesDesc = offer.files.map(\.fileName).joined(separator: ", ")
         let droppedDesc = dropped.joined(separator: ", ")
         log.debug("[MANAGER] applyInboundOffer offer=\(offer.clipboardId, privacy: .public): changeCount \(beforeCount, privacy: .public) → \(newCount, privacy: .public) applied=[\(appliedDesc, privacy: .public)] files=[\(filesDesc, privacy: .public)] dropped=[\(droppedDesc, privacy: .public)]")
     }
 
     // MARK: - Inbound file storage
 
-    /// Where files pasted from the host land. Caches rather than temp: the
-    /// user pastes the clipboard whenever they get round to it, and a
-    /// reboot clearing `/tmp` underneath them would be a surprise. Nothing
-    /// here is precious — pasting into Finder copies the file out.
+    /// Where files pasted from the host land on the way through. Only
+    /// files somebody actually pasted get written here — a promise the
+    /// user never redeems moves no bytes at all — and what does land is a
+    /// staging copy the receiving app copies out of. Caches rather than
+    /// temp: the user redeems the clipboard whenever they get round to
+    /// it, and a reboot clearing `/tmp` underneath them would be a
+    /// surprise.
     static let inboundFileRoot: URL = {
         let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
