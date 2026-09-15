@@ -93,6 +93,24 @@ final class ClipboardFileTests: XCTestCase {
         XCTAssertEqual(try contents(of: scratch), ["greeting.txt"])
     }
 
+    /// What lands is an ordinary file the user will paste and share. The
+    /// temp file is owner-only so nobody can read a partial, but `rename`
+    /// carries its mode across, so the relaxation has to happen before the
+    /// move.
+    func testCommittedFileIsNotOwnerOnly() throws {
+        let body = Data("readable".utf8)
+        let writer = try ClipboardFileWriter(
+            directory: scratch, rawName: "shared.txt", declaredSize: UInt64(body.count)
+        )
+        try writer.write(body)
+        let url = try writer.commit()
+
+        let mode = try XCTUnwrap(
+            FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber
+        ).uint16Value
+        XCTAssertEqual(mode, 0o644, "landed as \(String(mode, radix: 8))")
+    }
+
     /// A reader must never observe a partial file under the real name, so
     /// the bytes live under a hidden temp name until the very end.
     func testInProgressFileIsNotVisibleUnderTheRealName() throws {
@@ -105,6 +123,13 @@ final class ClipboardFileTests: XCTestCase {
         XCTAssertFalse(entries.contains("big.bin"))
         XCTAssertEqual(entries.count, 1)
         XCTAssertTrue(entries[0].hasPrefix(ClipboardFileRules.tempPrefix))
+        // And unreadable by anyone else while it is still partial.
+        let mode = try XCTUnwrap(
+            FileManager.default.attributesOfItem(
+                atPath: scratch.appendingPathComponent(entries[0]).path
+            )[.posixPermissions] as? NSNumber
+        ).uint16Value
+        XCTAssertEqual(mode, 0o600)
     }
 
     func testNeverOverwritesAnExistingFile() throws {

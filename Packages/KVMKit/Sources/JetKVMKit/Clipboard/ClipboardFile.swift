@@ -292,6 +292,14 @@ final class ClipboardFileWriter {
         guard written == declaredSize else {
             throw ClipboardFileError.sizeMismatch(declared: declaredSize, actual: written)
         }
+        // The temp file is 0600 so nobody can read a partial transfer, but
+        // `rename` carries that mode onto the destination — and what lands
+        // is an ordinary file the user will paste, copy and share like any
+        // other. Relax it to the conventional 0644 before the move, not
+        // after, so the mode is never wrong under the final name.
+        if fchmod(descriptor, 0o644) != 0 {
+            log.error("[FILE] chmod \(self.requestedName, privacy: .public): \(String(cString: strerror(errno)), privacy: .public)")
+        }
         closeDescriptor()
         let destination = try claimDestination()
         // Plain POSIX rename: atomic, same filesystem (the temp file lives in
