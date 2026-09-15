@@ -54,7 +54,9 @@ targets:
   Regi:
     type: application
     platform: macOS
-    sources: [App]
+    # Shared with RegiFileProvider: the two run in different processes and
+    # must agree on the XPC contract.
+    sources: [App, Shared]
     dependencies:
       - package: KVMKit
         product: KVMKit
@@ -81,17 +83,20 @@ targets:
   RegiFileProvider:
     type: app-extension
     platform: macOS
-    sources:
-      - path: FileProvider
-        excludes: ["**/.DS_Store"]
+    sources: [FileProvider, Shared]
     settings:
       groups: [macApp]
       base:
         CODE_SIGN_ENTITLEMENTS: FileProvider/RegiFileProvider.entitlements
-        DEVELOPMENT_TEAM: C45RUW4MTB
+        # Xcode otherwise splits a Debug appex into a stub plus
+        # RegiFileProvider.debug.dylib. fileproviderd then silently never
+        # launches the extension — no error, just an empty domain that
+        # times out on enumeration. Cost us an afternoon; keep it off.
+        ENABLE_DEBUG_DYLIB: NO
         INFOPLIST_FILE: FileProvider/Info.plist
-        MARKETING_VERSION: "0.1.0"
         PRODUCT_BUNDLE_IDENTIFIER: app.regi.mac.fileprovider
+        # The extension ships inside Regi.app; installing it alongside would
+        # put a second, unembedded copy in the products directory.
         SKIP_INSTALL: YES
 
   RegiProbe:

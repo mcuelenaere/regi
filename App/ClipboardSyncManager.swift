@@ -104,7 +104,7 @@ final class ClipboardSyncManager {
             log.info("[MANAGER] inboundOffers consumer task starting (new bridge)")
             for await offer in bridge.inboundOffers {
                 log.debug("[MANAGER] inboundOffers received offer_id=\(offer.clipboardId, privacy: .public) formats=\(offer.formats.count, privacy: .public)")
-                self?.applyInboundOffer(offer)
+                await self?.applyInboundOffer(offer)
             }
             log.info("[MANAGER] inboundOffers consumer task ended (bridge gone)")
         }
@@ -176,6 +176,13 @@ final class ClipboardSyncManager {
     private func stop() {
         log.debug("[MANAGER] stop: stopping pasteboard monitor")
         monitor.stop()
+        // Nothing can redeem the host's files once we are not syncing, so
+        // withdraw them rather than leave unfetchable items in Finder.
+        if ClipboardFilePromiseRegistry.shared.publish([], redeem: { _ in
+            throw ClipboardPromiseError.superseded
+        }) {
+            Task { await ClipboardFileProviderDomain.signalChange() }
+        }
         // Don't cancel inboundTask — see ensureInboundConsumer().
         // applyInboundOffer's isActive guard drops anything that
         // arrives while we're inactive.
@@ -199,7 +206,7 @@ final class ClipboardSyncManager {
 
     // MARK: - Inbound (host → local)
 
-    private func applyInboundOffer(_ offer: ResolvedOffer) {
+    private func applyInboundOffer(_ offer: ResolvedOffer) async {
         guard isActive else {
             log.debug("[MANAGER] applyInboundOffer offer=\(offer.clipboardId, privacy: .public): not active; dropping (toggle off?)")
             return
@@ -238,14 +245,21 @@ final class ClipboardSyncManager {
             }
             if !applied.isEmpty { objects.append(item) }
         }
-        objects.append(contentsOf: offer.files.map { promise in
-            ClipboardFilePasteProvider.makeItem(for: promise) { [weak self] promise in
-                guard let bridge = self?.session.clipboardBridge else {
-                    throw ClipboardPromiseError.superseded
-                }
-                return try await bridge.fetchPromisedFile(promise)
+        // Files go on as ordinary file URLs pointing into our File
+        // Provider domain. They are dataless: publishing one costs a path,
+        // and the bytes are pulled only if something opens it.
+        //
+        // Not a lazily-provided `public.file-url`, which is what this
+        // replaced: Universal Clipboard force-resolves that flavour about
+        // 100ms after every clipboard change, so "lazy" there meant
+        // transferring every file whether or not anyone pasted.
+        let fileURLs = await Self.publishToFileProvider(offer.files) { [weak self] promise in
+            guard let bridge = self?.session.clipboardBridge else {
+                throw ClipboardPromiseError.superseded
             }
-        })
+            return try await bridge.fetchPromisedFile(promise)
+        }
+        objects.append(contentsOf: fileURLs.map { $0 as NSURL })
 
         guard !objects.isEmpty else {
             log.debug("[MANAGER] applyInboundOffer offer=\(offer.clipboardId, privacy: .public): nothing mappable; leaving the pasteboard alone")
@@ -263,6 +277,33 @@ final class ClipboardSyncManager {
         let filesDesc = offer.files.map(\.fileName).joined(separator: ", ")
         let droppedDesc = dropped.joined(separator: ", ")
         log.debug("[MANAGER] applyInboundOffer offer=\(offer.clipboardId, privacy: .public): changeCount \(beforeCount, privacy: .public) → \(newCount, privacy: .public) applied=[\(appliedDesc, privacy: .public)] files=[\(filesDesc, privacy: .public)] dropped=[\(droppedDesc, privacy: .public)]")
+    }
+
+    /// Hand the offer's files to the File Provider domain and resolve the
+    /// user-visible URL of each. Returns only the ones that resolved — a
+    /// file we cannot name is one we must not put on the pasteboard.
+    private static func publishToFileProvider(
+        _ promises: [ClipboardFilePromise],
+        redeem: @escaping ClipboardFilePromiseRegistry.Redeem
+    ) async -> [URL] {
+        let changed = ClipboardFilePromiseRegistry.shared.publish(promises, redeem: redeem)
+        if changed {
+            // Publishing replaces the previous offer's files wholesale, so
+            // the system has to be told even when this offer carries none —
+            // that is how a superseded file disappears from Finder.
+            await ClipboardFileProviderDomain.signalChange()
+        }
+        guard !promises.isEmpty else { return [] }
+
+        var urls: [URL] = []
+        for promise in promises {
+            if let url = await ClipboardFileProviderDomain.userVisibleURL(forFileNamed: promise.fileName) {
+                urls.append(url)
+            } else {
+                log.error("[MANAGER] no domain root; leaving '\(promise.fileName, privacy: .public)' off the pasteboard")
+            }
+        }
+        return urls
     }
 
     // MARK: - Inbound file storage

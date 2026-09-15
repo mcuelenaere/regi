@@ -83,6 +83,21 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         false
     }
 
+    /// Give the File Provider domain back before we go. The extension can
+    /// only serve files while Regi is running to pull them, so leaving the
+    /// domain mounted would put a folder in Finder that answers every read
+    /// with an error.
+    func applicationWillTerminate(_ notification: Notification) {
+        let done = DispatchSemaphore(value: 0)
+        Task { @MainActor in
+            await ClipboardFileProviderDomain.teardown()
+            done.signal()
+        }
+        // Termination does not wait for async work on its own, and an
+        // un-torn-down domain outlives the process.
+        _ = done.wait(timeout: .now() + 2)
+    }
+
     /// Dock left-click reopen handler. When no windows are visible,
     /// open Hosts; otherwise let macOS perform its standard behaviour
     /// (bring app forward, no extra window).
