@@ -216,36 +216,94 @@ private final class HostConnection: @unchecked Sendable {
         connection = nil
     }
 
-    private var proxyOrNil: ClipboardFileHosting? {
-        lock.lock(); defer { lock.unlock() }
-        return connection?.remoteObjectProxyWithErrorHandler { error in
+    /// A proxy whose error handler is wired to `onFailure`, so a dead peer
+    /// produces an answer instead of silence. Returning a proxy whose
+    /// error handler merely logged meant `fetchContents` never called its
+    /// completion — the system then waited for a reply that was never
+    /// coming, which is what hung Finder and `cp` for thirty seconds.
+    private func proxy(onFailure: @escaping (String) -> Void) -> ClipboardFileHosting? {
+        lock.lock()
+        let connection = self.connection
+        lock.unlock()
+        guard let connection else { return nil }
+        return connection.remoteObjectProxyWithErrorHandler { error in
             log.error("[FP] host proxy error: \(String(describing: error), privacy: .public)")
+            onFailure(String(describing: error))
         } as? ClipboardFileHosting
+    }
+
+    /// Wait briefly for Regi to (re)connect.
+    ///
+    /// The system reaps this process when it is idle and launches a fresh
+    /// one the moment something reads a file, so a fetch routinely arrives
+    /// before the app has dialled back in. Failing immediately turned that
+    /// ordinary race into "the file does not exist".
+    private func awaitConnection(timeout: TimeInterval, _ completion: @escaping (Bool) -> Void) {
+        if isConnected { return completion(true) }
+        let deadline = Date().addingTimeInterval(timeout)
+        func poll() {
+            if isConnected { return completion(true) }
+            guard Date() < deadline else {
+                log.error("[FP] waited \(timeout, privacy: .public)s for Regi and it never connected")
+                return completion(false)
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + 0.1, execute: poll)
+        }
+        poll()
     }
 
     /// Empty when Regi isn't running — which is the honest answer, since a
     /// promise is only redeemable while its offer is the live clipboard.
     func manifest(_ completion: @escaping (ClipboardFileManifest) -> Void) {
-        guard let proxy = proxyOrNil else {
-            log.error("[FP] manifest: no connection to Regi")
-            return completion(.empty)
+        var answered = false
+        let finish: (ClipboardFileManifest) -> Void = { value in
+            guard !answered else { return }
+            answered = true
+            completion(value)
         }
-        proxy.listPromisedFiles { data in
-            guard let data,
-                  let decoded = try? JSONDecoder().decode(ClipboardFileManifest.self, from: data)
+        awaitConnection(timeout: Self.connectWait) { [weak self] connected in
+            guard connected, let self,
+                  let proxy = self.proxy(onFailure: { _ in finish(.empty) })
             else {
-                log.error("[FP] manifest: no/undecodable reply")
-                return completion(.empty)
+                log.error("[FP] manifest: no connection to Regi")
+                return finish(.empty)
             }
-            log.debug("[FP] manifest → \(decoded.files.count, privacy: .public) in '\(decoded.folderName, privacy: .public)'")
-            completion(decoded)
+            proxy.listPromisedFiles { data in
+                guard let data,
+                      let decoded = try? JSONDecoder().decode(ClipboardFileManifest.self, from: data)
+                else {
+                    log.error("[FP] manifest: no/undecodable reply")
+                    return finish(.empty)
+                }
+                log.debug("[FP] manifest → \(decoded.files.count, privacy: .public) in '\(decoded.folderName, privacy: .public)'")
+                finish(decoded)
+            }
         }
     }
 
     func fetchFile(identifier: String, completion: @escaping (FileHandle?, String?) -> Void) {
-        guard let proxy = proxyOrNil else { return completion(nil, "Regi is not running") }
-        proxy.fetchPromisedFile(identifier: identifier, reply: completion)
+        var answered = false
+        let finish: (FileHandle?, String?) -> Void = { handle, failure in
+            guard !answered else { return }
+            answered = true
+            completion(handle, failure)
+        }
+        awaitConnection(timeout: Self.connectWait) { [weak self] connected in
+            guard connected, let self,
+                  let proxy = self.proxy(onFailure: { finish(nil, $0) })
+            else {
+                return finish(nil, "Regi is not reachable")
+            }
+            proxy.fetchPromisedFile(identifier: identifier) { handle, failure in
+                finish(handle, failure)
+            }
+        }
     }
+
+    /// How long a fetch will wait for the app to come back. Generous
+    /// enough to cover the app's reconnect, short enough that a paste with
+    /// Regi genuinely gone fails rather than hangs.
+    private static let connectWait: TimeInterval = 8
 }
 
 /// Vends the endpoint Regi connects to. The system hands this to the app

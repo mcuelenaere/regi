@@ -269,8 +269,16 @@ final class ClipboardSyncManager {
         let pb = NSPasteboard.general
         let beforeCount = pb.changeCount
         pb.clearContents()
-        pb.writeObjects(objects)
+        // `clearContents` alone bumps the generation, so ignoring this
+        // result meant a failed write looked exactly like a successful
+        // one in the log while the pasteboard sat empty.
+        let wrote = pb.writeObjects(objects)
         let newCount = pb.changeCount
+        if !wrote {
+            log.error("[MANAGER] applyInboundOffer offer=\(offer.clipboardId, privacy: .public): writeObjects FAILED for \(objects.count, privacy: .public) object(s)")
+        }
+        let landedTypes = (pb.types ?? []).map(\.rawValue).joined(separator: ", ")
+        log.debug("[MANAGER] applyInboundOffer offer=\(offer.clipboardId, privacy: .public): wrote=\(wrote, privacy: .public) urls=[\(fileURLs.map(\.path).joined(separator: " | "), privacy: .public)] types=[\(landedTypes, privacy: .public)]")
         monitor.noteApplied(changeCount: newCount)
 
         let appliedDesc = applied.map { "\($0.mime)→\($0.type)(\($0.size))" }.joined(separator: ", ")

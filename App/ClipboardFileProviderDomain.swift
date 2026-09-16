@@ -114,13 +114,21 @@ enum ClipboardFileProviderDomain {
             // Nothing is actually connected until a message crosses, and
             // every other call here runs the other way. Without this the
             // extension never sees the connection at all.
-            let established = await withCheckedContinuation { continuation in
-                let proxy = connection.remoteObjectProxyWithErrorHandler { error in
-                    log.error("[FP] handshake failed: \(String(describing: error), privacy: .public)")
-                    continuation.resume(returning: false)
-                } as? ClipboardFileProviderPinging
-                guard let proxy else { return continuation.resume(returning: false) }
-                proxy.ping { connected in continuation.resume(returning: connected) }
+            let established = await withTimeout(callTimeout, default: false) {
+                await withCheckedContinuation { continuation in
+                    var resumed = false
+                    let finish: (Bool) -> Void = { value in
+                        guard !resumed else { return }
+                        resumed = true
+                        continuation.resume(returning: value)
+                    }
+                    let proxy = connection.remoteObjectProxyWithErrorHandler { error in
+                        log.error("[FP] handshake failed: \(String(describing: error), privacy: .public)")
+                        finish(false)
+                    } as? ClipboardFileProviderPinging
+                    guard let proxy else { return finish(false) }
+                    proxy.ping { connected in finish(connected) }
+                }
             }
             log.info("[FP] connected to extension (handshake \(established ? "ok" : "failed", privacy: .public))")
         } catch {
@@ -144,25 +152,52 @@ enum ClipboardFileProviderDomain {
         return await pingSucceeds()
     }
 
+    /// Every XPC call here is bounded. An `NSXPCConnection` whose peer has
+    /// died mid-message calls neither the reply block nor the error
+    /// handler, and this runs on the main actor: an unbounded wait froze
+    /// the whole app, which is exactly what a hung paste looked like from
+    /// the outside.
+    private static let callTimeout = Duration.seconds(2)
+
     private static func pingSucceeds() async -> Bool {
         guard let connection else { return false }
-        return await withCheckedContinuation { continuation in
-            var resumed = false
-            let finish: (Bool) -> Void = { value in
-                guard !resumed else { return }
-                resumed = true
-                continuation.resume(returning: value)
+        return await withTimeout(callTimeout, default: false) {
+            await withCheckedContinuation { continuation in
+                var resumed = false
+                let finish: (Bool) -> Void = { value in
+                    guard !resumed else { return }
+                    resumed = true
+                    continuation.resume(returning: value)
+                }
+                let proxy = connection.remoteObjectProxyWithErrorHandler { _ in
+                    finish(false)
+                } as? ClipboardFileProviderPinging
+                guard let proxy else { return finish(false) }
+                // The reply says whether the extension can reach *us*, not
+                // just that its listener answered. Those are different
+                // things: the system recycles extension instances inside a
+                // live process, and a stale listener will happily answer for
+                // one that has no connection left.
+                proxy.ping { connected in finish(connected) }
             }
-            let proxy = connection.remoteObjectProxyWithErrorHandler { _ in
-                finish(false)
-            } as? ClipboardFileProviderPinging
-            guard let proxy else { return finish(false) }
-            // The reply says whether the extension can reach *us*, not just
-            // that its listener answered. Those are different things: the
-            // system recycles extension instances inside a live process, and
-            // a stale listener will happily answer for one that has no
-            // connection left.
-            proxy.ping { connected in finish(connected) }
+        }
+    }
+
+    /// Run `work`, giving up with `default` if it outlasts `limit`.
+    private static func withTimeout<T: Sendable>(
+        _ limit: Duration,
+        default fallback: T,
+        _ work: @escaping @Sendable () async -> T
+    ) async -> T {
+        await withTaskGroup(of: T.self) { group in
+            group.addTask { await work() }
+            group.addTask {
+                try? await Task.sleep(for: limit)
+                return fallback
+            }
+            let first = await group.next() ?? fallback
+            group.cancelAll()
+            return first
         }
     }
 
