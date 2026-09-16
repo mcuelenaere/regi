@@ -52,8 +52,28 @@ packages:
 # of the old projects had per-config target settings.
 settingGroups:
   macApp:
-    CODE_SIGN_IDENTITY: "-"
+    # Real signing rather than ad-hoc, so the code-signing identity is stable
+    # across rebuilds. That matters well beyond distribution: TCC anchors an
+    # Accessibility grant to the designated requirement, and an ad-hoc
+    # signature's requirement is its own cdhash — which changes on every build,
+    # silently revoking keyboard capture each time.
+    #
+    # Automatic style, so Xcode manages the certificate. The requirement it
+    # produces pins the leaf certificate's common name:
+    #
+    #   identifier "app.regi.mac" and anchor apple generic and
+    #   certificate leaf[subject.CN] = "Apple Development: … (36Y6HT5B86)" and …
+    #
+    # Stable build-to-build, which is the point. Two consequences to know:
+    # renewing or regenerating that certificate changes the CN and so drops the
+    # Accessibility grant (the current one expires 2027-09-16), and a released
+    # build signed with Developer ID has a different requirement, so its grant
+    # is separate from a dev build's. Signing Developer ID here instead would
+    # anchor on the team OU and avoid both — at the cost of Manual style, which
+    # Xcode requires for a Developer ID identity at build time.
+    CODE_SIGN_IDENTITY: "Apple Development"
     CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: NX94Z8676R
     CURRENT_PROJECT_VERSION: "1"
     ENABLE_HARDENED_RUNTIME: YES
     GENERATE_INFOPLIST_FILE: NO      # INFOPLIST_FILE is authoritative; see targets
@@ -159,7 +179,6 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS: NO
         DEAD_CODE_STRIPPING: YES
-        DEVELOPMENT_TEAM: C45RUW4MTB
         ENABLE_PREVIEWS: YES
         # App/Info.plist is hand-written and commented (ATS, the Bonjour service
         # list, the local-network usage string). Never let XcodeGen's `info:` key
