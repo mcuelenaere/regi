@@ -28,9 +28,6 @@
     "Another peer connected to this device — your session was taken over." : {
 
     },
-    "Auto" : {
-
-    },
     "Basic clipboard" : {
 
     },
@@ -47,12 +44,6 @@
 
     },
     "Clipboard sync" : {
-
-    },
-    "Codec" : {
-
-    },
-    "Codec preference" : {
 
     },
     "Connect" : {
@@ -74,6 +65,9 @@
 
     },
     "Delete Host" : {
+
+    },
+    "Device" : {
 
     },
     "Device is in failsafe mode: %@" : {
@@ -112,12 +106,6 @@
     "Grant Accessibility permission to capture system shortcuts (Cmd+Tab, Cmd+Space, …), then click Capture again." : {
 
     },
-    "H.264" : {
-
-    },
-    "H.265" : {
-
-    },
     "HDMI signal error detected." : {
 
     },
@@ -125,6 +113,9 @@
 
     },
     "Holds the power button for 5 seconds." : {
+
+    },
+    "Host video" : {
 
     },
     "Hosts" : {
@@ -143,6 +134,9 @@
 
     },
     "Keyboard lock" : {
+
+    },
+    "Keyboard lock is blocked: macOS Secure Input is active (held by %@), which stops any app from capturing keys. If no password field is focused, it's stuck — log out and back in to clear it." : {
 
     },
     "KVM Session" : {
@@ -175,6 +169,12 @@
     "On" : {
 
     },
+    "Open Web Interface…" : {
+
+    },
+    "Opens %@ in your browser for video, network and firmware settings." : {
+
+    },
     "Password" : {
 
     },
@@ -184,7 +184,7 @@
     "Power" : {
 
     },
-    "Power, codec, and quality controls." : {
+    "Power, clipboard sync, and the device's web interface." : {
 
     },
     "Reboot" : {
@@ -259,9 +259,6 @@
     "Stats" : {
 
     },
-    "Stream quality" : {
-
-    },
     "Sync local clipboard with host" : {
 
     },
@@ -269,9 +266,6 @@
 
     },
     "t" : {
-
-    },
-    "Takes effect on next reconnect." : {
 
     },
     "Text-only sync, both directions. UTF-8 needs a guest clipboard agent (e.g. spice-vdagent with `-vga …,clipboard=vnc`); otherwise Latin-1 only. Password-manager copies marked transient are skipped." : {
