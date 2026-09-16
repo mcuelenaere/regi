@@ -54,10 +54,15 @@ targets:
   Regi:
     type: application
     platform: macOS
-    sources: [App]
+    # Shared with RegiFileProvider: the two run in different processes and
+    # must agree on the XPC contract.
+    sources: [App, Shared]
     dependencies:
       - package: KVMKit
         product: KVMKit
+      - target: RegiFileProvider
+        embed: true
+        codeSign: true
     settings:
       groups: [macApp]
       base:
@@ -68,6 +73,31 @@ targets:
         DEAD_CODE_STRIPPING: YES
         INFOPLIST_FILE: App/Info.plist
         PRODUCT_BUNDLE_IDENTIFIER: app.regi.mac
+
+  # On-demand materialisation for files pasted from the host. A File
+  # Provider is the only macOS mechanism that streams a file's bytes when
+  # something actually reads it: a promised `public.file-url` on the
+  # pasteboard does not stay promised, because Universal Clipboard
+  # force-resolves that flavour about 100ms after every clipboard change
+  # (pboard logs it under CFPasteboard:remote).
+  RegiFileProvider:
+    type: app-extension
+    platform: macOS
+    sources: [FileProvider, Shared]
+    settings:
+      groups: [macApp]
+      base:
+        CODE_SIGN_ENTITLEMENTS: FileProvider/RegiFileProvider.entitlements
+        # Xcode otherwise splits a Debug appex into a stub plus
+        # RegiFileProvider.debug.dylib. fileproviderd then silently never
+        # launches the extension — no error, just an empty domain that
+        # times out on enumeration. Cost us an afternoon; keep it off.
+        ENABLE_DEBUG_DYLIB: NO
+        INFOPLIST_FILE: FileProvider/Info.plist
+        PRODUCT_BUNDLE_IDENTIFIER: app.regi.mac.fileprovider
+        # The extension ships inside Regi.app; installing it alongside would
+        # put a second, unembedded copy in the products directory.
+        SKIP_INSTALL: YES
 
   RegiProbe:
     type: application

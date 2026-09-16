@@ -86,32 +86,68 @@ public struct ResolvedFormat: Sendable, Equatable {
     }
 }
 
-/// One inbound file representation, already written to disk under a name
-/// we claimed exclusively.
-public struct ResolvedFile: Sendable, Equatable {
-    /// The name the peer asked for. `url.lastPathComponent` differs when
-    /// the name was taken and we disambiguated with a ` (2)` suffix.
-    public let requestedName: String
-    public let url: URL
-    public init(requestedName: String, url: URL) {
-        self.requestedName = requestedName
-        self.url = url
+/// One inbound file representation the peer has *announced* but whose
+/// bytes we have not pulled. The App layer publishes it on NSPasteboard
+/// as a promise and calls `ClipboardBridge.fetchPromisedFile(_:)` if and
+/// when something actually asks for the file.
+///
+/// Deliberately not a URL: pulling a 12 MB file takes seconds, and the
+/// local pasteboard must not sit on the *previous* clipboard's contents
+/// for that long. Announcing costs one frame, so the pasteboard is
+/// correct the instant the offer lands, and a clipboard the user never
+/// pastes moves no bytes at all.
+public struct ClipboardFilePromise: Sendable, Equatable {
+    /// The offer this promise belongs to. A promise is only redeemable
+    /// while its offer is the current one — see `ClipboardPromiseError`.
+    public let clipboardId: UInt32
+    /// The representation's `index` within the offer, which is how the
+    /// pull names what it wants.
+    public let index: UInt32
+    /// The (already validated) name the peer asked for. What finally
+    /// lands may carry a ` (2)` suffix if the name was taken.
+    public let fileName: String
+    /// Announced byte length. Advisory until the transfer verifies it.
+    public let size: UInt64
+    /// Advisory — a file lands as an OS file reference, not a rendered
+    /// flavor. Useful for picking a UTI for the promise.
+    public let mime: String
+
+    public init(clipboardId: UInt32, index: UInt32, fileName: String, size: UInt64, mime: String) {
+        self.clipboardId = clipboardId
+        self.index = index
+        self.fileName = fileName
+        self.size = size
+        self.mime = mime
     }
 }
 
-/// One inbound clipboard event delivered to the App layer with every
-/// representation either inlined or streamed to completion. Drives the
-/// "host clipboard just changed; here's what's on it" UI flow.
+/// Why redeeming a `ClipboardFilePromise` didn't produce a file.
+public enum ClipboardPromiseError: Swift.Error, Equatable {
+    /// The offer carrying this promise is no longer the current one — a
+    /// newer clipboard event replaced it, or the channel went down. The
+    /// bytes are gone; there is nothing to retry.
+    case superseded
+    /// The peer answered the pull with something other than `COMPLETE`.
+    /// Typically `UNAVAILABLE`: the host's clipboard moved on between
+    /// announcing the file and our asking for it.
+    case refused(StreamClose.Status)
+    /// Local failure — no space, an unwritable landing directory, or a
+    /// transfer whose length didn't match what was announced.
+    case failed(String)
+}
+
+/// One inbound clipboard event delivered to the App layer. Content forms
+/// arrive resolved (inlined or streamed to completion); files arrive as
+/// promises, since a file is only worth moving if someone pastes it.
 public struct ResolvedOffer: Sendable, Equatable {
     public let clipboardId: UInt32
     /// Content forms, in the sender's preference order.
     public let formats: [ResolvedFormat]
-    /// Files, in offer order, each already committed to disk. The App
-    /// layer puts these on NSPasteboard as file references so the user
-    /// can paste them in Finder.
-    public let files: [ResolvedFile]
+    /// Files, in offer order, each redeemable via
+    /// `ClipboardBridge.fetchPromisedFile(_:)`.
+    public let files: [ClipboardFilePromise]
 
-    public init(clipboardId: UInt32, formats: [ResolvedFormat], files: [ResolvedFile] = []) {
+    public init(clipboardId: UInt32, formats: [ResolvedFormat], files: [ClipboardFilePromise] = []) {
         self.clipboardId = clipboardId
         self.formats = formats
         self.files = files
@@ -137,11 +173,16 @@ public struct ResolvedOffer: Sendable, Equatable {
 /// offer. Both roles are implemented here: we pull streams for inbound
 /// offers, and serve them for our own outbound offers.
 ///
-/// Files (representations with `file_name` set) ride the same layer.
-/// Inbound they're written to disk under `inboundFileRoot` subject to the
-/// spec's receiving rules — see `ClipboardFileRules` — and surface on
-/// `ResolvedOffer.files`; outbound they're read from disk a chunk at a
-/// time and never materialized whole.
+/// Files (representations with `file_name` set) ride the same layer, but
+/// inbound they are *promised* rather than pulled: an inbound offer's
+/// files surface on `ResolvedOffer.files` as `ClipboardFilePromise`
+/// immediately, and only `fetchPromisedFile(_:)` opens a stream and
+/// writes to `inboundFileRoot`, subject to the spec's receiving rules
+/// (see `ClipboardFileRules`). Pulling eagerly would hold the local
+/// pasteboard on the *previous* clipboard for the length of the
+/// transfer — seconds, for a file of any size — with nothing to show a
+/// transfer was in flight. Outbound, files are read from disk a chunk at
+/// a time and never materialized whole.
 ///
 /// `FEATURE_DRAG_V1` is implemented in the **origin** role only: the
 /// operator picks a drag up in Regi and drops it on the remote surface,
@@ -258,9 +299,23 @@ public final class ClipboardBridge {
     /// The most recently sent offer — the only one we serve stream
     /// opens against, since a new offer supersedes its predecessor.
     private var lastOutboundOffer: OutboundOffer?
-    /// The in-progress inbound offer. Also single-slot: a new inbound
-    /// offer supersedes the prior one.
+    /// The in-progress inbound offer's *content forms*. Single-slot: a
+    /// new inbound offer supersedes the prior one. Cleared once the offer
+    /// settles onto `inboundOffers`.
     private var pendingInbound: PartialInboundOffer?
+    /// The current inbound offer's *files*, announced but (mostly) not
+    /// pulled. Outlives `pendingInbound`: the promises stay redeemable
+    /// for as long as this offer is the peer's current clipboard.
+    private var announcedFiles: AnnouncedFiles?
+    /// Callers of `fetchPromisedFile` parked on a pull in flight, by
+    /// representation index. More than one can queue on the same pull —
+    /// AppKit asks for a promise once per destination.
+    private var promiseWaiters: [UInt32: [CheckedContinuation<URL, Error>]] = [:]
+    /// Where a finished pull leaves its answer for a caller that hasn't
+    /// parked yet: `sendStreamOpen` suspends, and the peer's reply is
+    /// handled on this same actor, so the whole transfer can complete
+    /// before the caller gets to its `withCheckedThrowingContinuation`.
+    private var promiseOutcomes: [UInt32: Result<URL, ClipboardPromiseError>] = [:]
     /// Streams we opened and are still receiving, keyed by stream id.
     private var inboundStreams: [UInt32: InboundStream] = [:]
     /// Streams the peer opened on us that we're still feeding.
@@ -316,6 +371,9 @@ public final class ClipboardBridge {
         let compression: Compression
     }
 
+    /// Content forms only. Files don't take slots: they never hold the
+    /// offer open, which is the point — the pasteboard updates as soon as
+    /// the (small) content forms are in.
     private struct PartialInboundOffer {
         let clipboardId: UInt32
         /// Accepted representations in offer order, so the resolved
@@ -326,10 +384,7 @@ public final class ClipboardBridge {
         struct Slot {
             let index: UInt32
             let mime: String
-            /// Set ⇒ a file; its landed URL goes in `fileURL`, not `data`.
-            let fileName: String?
             var data: Data?
-            var fileURL: URL?
             var isPending: Bool
         }
 
@@ -337,17 +392,53 @@ public final class ClipboardBridge {
 
         var resolvedFormats: [ResolvedFormat] {
             slots.compactMap { slot in
-                guard slot.fileName == nil, let data = slot.data else { return nil }
+                guard let data = slot.data else { return nil }
                 return ResolvedFormat(mime: slot.mime, data: data)
             }
         }
+    }
 
-        var resolvedFiles: [ResolvedFile] {
-            slots.compactMap { slot in
-                guard let name = slot.fileName, let url = slot.fileURL else { return nil }
-                return ResolvedFile(requestedName: name, url: url)
+    /// The files one inbound offer announced. Built at offer time —
+    /// names validated, caps applied — but nothing on disk until
+    /// `fetchPromisedFile` redeems a promise.
+    private struct AnnouncedFiles {
+        let clipboardId: UInt32
+        /// Offer order, so `ResolvedOffer.files` matches the sender's.
+        var order: [UInt32] = []
+        var byIndex: [UInt32: AnnouncedFile] = [:]
+        /// What we've already agreed to write for this offer. Fed to each
+        /// new writer's free-space preflight so redeeming twenty promises
+        /// can't pass twenty independent checks and still fill the volume.
+        var reservedBytes: UInt64 = 0
+
+        var promises: [ClipboardFilePromise] {
+            order.compactMap { index in
+                guard let file = byIndex[index] else { return nil }
+                return ClipboardFilePromise(
+                    clipboardId: clipboardId,
+                    index: index,
+                    fileName: file.name,
+                    size: file.size,
+                    mime: file.mime
+                )
             }
         }
+    }
+
+    private struct AnnouncedFile {
+        let name: String
+        let mime: String
+        let size: UInt64
+        let compression: Compression
+        /// A file small enough to have ridden the offer frame. Held in
+        /// memory (bounded by the frame cap) rather than written out, so
+        /// an offer nobody pastes still costs no disk.
+        let inline: Data?
+        /// Set once the bytes are on disk. A second redemption of the
+        /// same promise reuses the file instead of pulling it again.
+        var landedURL: URL?
+        /// Non-nil while a pull is in flight.
+        var streamId: UInt32?
     }
 
     private struct InboundStream {
@@ -437,6 +528,10 @@ public final class ClipboardBridge {
         let counts = "pendingInbound=\(pendingInbound != nil) inboundStreams=\(inboundStreams.count) outboundInFlight=\(outboundStreamsInFlight.count) lastOutbound=\(lastOutboundOffer != nil) drags=\(outboundDrags.count)"
         log.info("[BRIDGE] reset (\(reason, privacy: .public)): \(counts, privacy: .public)")
         pendingInbound = nil
+        // Same for the file promises: with the channel gone there is no
+        // way to redeem one, so waiters are released rather than parked
+        // forever.
+        discardAnnouncedFiles(reason: reason)
         // Dropping the streams releases their `ClipboardFileWriter`s, which
         // unlink the partial files — the spec's "clean up on disconnect".
         inboundStreams.removeAll()
@@ -1118,22 +1213,21 @@ public final class ClipboardBridge {
             log.debug("[BRIDGE] inbound offer \(offer.clipboardID, privacy: .public) supersedes pending \(prior.clipboardId, privacy: .public)")
             await cancelInboundStreams(forClipboardId: prior.clipboardId)
         }
+        // Likewise the previous offer's file promises, which outlive its
+        // content forms. Anything mid-redemption is told the clipboard
+        // moved on, and its partial file goes with the stream.
+        for streamId in discardAnnouncedFiles(reason: "offer \(offer.clipboardID) supersedes it") {
+            await sendStreamCancel(streamId: streamId)
+        }
 
         var partial = PartialInboundOffer(clipboardId: offer.clipboardID, slots: [])
+        var files = AnnouncedFiles(clipboardId: offer.clipboardID)
         var opens: [(streamId: UInt32, index: UInt32)] = []
-        // Materialized lazily: only an offer that actually carries files
-        // needs a directory on disk.
-        var filesDirectory: URL?
-        var acceptedFiles = 0
         /// `index` is as untrusted as `file_name`. Two representations
         /// sharing one would make two slots that both resolve to the first
         /// on close, so the second could never settle and the whole offer
         /// would hang (holding its file writers open with it).
         var seenIndices: Set<UInt32> = []
-        /// Running total of what we've agreed to accept, so a 20-file offer
-        /// can't pass 20 independent free-space preflights and then fill
-        /// the volume between them.
-        var reservedBytes: UInt64 = 0
 
         for rep in offer.payload.representations {
             guard seenIndices.insert(rep.index).inserted else {
@@ -1161,77 +1255,34 @@ public final class ClipboardBridge {
             }
 
             if let fileName {
-                guard acceptedFiles < Self.maxFilesPerPayload else {
+                // Announce only. No directory, no temp file, no
+                // StreamOpen: a file costs nothing until someone pastes
+                // it. Everything checkable without the bytes is checked
+                // here, so we never publish a promise we couldn't redeem.
+                guard files.order.count < Self.maxFilesPerPayload else {
                     log.error("[BRIDGE] inbound offer \(offer.clipboardID, privacy: .public): over the \(Self.maxFilesPerPayload, privacy: .public)-file cap; ignoring the rest")
                     continue
                 }
-                acceptedFiles += 1
-                if filesDirectory == nil {
-                    filesDirectory = prepareFilesDirectory(clipboardId: offer.clipboardID)
-                }
-                guard let directory = filesDirectory else { continue }
-                // Creating the writer *is* the preflight: it validates the
-                // name, rejects an implausible size, checks free space, and
-                // claims a temp file. Failing here means we never open the
-                // stream, so the sender isn't left streaming into the void.
-                let writer: ClipboardFileWriter
-                do {
-                    writer = try ClipboardFileWriter(
-                        directory: directory,
-                        rawName: fileName,
-                        declaredSize: rep.size,
-                        alreadyReserved: reservedBytes
-                    )
-                    reservedBytes = reservedBytes.addingReportingOverflow(rep.size).partialValue
-                } catch {
-                    log.error("[BRIDGE] inbound offer \(offer.clipboardID, privacy: .public): cannot accept file '\(fileName, privacy: .public)': \(String(describing: error), privacy: .public)")
+                guard rep.size <= ClipboardFileRules.maxFileBytes else {
+                    log.error("[BRIDGE] inbound offer \(offer.clipboardID, privacy: .public): file '\(fileName, privacy: .public)' declares \(rep.size, privacy: .public)B, over cap; skipping")
                     continue
                 }
-
-                if rep.hasInline {
-                    // A tiny file may inline, but it still has to reach the
-                    // disk: the clipboard hands out file references, not bytes.
-                    guard let decoded = decompress(rep.inline, using: rep.compression),
-                          let url = commit(writer: writer, bytes: decoded, name: fileName)
-                    else {
-                        log.error("[BRIDGE] inbound offer \(offer.clipboardID, privacy: .public): could not materialize inlined file '\(fileName, privacy: .public)'")
-                        continue
-                    }
-                    partial.slots.append(.init(
-                        index: rep.index, mime: rep.mime, fileName: fileName,
-                        data: nil, fileURL: url, isPending: false
-                    ))
-                    continue
-                }
-
-                var inflater: RawDeflateStream?
-                if rep.compression == .deflate {
-                    inflater = try? RawDeflateStream(mode: .decompress)
-                    guard inflater != nil else {
-                        log.error("[BRIDGE] inbound offer \(offer.clipboardID, privacy: .public): inflate init failed for '\(fileName, privacy: .public)'")
-                        continue
-                    }
-                } else if rep.compression != .none && rep.compression != .unspecified {
+                switch rep.compression {
+                case .none, .unspecified, .deflate:
+                    break
+                default:
                     log.error("[BRIDGE] inbound offer \(offer.clipboardID, privacy: .public): file '\(fileName, privacy: .public)' uses compression \(rep.compression.rawValue, privacy: .public) we never advertised; skipping")
                     continue
                 }
-
-                let streamId = nextStreamId
-                nextStreamId &+= 1
-                inboundStreams[streamId] = InboundStream(
-                    clipboardId: offer.clipboardID,
-                    index: rep.index,
+                files.order.append(rep.index)
+                files.byIndex[rep.index] = AnnouncedFile(
+                    name: fileName,
+                    mime: rep.mime,
+                    size: rep.size,
                     compression: rep.compression,
-                    expectedSize: rep.size,
-                    buffer: Data(),
-                    file: writer,
-                    inflater: inflater
+                    inline: rep.hasInline ? rep.inline : nil
                 )
-                partial.slots.append(.init(
-                    index: rep.index, mime: rep.mime, fileName: fileName,
-                    data: nil, fileURL: nil, isPending: true
-                ))
-                opens.append((streamId, rep.index))
+                log.debug("[BRIDGE] inbound offer \(offer.clipboardID, privacy: .public): idx=\(rep.index, privacy: .public) promises file '\(fileName, privacy: .public)' size=\(rep.size, privacy: .public)\(rep.hasInline ? " (inline)" : "", privacy: .public)")
                 continue
             }
 
@@ -1239,8 +1290,7 @@ public final class ClipboardBridge {
                 // `inline` present (even empty) ⇒ apply directly.
                 if let decoded = decompress(rep.inline, using: rep.compression) {
                     partial.slots.append(.init(
-                        index: rep.index, mime: rep.mime, fileName: nil,
-                        data: decoded, fileURL: nil, isPending: false
+                        index: rep.index, mime: rep.mime, data: decoded, isPending: false
                     ))
                     log.debug("[BRIDGE] inbound offer \(offer.clipboardID, privacy: .public): idx=\(rep.index, privacy: .public) inline '\(rep.mime, privacy: .public)' wire=\(rep.inline.count, privacy: .public) decoded=\(decoded.count, privacy: .public)")
                 } else {
@@ -1266,19 +1316,19 @@ public final class ClipboardBridge {
                 inflater: nil
             )
             partial.slots.append(.init(
-                index: rep.index, mime: rep.mime, fileName: nil,
-                data: nil, fileURL: nil, isPending: true
+                index: rep.index, mime: rep.mime, data: nil, isPending: true
             ))
             opens.append((streamId, rep.index))
         }
 
-        if partial.slots.isEmpty {
+        if partial.slots.isEmpty && files.order.isEmpty {
             log.debug("[BRIDGE] inbound offer \(offer.clipboardID, privacy: .public): nothing acceptable; ignoring")
             pendingInbound = nil
             return
         }
 
         pendingInbound = partial
+        announcedFiles = files.order.isEmpty ? nil : files
 
         for open in opens {
             log.debug("[BRIDGE] inbound offer \(offer.clipboardID, privacy: .public): opening stream \(open.streamId, privacy: .public) for idx=\(open.index, privacy: .public)")
@@ -1290,14 +1340,183 @@ public final class ClipboardBridge {
             guard !sent else { continue }
             // The peer never learned of the pull, so no StreamData or
             // StreamClose is coming: resolve the slot now rather than
-            // leave the offer (and this file's writer) pending forever.
+            // leave the offer pending forever.
             log.error("[BRIDGE] inbound offer \(offer.clipboardID, privacy: .public): stream_open \(open.streamId, privacy: .public) did not go out; failing idx=\(open.index, privacy: .public)")
             inboundStreams.removeValue(forKey: open.streamId)
             failInboundSlot(index: open.index, clipboardId: offer.clipboardID)
         }
 
-        // All-inline offers settle immediately.
+        // An offer whose content forms all rode inline — including one
+        // that is nothing but files — settles right here, which is the
+        // whole point: the pasteboard is correct one frame after the
+        // offer, not one transfer later.
         settleIfComplete()
+    }
+
+    // MARK: - Redeeming file promises
+
+    /// Pull one announced file and return where it landed.
+    ///
+    /// Called when something actually asks for the file — AppKit
+    /// fulfilling an `NSFilePromiseProvider` the App layer put on the
+    /// pasteboard — which is what keeps a copy the user never pastes off
+    /// the wire and off the disk. Everything the spec requires of a
+    /// receiver still happens here, just later: validated name, hidden
+    /// temp file in the destination directory, incremental size
+    /// enforcement, `O_EXCL` claim, atomic rename.
+    ///
+    /// Idempotent per promise: the second caller for a file already on
+    /// disk gets the same URL, and callers arriving mid-pull queue on it
+    /// rather than starting a second transfer.
+    public func fetchPromisedFile(_ promise: ClipboardFilePromise) async throws -> URL {
+        guard let current = announcedFiles, current.clipboardId == promise.clipboardId,
+              let file = current.byIndex[promise.index]
+        else {
+            log.debug("[BRIDGE] promise \(promise.clipboardId, privacy: .public)/\(promise.index, privacy: .public) '\(promise.fileName, privacy: .public)': offer is no longer current")
+            throw ClipboardPromiseError.superseded
+        }
+        if let landed = file.landedURL {
+            log.debug("[BRIDGE] promise \(promise.clipboardId, privacy: .public)/\(promise.index, privacy: .public): already on disk at \(landed.lastPathComponent, privacy: .public)")
+            return landed
+        }
+        if file.streamId != nil {
+            // Someone got here first; ride their transfer.
+            return try await withCheckedThrowingContinuation { continuation in
+                promiseWaiters[promise.index, default: []].append(continuation)
+            }
+        }
+
+        guard let directory = prepareFilesDirectory(clipboardId: promise.clipboardId) else {
+            throw ClipboardPromiseError.failed("no landing directory")
+        }
+        // Creating the writer *is* the preflight: it re-validates the
+        // name, rejects an implausible size, checks free space against
+        // what this offer has already claimed, and claims a temp file.
+        let writer: ClipboardFileWriter
+        do {
+            writer = try ClipboardFileWriter(
+                directory: directory,
+                rawName: file.name,
+                declaredSize: file.size,
+                alreadyReserved: current.reservedBytes
+            )
+        } catch {
+            log.error("[BRIDGE] promise \(promise.clipboardId, privacy: .public)/\(promise.index, privacy: .public): cannot accept '\(file.name, privacy: .public)': \(String(describing: error), privacy: .public)")
+            throw ClipboardPromiseError.failed(String(describing: error))
+        }
+        announcedFiles?.reservedBytes = current.reservedBytes
+            .addingReportingOverflow(file.size).partialValue
+
+        // A tiny file rode the offer frame; it still has to reach the
+        // disk, since what we hand back is a file reference.
+        if let inline = file.inline {
+            guard let decoded = decompress(inline, using: file.compression),
+                  let url = commit(writer: writer, bytes: decoded, name: file.name)
+            else {
+                throw ClipboardPromiseError.failed("could not materialize inlined file '\(file.name)'")
+            }
+            announcedFiles?.byIndex[promise.index]?.landedURL = url
+            return url
+        }
+
+        var inflater: RawDeflateStream?
+        if file.compression == .deflate {
+            inflater = try? RawDeflateStream(mode: .decompress)
+            guard inflater != nil else {
+                writer.discard()
+                throw ClipboardPromiseError.failed("inflate init failed for '\(file.name)'")
+            }
+        }
+
+        let streamId = nextStreamId
+        nextStreamId &+= 1
+        promiseOutcomes.removeValue(forKey: promise.index)
+        inboundStreams[streamId] = InboundStream(
+            clipboardId: promise.clipboardId,
+            index: promise.index,
+            compression: file.compression,
+            expectedSize: file.size,
+            buffer: Data(),
+            file: writer,
+            inflater: inflater
+        )
+        announcedFiles?.byIndex[promise.index]?.streamId = streamId
+
+        log.info("[BRIDGE] promise \(promise.clipboardId, privacy: .public)/\(promise.index, privacy: .public): pulling '\(file.name, privacy: .public)' (\(file.size, privacy: .public)B) on stream \(streamId, privacy: .public)")
+        guard await sendStreamOpen(
+            streamId: streamId,
+            clipboardId: promise.clipboardId,
+            index: promise.index
+        ) else {
+            log.error("[BRIDGE] promise \(promise.clipboardId, privacy: .public)/\(promise.index, privacy: .public): stream_open \(streamId, privacy: .public) did not go out")
+            inboundStreams.removeValue(forKey: streamId)
+            writer.discard()
+            finishPromise(index: promise.index, result: .failure(.failed("stream_open did not reach the wire")))
+            promiseOutcomes.removeValue(forKey: promise.index)
+            throw ClipboardPromiseError.failed("stream_open did not reach the wire")
+        }
+        // `sendStreamOpen` suspends, and the peer's whole answer is
+        // handled on this actor — so the transfer may already be over.
+        if let outcome = promiseOutcomes.removeValue(forKey: promise.index) {
+            return try outcome.get()
+        }
+        // …or the offer may have been superseded in that same window, in
+        // which case there is no longer anything that would resume us.
+        guard announcedFiles?.clipboardId == promise.clipboardId,
+              announcedFiles?.byIndex[promise.index]?.streamId == streamId
+        else {
+            log.debug("[BRIDGE] promise \(promise.clipboardId, privacy: .public)/\(promise.index, privacy: .public): offer went away while the pull was opening")
+            throw ClipboardPromiseError.superseded
+        }
+        return try await withCheckedThrowingContinuation { continuation in
+            promiseWaiters[promise.index, default: []].append(continuation)
+        }
+    }
+
+    /// Hand one pull's result to everyone waiting on it, and remember it
+    /// for a caller that hasn't parked yet.
+    private func finishPromise(index: UInt32, result: Result<URL, ClipboardPromiseError>) {
+        guard announcedFiles?.byIndex[index] != nil else { return }
+        announcedFiles?.byIndex[index]?.streamId = nil
+        if case .success(let url) = result {
+            announcedFiles?.byIndex[index]?.landedURL = url
+        }
+        promiseOutcomes[index] = result
+        for continuation in promiseWaiters.removeValue(forKey: index) ?? [] {
+            continuation.resume(with: result)
+        }
+    }
+
+    /// Forget the current offer's file promises: nobody can redeem them
+    /// any more, so anything mid-pull is abandoned (which unlinks its
+    /// partial file) and anyone waiting is told the clipboard moved on.
+    ///
+    /// Returns the stream ids that were in flight, so a caller that still
+    /// has a channel can cancel them on the wire.
+    @discardableResult
+    private func discardAnnouncedFiles(reason: String) -> [UInt32] {
+        guard let current = announcedFiles else { return [] }
+        var doomed: [UInt32] = []
+        for (_, file) in current.byIndex {
+            guard let streamId = file.streamId else { continue }
+            // Dropping the stream releases its `ClipboardFileWriter`,
+            // which unlinks the partial. It may already be gone — a
+            // caller that cancelled it first shouldn't get a second
+            // StreamCancel out of us.
+            guard inboundStreams.removeValue(forKey: streamId) != nil else { continue }
+            doomed.append(streamId)
+        }
+        announcedFiles = nil
+        promiseOutcomes.removeAll()
+        let waiters = promiseWaiters.values.flatMap { $0 }
+        promiseWaiters.removeAll()
+        if !current.byIndex.isEmpty {
+            log.debug("[BRIDGE] dropping \(current.byIndex.count, privacy: .public) file promise(s) of offer \(current.clipboardId, privacy: .public): \(reason, privacy: .public)")
+        }
+        for continuation in waiters {
+            continuation.resume(throwing: ClipboardPromiseError.superseded)
+        }
+        return doomed
     }
 
     /// Per-offer landing directory. Each clipboard event gets its own, so
@@ -1384,7 +1603,9 @@ public final class ClipboardBridge {
                 log.error("[BRIDGE] stream_data \(frame.streamID, privacy: .public): file '\(writer.requestedName, privacy: .public)' failed: \(String(describing: error), privacy: .public); cancelling")
                 inboundStreams.removeValue(forKey: frame.streamID)
                 writer.discard()
-                failInboundSlot(index: stream.index, clipboardId: stream.clipboardId)
+                if announcedFiles?.clipboardId == stream.clipboardId {
+                    finishPromise(index: stream.index, result: .failure(.failed(String(describing: error))))
+                }
                 let streamId = frame.streamID
                 Task { @MainActor [weak self] in await self?.sendStreamCancel(streamId: streamId) }
             }
@@ -1408,22 +1629,19 @@ public final class ClipboardBridge {
             log.debug("[BRIDGE] stream_close \(close.streamID, privacy: .public): unknown/stale stream; ignoring")
             return
         }
-        guard var partial = pendingInbound, partial.clipboardId == stream.clipboardId else {
-            log.debug("[BRIDGE] stream_close \(close.streamID, privacy: .public): offer \(stream.clipboardId, privacy: .public) no longer pending; ignoring")
-            // Releasing `stream` unlinks any partial file it was writing.
-            return
-        }
-        guard let slotIdx = partial.slots.firstIndex(where: { $0.index == stream.index }) else { return }
 
+        // A file stream is a redeemed promise, not a slot of the pending
+        // offer — by now that offer has usually settled and gone.
         if let writer = stream.file {
-            partial.slots[slotIdx].isPending = false
-            defer {
-                pendingInbound = partial
-                settleIfComplete()
+            guard announcedFiles?.clipboardId == stream.clipboardId else {
+                log.debug("[BRIDGE] stream_close \(close.streamID, privacy: .public): offer \(stream.clipboardId, privacy: .public) is no longer current; discarding partial")
+                writer.discard()
+                return
             }
             guard close.status == .streamStatusComplete else {
                 log.debug("[BRIDGE] stream \(close.streamID, privacy: .public): file '\(writer.requestedName, privacy: .public)' closed status=\(close.status.rawValue, privacy: .public); discarding partial")
                 writer.discard()
+                finishPromise(index: stream.index, result: .failure(.refused(close.status)))
                 return
             }
             do {
@@ -1432,13 +1650,22 @@ public final class ClipboardBridge {
                 if let inflater = stream.inflater {
                     try writer.write(try inflater.finish())
                 }
-                partial.slots[slotIdx].fileURL = try writer.commit()
+                let url = try writer.commit()
+                log.info("[BRIDGE] stream \(close.streamID, privacy: .public): file '\(writer.requestedName, privacy: .public)' landed at \(url.lastPathComponent, privacy: .public)")
+                finishPromise(index: stream.index, result: .success(url))
             } catch {
                 log.error("[BRIDGE] stream \(close.streamID, privacy: .public): file '\(writer.requestedName, privacy: .public)' not published: \(String(describing: error), privacy: .public)")
                 writer.discard()
+                finishPromise(index: stream.index, result: .failure(.failed(String(describing: error))))
             }
             return
         }
+
+        guard var partial = pendingInbound, partial.clipboardId == stream.clipboardId else {
+            log.debug("[BRIDGE] stream_close \(close.streamID, privacy: .public): offer \(stream.clipboardId, privacy: .public) no longer pending; ignoring")
+            return
+        }
+        guard let slotIdx = partial.slots.firstIndex(where: { $0.index == stream.index }) else { return }
 
         switch close.status {
         case .streamStatusComplete:
@@ -1482,8 +1709,10 @@ public final class ClipboardBridge {
         guard let partial = pendingInbound, partial.isSettled else { return }
         pendingInbound = nil
         let formats = partial.resolvedFormats
-        let files = partial.resolvedFiles
-        log.debug("[BRIDGE] inbound offer \(partial.clipboardId, privacy: .public): settled with \(formats.count, privacy: .public) content form(s) + \(files.count, privacy: .public) file(s) of \(partial.slots.count, privacy: .public) representation(s); yielding")
+        let files = announcedFiles?.clipboardId == partial.clipboardId
+            ? (announcedFiles?.promises ?? [])
+            : []
+        log.debug("[BRIDGE] inbound offer \(partial.clipboardId, privacy: .public): settled with \(formats.count, privacy: .public) content form(s) of \(partial.slots.count, privacy: .public) + \(files.count, privacy: .public) promised file(s); yielding")
         inboundOffersContinuation.yield(
             ResolvedOffer(clipboardId: partial.clipboardId, formats: formats, files: files)
         )

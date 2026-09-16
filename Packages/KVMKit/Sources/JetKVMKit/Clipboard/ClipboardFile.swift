@@ -106,7 +106,44 @@ public enum ClipboardFileRules {
     /// `name` for `attempt == 0`, then `stem (2).ext`, `stem (3).ext`, … —
     /// the suffix goes before the extension, so `report.pdf` becomes
     /// `report (2).pdf`.
-    static func collisionName(_ name: String, attempt: Int) -> String {
+    /// Make one offer's file names unique among themselves, keeping the
+    /// first occurrence untouched and disambiguating the rest the way the
+    /// Finder does — `report.pdf`, `report (2).pdf`, …
+    ///
+    /// One clipboard offer may legitimately carry two files of the same
+    /// name, copied from different directories. On disk that resolves
+    /// itself, because each lands with `O_EXCL` and falls through to the
+    /// next variant. Somewhere the names are *presented* rather than
+    /// created — a File Provider's flat listing, say — nothing resolves it
+    /// for us, so do it up front.
+    ///
+    /// Case-insensitive, because the destination file system usually is:
+    /// `README` and `readme` would otherwise collide after the fact.
+    public static func disambiguated(fileNames: [String]) -> [String] {
+        var taken: Set<String> = []
+        var result: [String] = []
+        result.reserveCapacity(fileNames.count)
+        for name in fileNames {
+            var attempt = 0
+            var candidate = name
+            while !taken.insert(candidate.lowercased()).inserted {
+                attempt += 1
+                candidate = collisionName(name, attempt: attempt)
+                if attempt > maxCollisionTries {
+                    // Pathological: fall back to something certainly unique
+                    // rather than loop. A name this contested is a peer
+                    // doing something strange, not a user.
+                    candidate = "\(UUID().uuidString)-\(name)"
+                    _ = taken.insert(candidate.lowercased())
+                    break
+                }
+            }
+            result.append(candidate)
+        }
+        return result
+    }
+
+    public static func collisionName(_ name: String, attempt: Int) -> String {
         if attempt == 0 { return name }
         let n = attempt + 1
         // Split on the LAST dot so `archive.tar.gz` keeps `.gz`; a leading

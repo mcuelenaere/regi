@@ -73,8 +73,29 @@ struct KVMSessionWindowID: Hashable, Codable {
 /// `openWindow(id: "hosts")` under the hood whether or not an
 /// instance currently exists.
 private final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // Registering early: the domain has to exist before an inbound
+        // offer can publish a URL into it.
+        Task { await ClipboardFileProviderDomain.register() }
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
+    }
+
+    /// Give the File Provider domain back before we go. The extension can
+    /// only serve files while Regi is running to pull them, so leaving the
+    /// domain mounted would put a folder in Finder that answers every read
+    /// with an error.
+    func applicationWillTerminate(_ notification: Notification) {
+        let done = DispatchSemaphore(value: 0)
+        Task { @MainActor in
+            await ClipboardFileProviderDomain.teardown()
+            done.signal()
+        }
+        // Termination does not wait for async work on its own, and an
+        // un-torn-down domain outlives the process.
+        _ = done.wait(timeout: .now() + 2)
     }
 
     /// Dock left-click reopen handler. When no windows are visible,
