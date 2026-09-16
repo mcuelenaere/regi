@@ -25,13 +25,13 @@ private let log = Logger(subsystem: "app.regi.mac", category: "fileprovider")
 final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, NSFileProviderServicing {
 
     private let domain: NSFileProviderDomain
-    private let host = HostConnection()
-    /// Held for the extension's lifetime: it owns the anonymous listener
-    /// Regi connects to, and a per-call instance would be torn down
-    /// before the app ever dialled it.
-    private lazy var serviceSource = ClipboardFileServiceSource { [weak self] connection in
-        self?.host.adopt(connection)
-    }
+    /// Process-wide, not per-instance. The system tears this class down
+    /// and builds a new one inside the *same* process whenever it feels
+    /// like it; a per-instance connection meant the replacement started
+    /// with none while the old one's listener carried on answering the
+    /// app's keepalive, so Regi believed it was connected and every
+    /// request answered "Regi is not running".
+    private let host = HostConnection.shared
 
     required init(domain: NSFileProviderDomain) {
         self.domain = domain
@@ -40,8 +40,10 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
     }
 
     func invalidate() {
-        log.info("[FP] invalidate")
-        host.invalidate()
+        // Only this instance is going away; the process, its listener and
+        // its connection to Regi outlive it. Tearing the connection down
+        // here would break the instance that replaces us.
+        log.info("[FP] invalidate (instance only; connection kept)")
     }
 
     // MARK: - Items
@@ -190,8 +192,18 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
 /// Holds the XPC connection Regi opens to this extension, and calls back
 /// along it. Every reply is delivered on an XPC queue.
 private final class HostConnection: @unchecked Sendable {
+    static let shared = HostConnection()
+
     private let lock = NSLock()
     private var connection: NSXPCConnection?
+
+    /// Whether Regi is reachable right now. Reported back over the ping so
+    /// the app can tell a live connection from a live *listener* attached
+    /// to nothing.
+    var isConnected: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return connection != nil
+    }
 
     func adopt(_ connection: NSXPCConnection) {
         lock.lock(); defer { lock.unlock() }
@@ -239,11 +251,13 @@ private final class HostConnection: @unchecked Sendable {
 /// Vends the endpoint Regi connects to. The system hands this to the app
 /// when it asks for our service by name.
 final class ClipboardFileServiceSource: NSObject, NSFileProviderServiceSource, NSXPCListenerDelegate {
-    private let listener = NSXPCListener.anonymous()
-    private let onConnect: (NSXPCConnection) -> Void
+    /// One listener for the process, for the same reason the connection is
+    /// process-wide: extension instances come and go beneath it.
+    static let shared = ClipboardFileServiceSource()
 
-    init(onConnect: @escaping (NSXPCConnection) -> Void) {
-        self.onConnect = onConnect
+    private let listener = NSXPCListener.anonymous()
+
+    override init() {
         super.init()
         listener.delegate = self
         listener.resume()
@@ -264,7 +278,7 @@ final class ClipboardFileServiceSource: NSObject, NSFileProviderServiceSource, N
         // establishes the connection in the first place.
         connection.exportedInterface = ClipboardFileProviderIPC.providerInterface()
         connection.exportedObject = PingResponder()
-        onConnect(connection)
+        HostConnection.shared.adopt(connection)
         connection.resume()
         return true
     }
@@ -272,8 +286,12 @@ final class ClipboardFileServiceSource: NSObject, NSFileProviderServiceSource, N
 
 private final class PingResponder: NSObject, ClipboardFileProviderPinging {
     func ping(reply: @escaping (Bool) -> Void) {
-        log.info("[FP] ping from Regi; connection is live")
-        reply(true)
+        // Answer with whether the *serving* side can actually reach Regi,
+        // not merely that this listener is up. Those came apart once
+        // already, and the app could not tell.
+        let connected = HostConnection.shared.isConnected
+        if !connected { log.error("[FP] ping: listener is up but no connection to Regi") }
+        reply(connected)
     }
 }
 
@@ -286,7 +304,7 @@ extension FileProviderExtension {
         completionHandler: @escaping ([NSFileProviderServiceSource]?, Error?) -> Void
     ) -> Progress {
         log.info("[FP] supportedServiceSources asked for \(itemIdentifier.rawValue, privacy: .public)")
-        completionHandler([serviceSource], nil)
+        completionHandler([ClipboardFileServiceSource.shared], nil)
         return Progress()
     }
 }

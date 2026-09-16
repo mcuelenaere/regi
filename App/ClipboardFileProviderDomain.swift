@@ -120,7 +120,7 @@ enum ClipboardFileProviderDomain {
                     continuation.resume(returning: false)
                 } as? ClipboardFileProviderPinging
                 guard let proxy else { return continuation.resume(returning: false) }
-                proxy.ping { _ in continuation.resume(returning: true) }
+                proxy.ping { connected in continuation.resume(returning: connected) }
             }
             log.info("[FP] connected to extension (handshake \(established ? "ok" : "failed", privacy: .public))")
         } catch {
@@ -157,7 +157,12 @@ enum ClipboardFileProviderDomain {
                 finish(false)
             } as? ClipboardFileProviderPinging
             guard let proxy else { return finish(false) }
-            proxy.ping { _ in finish(true) }
+            // The reply says whether the extension can reach *us*, not just
+            // that its listener answered. Those are different things: the
+            // system recycles extension instances inside a live process, and
+            // a stale listener will happily answer for one that has no
+            // connection left.
+            proxy.ping { connected in finish(connected) }
         }
     }
 
