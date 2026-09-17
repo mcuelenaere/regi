@@ -58,22 +58,6 @@ public final class PiKVMHTTPClient: @unchecked Sendable {
         }
     }
 
-    /// `GET /api/auth/check` — 200 once authenticated (the cookie is
-    /// attached automatically). Throws `.unauthorized` on 401/403.
-    public func checkAuth() async throws {
-        let url = endpoint.httpURL(path: "/api/auth/check")
-        var req = URLRequest(url: url)
-        req.httpMethod = "GET"
-        let (data, response) = try await rawCall(req)
-        guard let http = response as? HTTPURLResponse else { throw HTTPClientError.invalidResponse }
-        guard (200..<300).contains(http.statusCode) else {
-            if http.statusCode == 401 || http.statusCode == 403 {
-                throw HTTPClientError.unauthorized(message: Self.message(data))
-            }
-            throw HTTPClientError.server(statusCode: http.statusCode, message: Self.message(data))
-        }
-    }
-
     // MARK: - Internal
 
     private func rawCall(_ request: URLRequest) async throws -> (Data, URLResponse) {
