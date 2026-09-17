@@ -1,3 +1,4 @@
+import AVFoundation
 import AppKit
 import KVMKit
 import OSLog
@@ -152,32 +153,18 @@ final class KVMVideoView: NSView {
     /// `RTCMTLNSVideoView` letterboxes/pillarboxes to preserve aspect, so
     /// the actual pixels of the host display occupy this sub-rect, not
     /// the whole view. We use this for mouse-coordinate translation.
+    ///
+    /// `regi-e2e` deliberately computes this a second time rather than
+    /// reading it back, so a mistake here fails a test instead of hiding —
+    /// see `VideoGeometry.contentRect`.
     private var videoContentRect: CGRect {
+        // AVMakeRect degenerates (NaN / infinite) on a zero extent, so the
+        // guard stays.
         guard videoSize.width > 0, videoSize.height > 0,
               bounds.width > 0, bounds.height > 0 else {
             return bounds
         }
-        let viewAspect = bounds.width / bounds.height
-        let videoAspect = videoSize.width / videoSize.height
-        if videoAspect > viewAspect {
-            // Video is wider than the view: letterbox top + bottom.
-            let h = bounds.width / videoAspect
-            return CGRect(
-                x: 0,
-                y: (bounds.height - h) / 2,
-                width: bounds.width,
-                height: h
-            )
-        } else {
-            // Video is taller than the view: pillarbox left + right.
-            let w = bounds.height * videoAspect
-            return CGRect(
-                x: (bounds.width - w) / 2,
-                y: 0,
-                width: w,
-                height: bounds.height
-            )
-        }
+        return AVMakeRect(aspectRatio: videoSize, insideRect: bounds)
     }
 
     // MARK: - First responder + coordinate system
