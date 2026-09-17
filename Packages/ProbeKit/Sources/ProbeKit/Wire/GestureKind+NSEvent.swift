@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 import Foundation
 
 /// Gesture events are `NSEvent` types with no `CGEventType` constants, so a tap

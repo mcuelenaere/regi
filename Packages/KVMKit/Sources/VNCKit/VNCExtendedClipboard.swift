@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 import Foundation
 
 /// Codec for the Extended Clipboard pseudo-encoding (the UTF-8-capable

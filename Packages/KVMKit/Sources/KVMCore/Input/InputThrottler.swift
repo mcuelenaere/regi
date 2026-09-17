@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 import Foundation
 
 /// Drops events that arrive faster than `interval` apart.

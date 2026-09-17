@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 import Foundation
 
 /// RFB 3.8 protocol constants, the negotiated pixel format, and client-message

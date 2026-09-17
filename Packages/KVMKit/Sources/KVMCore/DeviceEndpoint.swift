@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 import Foundation
 
 /// Where on the network a JetKVM device lives. Owns URL construction so the

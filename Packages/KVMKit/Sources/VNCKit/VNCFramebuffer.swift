@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 import Foundation
 
 /// The persistent client-side framebuffer, in 32-bit BGRA (matching the pixel

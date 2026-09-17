@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 import Foundation
 
 /// Accumulates fractional scroll-wheel deltas (from e.g. macOS

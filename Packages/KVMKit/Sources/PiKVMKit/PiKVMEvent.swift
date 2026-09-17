@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 import Foundation
 
 /// Wire codec for PiKVM's `/api/ws` event protocol: outbound keyboard /

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 import Foundation
 
 /// HTTP errors surfaced by a backend's HTTP layer. JetKVM's login endpoint

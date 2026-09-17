@@ -21,6 +21,22 @@ assignment, no separate paperwork.
 
 You keep the copyright on what you write.
 
+## License headers
+
+Every tracked Swift source file starts with:
+
+```swift
+// SPDX-License-Identifier: AGPL-3.0-or-later
+```
+
+You don't have to add it by hand — run `scripts/license-headers.sh` and it
+stamps whatever is missing. CI runs the same script with `--check` and fails
+the build on an unheadered file, so this can't drift.
+
+Two exclusions, both deliberate: `Package.swift` manifests (SwiftPM requires
+`// swift-tools-version:` on the very first line) and generated protobuf
+sources under `*/generated/` (protoc overwrites them on every regeneration).
+
 ## What to know before a large PR
 
 Open an issue first for anything substantial. Regi has opinions about how its

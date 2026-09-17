@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 import Foundation
 
 /// Decoder for the ZRLE encoding (16): a rect is a u32 length + that many bytes

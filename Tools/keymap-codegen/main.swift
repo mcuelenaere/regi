@@ -1,4 +1,6 @@
 #!/usr/bin/env swift
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Codegen for `KeyMap.swift` — the macOS-virtual-keycode → USB-HID-Usage-ID
 // table used by the keyboard handler.
 //

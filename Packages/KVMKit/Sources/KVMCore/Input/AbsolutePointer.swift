@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 import CoreGraphics
 
 /// The absolute-pointer coordinate space shared by every backend.

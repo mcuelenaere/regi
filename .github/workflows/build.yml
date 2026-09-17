@@ -17,6 +17,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # Runs before the build: a missing header is a one-line fix, and there
+      # is no reason to spend 20 minutes compiling to find that out. The Go
+      # toolchain this needs is preinstalled on the macOS runner image; the
+      # script falls back to it only when addlicense isn't already on PATH.
+      - name: Check license headers
+        run: scripts/license-headers.sh --check
+
       - name: Show toolchain
         run: |
           xcodebuild -version

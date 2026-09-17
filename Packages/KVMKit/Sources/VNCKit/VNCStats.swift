@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 import Foundation
 
 /// Counters shared between the decode task (writer) and the backend's ~1 Hz

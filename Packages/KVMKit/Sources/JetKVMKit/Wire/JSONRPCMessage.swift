@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 import Foundation
 
 /// Wire types for the JSON-RPC 2.0 protocol JetKVM uses on the `rpc`

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // The App links only `KVMKit` (the umbrella) but uses public types from the
 // core and backend modules directly — `KVMState`, `DeviceEndpoint`,
 // `KVMPowerAction`, input primitives (KVMCore); `ClipboardBridge`,

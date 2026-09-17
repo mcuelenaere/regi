@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 import Foundation
 
 /// Decoder for the Hextile encoding (5): each rect is split into 16×16 tiles,
