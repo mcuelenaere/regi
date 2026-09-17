@@ -122,7 +122,7 @@ struct StatsPanel: View {
             )
             Badge(
                 label: "Codec",
-                value: latest?.codec.flatMap(codecLabel) ?? "—",
+                value: latest?.codec.map(codecLabel) ?? "—",
                 tint: .secondary
             )
             Badge(
@@ -142,15 +142,15 @@ struct StatsPanel: View {
             HStack(spacing: 24) {
                 FooterStat(
                     label: "Bandwidth used",
-                    value: latest.map { formatBytes($0.bytesReceivedTotal) } ?? "—"
+                    value: latest.map { $0.bytesReceivedTotal.formatted(.byteCount(style: .binary)) } ?? "—"
                 )
                 FooterStat(
                     label: "Packets received",
-                    value: latest.map { decimal($0.packetsReceived) } ?? "—"
+                    value: latest.map { $0.packetsReceived.formatted(.number) } ?? "—"
                 )
                 FooterStat(
                     label: "Packets lost",
-                    value: latest.map { decimal($0.packetsLost) } ?? "—"
+                    value: latest.map { $0.packetsLost.formatted(.number) } ?? "—"
                 )
                 FooterStat(
                     label: "Freezes",
@@ -176,21 +176,6 @@ struct StatsPanel: View {
         }
     }
 
-    private func formatBytes(_ bytes: Int64) -> String {
-        let mb = Double(bytes) / (1024 * 1024)
-        if mb >= 1024 {
-            return String(format: "%.2f GB", mb / 1024)
-        } else if mb >= 1 {
-            return String(format: "%.1f MB", mb)
-        } else {
-            return String(format: "%.0f KB", Double(bytes) / 1024)
-        }
-    }
-
-    private func decimal(_ n: Int64) -> String {
-        n.formatted(.number)
-    }
-
     private func connectionTypeLabel(_ type: ConnectionType) -> String {
         switch type {
         case .host:  return "Direct (LAN)"
@@ -210,15 +195,22 @@ struct StatsPanel: View {
     }
 
     /// Strip the "video/" prefix from the W3C codec mimeType.
-    private func codecLabel(_ mimeType: String) -> String? {
-        if let slash = mimeType.firstIndex(of: "/") {
-            return String(mimeType[mimeType.index(after: slash)...])
-        }
-        return mimeType
+    private func codecLabel(_ mimeType: String) -> String {
+        String(mimeType.split(separator: "/").last ?? "")
     }
 }
 
 // MARK: - Card components
+
+private extension View {
+    /// The tinted rounded rectangle a metric card and a badge share.
+    func statCardChrome() -> some View {
+        padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.secondary.opacity(0.08))
+            .cornerRadius(8)
+    }
+}
 
 private struct MetricCard: View {
     let title: String
@@ -239,10 +231,7 @@ private struct MetricCard: View {
                 .frame(height: 32)
                 .padding(.top, 2)
         }
-        .padding(10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.secondary.opacity(0.08))
-        .cornerRadius(8)
+        .statCardChrome()
     }
 
     @ViewBuilder
@@ -288,10 +277,7 @@ private struct Badge: View {
                 .font(.body.weight(.medium))
                 .foregroundStyle(tint)
         }
-        .padding(10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.secondary.opacity(0.08))
-        .cornerRadius(8)
+        .statCardChrome()
     }
 }
 
