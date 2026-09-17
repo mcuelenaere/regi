@@ -8,10 +8,6 @@ import WebRTC
 private let log = Logger(subsystem: "app.regi.mac", category: "session")
 
 public enum SessionError: Error, Sendable {
-    /// `GET /device/status` returned `isSetup: false`. The device hasn't
-    /// been provisioned yet — we don't try to push past this; the user
-    /// has to go through the setup flow in the web UI first.
-    case deviceNotProvisioned
     /// Server sent device-metadata with an empty deviceVersion, indicating
     /// firmware too old for the WS signaling path (per the plan).
     case deviceTooOld
