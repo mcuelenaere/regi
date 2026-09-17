@@ -30,12 +30,6 @@ public enum KeyLabels {
         0x7A: "F1", 0x78: "F2", 0x63: "F3", 0x76: "F4", 0x60: "F5", 0x61: "F6",
         0x62: "F7", 0x64: "F8", 0x65: "F9", 0x6D: "F10", 0x67: "F11", 0x6F: "F12",
     ]
-
-    /// True for the eight modifier keycodes that arrive as `flagsChanged`
-    /// rather than key down/up, plus Caps Lock.
-    public static func isModifier(_ kvk: UInt16) -> Bool {
-        (0x36...0x3E).contains(kvk) || kvk == 0x3F
-    }
 }
 
 /// Device-side modifier bits in a raw `CGEventFlags` value.
