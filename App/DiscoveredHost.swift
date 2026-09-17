@@ -30,6 +30,4 @@ struct DiscoveredHost: Hashable, Identifiable {
     let isSetup: Bool
 
     var id: String { instanceName }
-
-    var displayName: String { instanceName }
 }

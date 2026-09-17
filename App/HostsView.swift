@@ -182,13 +182,13 @@ struct HostsView: View {
             .accessibilityIdentifier(AXIdentifiers.hostsRow(host.displayName))
         case .discovered(let host):
             HostRow(
-                displayName: host.displayName,
+                displayName: host.instanceName,
                 urlString: discoveredURLString(host),
                 kind: .discovered,
                 deviceKind: host.kind
             )
             .tag(entry.id)
-            .accessibilityIdentifier(AXIdentifiers.hostsRow(host.displayName))
+            .accessibilityIdentifier(AXIdentifiers.hostsRow(host.instanceName))
         }
     }
 
