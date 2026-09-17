@@ -60,4 +60,17 @@ final class VNCExtendedClipboardTests: XCTestCase {
         var w = VNCByteWriter(); w.writeU32(VNCExtendedClipboard.Flags.text.rawValue) // format bit only
         XCTAssertThrowsError(try VNCExtendedClipboard.parse(w.data))
     }
+
+    /// The `provide` payload is attacker-supplied, so inflating it is bounded.
+    /// 4 MiB of zeroes compresses to a few KiB — the bound has to trip on what
+    /// comes *out*, not on what arrived.
+    func testInflateRefusesADecompressionBomb() throws {
+        let bomb = try ZlibCodec.deflate(Data(repeating: 0, count: 4 << 20))
+        XCTAssertLessThan(bomb.count, 64 << 10)
+        XCTAssertThrowsError(try ZlibCodec.inflate(bomb, limit: 64 << 10)) { error in
+            XCTAssertEqual(error as? ZlibError, .outputLimitExceeded)
+        }
+        // Same payload, a bound it fits inside, still round-trips.
+        XCTAssertEqual(try ZlibCodec.inflate(bomb, limit: 8 << 20).count, 4 << 20)
+    }
 }

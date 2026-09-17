@@ -6,11 +6,17 @@ import zlib
 /// rectangles, so each rect's data only inflates correctly when fed through the
 /// same live stream. Never finalized: Tight streams have no trailer until the
 /// server resets them (via the control byte's reset bits).
+/// Failures from either zlib entry point in this file.
+enum ZlibError: Swift.Error, Equatable {
+    case initFailed(Int32)
+    case deflateFailed(Int32)
+    case inflateFailed(Int32)
+    /// Inflating would have exceeded the caller's bound — a decompression bomb.
+    case outputLimitExceeded
+}
+
 final class ZlibInflateStream {
-    enum Error: Swift.Error, Equatable {
-        case initFailed(Int32)
-        case inflateFailed(Int32)
-    }
+    typealias Error = ZlibError
 
     private var stream = z_stream()
     private var initialized = false
@@ -98,7 +104,7 @@ final class ZlibInflateStream {
                     return rawOut.count - Int(stream.avail_out)
                 }
                 if produced > 0 { output.append(contentsOf: chunk.prefix(produced)) }
-                if output.count > limit { rc = Z_MEM_ERROR; break }
+                if output.count > limit { rc = Z_MEM_ERROR; break }   // → .outputLimitExceeded
                 // Done when the input is drained and the last call didn't fill
                 // the output buffer (i.e. no more pending output).
                 if rc != Z_OK { break }
@@ -108,6 +114,7 @@ final class ZlibInflateStream {
         }
         stream.next_in = nil
         stream.next_out = nil
+        if status == Z_MEM_ERROR && output.count > limit { throw Error.outputLimitExceeded }
         guard status == Z_OK || status == Z_STREAM_END || status == Z_BUF_ERROR else {
             throw Error.inflateFailed(status)
         }
@@ -119,12 +126,7 @@ final class ZlibInflateStream {
 /// Clipboard pseudo-encoding, whose `provide` payloads are complete zlib
 /// streams.
 enum ZlibCodec {
-    enum Error: Swift.Error, Equatable {
-        case initFailed(Int32)
-        case deflateFailed(Int32)
-        case inflateFailed(Int32)
-        case outputLimitExceeded
-    }
+    typealias Error = ZlibError
 
     static func deflate(_ data: Data) throws -> Data {
         var stream = z_stream()
@@ -158,40 +160,11 @@ enum ZlibCodec {
 
     /// Inflate a complete zlib stream, bounding output at `limit` bytes so a
     /// malicious peer can't decompression-bomb us.
+    ///
+    /// A one-shot is a fresh persistent stream drained once — same
+    /// `Z_SYNC_FLUSH` loop, and the same tolerance for an encoder that skipped
+    /// the final flush.
     static func inflate(_ data: Data, limit: Int) throws -> Data {
-        var stream = z_stream()
-        let rc = inflateInit2_(&stream, 15, zlibVersion(), Int32(MemoryLayout<z_stream>.size))
-        guard rc == Z_OK else { throw Error.initFailed(rc) }
-        defer { inflateEnd(&stream) }
-
-        var input = data
-        var output = Data()
-        var chunk = [UInt8](repeating: 0, count: 16 * 1024)
-        let result: Int32 = input.withUnsafeMutableBytes { rawIn -> Int32 in
-            stream.next_in = rawIn.bindMemory(to: Bytef.self).baseAddress
-            stream.avail_in = UInt32(rawIn.count)
-            while true {
-                let status: Int32 = chunk.withUnsafeMutableBytes { rawOut in
-                    stream.next_out = rawOut.bindMemory(to: Bytef.self).baseAddress
-                    stream.avail_out = UInt32(rawOut.count)
-                    let s = zlib.inflate(&stream, Z_NO_FLUSH)
-                    let produced = rawOut.count - Int(stream.avail_out)
-                    if produced > 0 { output.append(contentsOf: rawOut.prefix(produced)) }
-                    return s
-                }
-                if output.count > limit { return Z_MEM_ERROR }
-                if status == Z_STREAM_END { return Z_OK }
-                // Z_OK with exhausted input = truncated stream; accept what we
-                // got (some encoders skip the final flush).
-                if status == Z_OK && stream.avail_in == 0 && stream.avail_out != 0 { return Z_OK }
-                if status == Z_BUF_ERROR && stream.avail_in == 0 { return Z_OK }
-                if status != Z_OK { return status }
-            }
-        }
-        guard result == Z_OK else {
-            if result == Z_MEM_ERROR && output.count > limit { throw Error.outputLimitExceeded }
-            throw Error.inflateFailed(result)
-        }
-        return output
+        Data(try ZlibInflateStream().inflateAll(data, limit: limit))
     }
 }
