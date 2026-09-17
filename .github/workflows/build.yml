@@ -18,11 +18,17 @@ jobs:
       - uses: actions/checkout@v7
 
       # Runs before the build: a missing header is a one-line fix, and there
-      # is no reason to spend 20 minutes compiling to find that out. The Go
-      # toolchain this needs is preinstalled on the macOS runner image; the
-      # script falls back to it only when addlicense isn't already on PATH.
+      # is no reason to spend 20 minutes compiling to find that out.
+      #
+      # addlicense is installed explicitly. The macOS runner image carries
+      # neither it nor a Go toolchain for the script's `go run` fallback, so
+      # without this the step fails before it checks anything. The formula
+      # bottles for arm64_tahoe, which is what macos-latest currently is, so
+      # this pours prebuilt rather than building from source.
       - name: Check license headers
-        run: scripts/license-headers.sh --check
+        run: |
+          brew install addlicense
+          scripts/license-headers.sh --check
 
       - name: Show toolchain
         run: |
