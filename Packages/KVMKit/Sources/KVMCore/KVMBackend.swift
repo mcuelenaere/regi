@@ -18,15 +18,6 @@ public final class LocalVideoFrame: @unchecked Sendable {
     }
 }
 
-/// Producer side of the locally-decoded video path (VNC): the backend's decode
-/// task invokes `onFrame` once per frame. `LocalVideoRenderer` consumes it. Not
-/// `@MainActor`: the closure is `@Sendable` and the implementation must
-/// synchronize its own storage, since it's set on the main actor but called
-/// from the decode path.
-public protocol LocalVideoOutput: AnyObject, Sendable {
-    var onFrame: (@Sendable (LocalVideoFrame) -> Void)? { get set }
-}
-
 /// A backend-owned video renderer. Each backend builds the renderer that suits
 /// its video technology — `WebRTCVideoRenderer` (JetKVM/PiKVM) or
 /// `LocalVideoRenderer` (VNC) — and the App embeds `view` and observes size

@@ -16,7 +16,7 @@ public final class LocalVideoRenderer: KVMVideoRenderer {
     public var view: NSView { hostView }
     public var onVideoSizeChanged: ((CGSize) -> Void)?
 
-    private let source: LocalVideoOutput
+    private let source: VideoFramePresenter
     private let hostView = FlippedLayerView()
     private let frameLayer = CALayer()
     /// Retains the most recent pixel buffers so their pooled IOSurfaces aren't
@@ -24,7 +24,7 @@ public final class LocalVideoRenderer: KVMVideoRenderer {
     private var retainedBuffers: [CVPixelBuffer] = []
     private var videoSize: CGSize = .zero
 
-    public init(source: LocalVideoOutput) {
+    public init(source: VideoFramePresenter) {
         self.source = source
 
         hostView.wantsLayer = true

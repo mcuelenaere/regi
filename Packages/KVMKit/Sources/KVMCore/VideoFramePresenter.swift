@@ -13,7 +13,7 @@ import CoreVideo
 /// fixed at `kCVPixelFormatType_32BGRA`, matching the pixel format VNC forces
 /// via `SetPixelFormat`, so `present` is a straight stride-aware `memcpy` with
 /// no conversion.
-public final class VideoFramePresenter: LocalVideoOutput, @unchecked Sendable {
+public final class VideoFramePresenter: @unchecked Sendable {
     private let lock = NSLock()
     private var _onFrame: (@Sendable (LocalVideoFrame) -> Void)?
     public var onFrame: (@Sendable (LocalVideoFrame) -> Void)? {
