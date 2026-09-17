@@ -114,9 +114,6 @@ final class RunWindowController: NSObject, NSWindowDelegate {
         }
     }
 
-    func toggle() { isOpen ? close() : open() }
-    func toggleObserve() { isOpen ? close() : open(shielded: false) }
-
     func windowWillClose(_ notification: Notification) { close() }
 
     /// Sleep, screen lock and session switch all end a run: the operator is
