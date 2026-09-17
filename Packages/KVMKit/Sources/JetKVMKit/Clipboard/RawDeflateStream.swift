@@ -3,21 +3,20 @@ import zlib
 
 /// Incremental raw RFC 1951 deflate / inflate.
 ///
-/// `RawDeflate`'s one-shot form needs the whole payload resident twice —
-/// fine for a clipboard flavor, wrong for a file. A file representation
+/// The codec `RawDeflate`'s one-shot form is built on. A file representation
 /// is streamed chunk by chunk in both directions (read 63 KiB, compress,
 /// frame; or: receive a frame, inflate, append to a temp file), so the
 /// codec has to keep its state across calls.
 ///
 /// Not thread-safe and not `Sendable`: one instance belongs to one
 /// stream, which the bridge drives from the main actor.
-final class RawDeflateStream {
-    enum Mode {
+public final class RawDeflateStream {
+    public enum Mode {
         case compress
         case decompress
     }
 
-    enum Error: Swift.Error, Equatable {
+    public enum Error: Swift.Error, Equatable {
         case streamInitFailed(Int32)
         case deflateFailed(Int32)
         case inflateFailed(Int32)
@@ -44,7 +43,7 @@ final class RawDeflateStream {
     private var isFinished = false
     private var sawStreamEnd = false
 
-    init(mode: Mode) throws {
+    public init(mode: Mode) throws {
         self.mode = mode
         self.stream = .allocate(capacity: 1)
         stream.initialize(to: z_stream())
@@ -87,7 +86,7 @@ final class RawDeflateStream {
 
     /// Feed the next slice of input; returns whatever output it produced,
     /// which may be empty (libz buffers).
-    func push(_ data: Data) throws -> Data {
+    public func push(_ data: Data) throws -> Data {
         guard !isFinished else { throw Error.alreadyFinished }
         if data.isEmpty { return Data() }
         if sawStreamEnd {
@@ -100,7 +99,7 @@ final class RawDeflateStream {
     }
 
     /// Flush the codec's tail. Idempotent; after this `push` throws.
-    func finish() throws -> Data {
+    public func finish() throws -> Data {
         if isFinished { return Data() }
         isFinished = true
         let tail = sawStreamEnd ? Data() : try run(input: Data(), flush: Z_FINISH)

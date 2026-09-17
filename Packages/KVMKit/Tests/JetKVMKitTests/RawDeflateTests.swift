@@ -59,8 +59,20 @@ final class RawDeflateTests: XCTestCase {
         XCTAssertEqual(compressed.first, 0xcb)
     }
 
+    /// A peer can send an inline body whose deflate stream is cut short.
+    /// This used to spin forever: `Z_FINISH` with the input exhausted returns
+    /// `Z_BUF_ERROR` and produces nothing, and the old loop treated that as
+    /// "keep going". It must terminate, and say why.
+    func testDecompressTruncatedStreamThrowsRatherThanHanging() throws {
+        let full = try RawDeflate.compress(Data(repeating: 0x41, count: 4096))
+        XCTAssertGreaterThan(full.count, 2)
+        XCTAssertThrowsError(try RawDeflate.decompress(full.prefix(full.count - 1))) { error in
+            XCTAssertEqual(error as? RawDeflate.Error, .truncated)
+        }
+    }
+
     func testDecompressMalformedThrows() {
-        // Truncated stream — inflate should fail with Z_DATA_ERROR.
+        // Not a deflate stream at all — inflate should fail outright.
         let bogus = Data([0xff, 0xff, 0xff])
         XCTAssertThrowsError(try RawDeflate.decompress(bogus)) { error in
             guard let e = error as? RawDeflate.Error else {
