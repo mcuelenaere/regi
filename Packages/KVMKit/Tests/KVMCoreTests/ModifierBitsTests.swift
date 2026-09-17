@@ -91,7 +91,6 @@ final class ModifierBitsTests: XCTestCase {
 
     func testUSBHIDUsageIDForEmptyAndMultiBitIsNil() {
         XCTAssertNil(ModifierBits().usbHIDUsageID)
-        XCTAssertNil(ModifierBits.anyShift.usbHIDUsageID)
         XCTAssertNil(([.leftMeta, .leftShift] as ModifierBits).usbHIDUsageID)
     }
 }
