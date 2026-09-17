@@ -39,8 +39,6 @@ public struct ModifierBits: OptionSet, Sendable, Hashable {
 
     /// Either side of a modifier (e.g. `.anyControl` matches L_CTRL or R_CTRL).
     public static let anyControl: ModifierBits = [.leftControl, .rightControl]
-    public static let anyShift:   ModifierBits = [.leftShift,   .rightShift]
-    public static let anyAlt:     ModifierBits = [.leftAlt,     .rightAlt]
     public static let anyMeta:    ModifierBits = [.leftMeta,    .rightMeta]
 
     /// USB-HID Usage ID for the modifier *as a key* (as opposed to the
