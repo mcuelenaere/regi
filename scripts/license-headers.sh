@@ -27,7 +27,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 ADDLICENSE_VERSION="v1.2.0"
 
 # Generated protobuf sources are excluded. protoc rewrites them wholesale from
-# the .proto on every scripts/generate_*_proto.sh run, so any header added here
+# the .proto on every scripts/generate_proto.sh run, so any header added here
 # would be silently dropped on the next regeneration and CI would then fail on a
 # file nobody edited. They carry no original authorship worth marking anyway.
 #
