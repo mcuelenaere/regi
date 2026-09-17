@@ -68,6 +68,21 @@ public final class HTTPClient: @unchecked Sendable {
         try await get("/device")
     }
 
+    /// `GET /metrics` — read the source recorded for the newest WebRTC
+    /// session request. Current firmware's
+    /// `otherSessionConnected` notification has null params, so this is the
+    /// only non-invasive source hint available after a local takeover.
+    /// Returns nil on firmware without the per-source metric.
+    public func getLatestSessionRequestPeer() async throws -> TakeoverPeer? {
+        let url = endpoint.httpURL(path: "/metrics")
+        var req = URLRequest(url: url)
+        req.httpMethod = "GET"
+        req.setValue("text/plain", forHTTPHeaderField: "Accept")
+        log.debug("GET \(url.absoluteString, privacy: .public)")
+        let data = try await performRaw(req)
+        return TakeoverPeerMetricsParser.latestPeer(in: data)
+    }
+
     /// `POST /auth/login-local` — public. On success the server's
     /// `Set-Cookie: authToken=<uuid>` is captured by URLSession into
     /// the session's `HTTPCookieStorage`; subsequent requests
