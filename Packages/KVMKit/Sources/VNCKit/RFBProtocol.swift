@@ -115,7 +115,6 @@ enum RFBProtocol {
         // Pseudo-encodings.
         static let desktopSize: Int32 = -223
         static let lastRect: Int32 = -224
-        static let qemuPointerMotionChange: Int32 = -257
         static let qemuExtendedKeyEvent: Int32 = -258
         /// XVP power control (0xFFFFFECB).
         static let xvp = Int32(bitPattern: 0xFFFF_FECB)
