@@ -1,8 +1,5 @@
 import Foundation
-import OSLog
 import Observation
-
-private let log = Logger(subsystem: "app.regi.mac", category: "trusted-hosts")
 
 /// Persistent set of hostnames the user has explicitly opted into
 /// trusting for self-signed TLS certs. Keyed by **host string**, not
@@ -13,16 +10,14 @@ private let log = Logger(subsystem: "app.regi.mac", category: "trusted-hosts")
 /// - window close + re-open (KVMSessionWindow's @State drops)
 /// - app relaunch (the set is persisted to UserDefaults)
 ///
-/// Backed by a single `[String]` in UserDefaults — same shape as
-/// HostStore. JSON would let us persist richer per-host state later
-/// (e.g. cert fingerprint for TOFU pinning), but a flat set is
-/// enough for the current "trust all certs from this host" policy
-/// the JetKVM self-signed-cert UX needs.
+/// Backed by a single `[String]` in UserDefaults. A flat set is enough
+/// for the current "trust all certs from this host" policy the JetKVM
+/// self-signed-cert UX needs; richer per-host state (e.g. a cert
+/// fingerprint for TOFU pinning) would want JSON instead.
 ///
 /// Pass via `.environment(...)` from RegiApp so KVMSessionWindow
 /// (which reads it when building DeviceEndpoint and writes it when
-/// the user accepts the trust prompt) and any future settings UI
-/// (revoke / list) all share one observable instance.
+/// the user accepts the trust prompt) shares one observable instance.
 @MainActor
 @Observable
 final class TrustedHostStore {
@@ -32,12 +27,8 @@ final class TrustedHostStore {
     private let defaults: UserDefaults
 
     init(defaults: UserDefaults = .standard) {
-        if let arr = defaults.stringArray(forKey: Self.storageKey) {
-            self.trustedHosts = Set(arr)
-        } else {
-            self.trustedHosts = []
-        }
         self.defaults = defaults
+        trustedHosts = Set(defaults.stringArray(forKey: Self.storageKey) ?? [])
     }
 
     func isTrusted(_ host: String) -> Bool {
@@ -45,17 +36,7 @@ final class TrustedHostStore {
     }
 
     func trust(_ host: String) {
-        guard !trustedHosts.contains(host) else { return }
-        trustedHosts.insert(host)
-        persist()
-    }
-
-    func revoke(_ host: String) {
-        guard trustedHosts.remove(host) != nil else { return }
-        persist()
-    }
-
-    private func persist() {
+        guard trustedHosts.insert(host).inserted else { return }
         defaults.set(Array(trustedHosts), forKey: Self.storageKey)
     }
 }
