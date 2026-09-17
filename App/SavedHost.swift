@@ -35,10 +35,6 @@ struct SavedHost: Codable, Identifiable, Hashable {
         self.username = username
     }
 
-    private enum CodingKeys: String, CodingKey {
-        case id, name, host, port, useTLS, kind, username
-    }
-
     // Custom decode so entries persisted before PiKVM support (no
     // `kind`/`username` keys) still load, defaulting to JetKVM.
     init(from decoder: Decoder) throws {
