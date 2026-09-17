@@ -21,7 +21,7 @@
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
 	<key>NSHumanReadableCopyright</key>
-	<string></string>
+	<string>Copyright © 2026 Maurus Cuelenaere. Licensed under the GNU Affero General Public License v3.0 or later.</string>
 	<key>NSQuitAlwaysKeepsWindows</key>
 	<false/>
 </dict>

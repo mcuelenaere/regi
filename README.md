@@ -152,7 +152,16 @@ tech-product baggage.
 
 ## License
 
-Apache 2.0 — see [LICENSE](LICENSE).
+GNU Affero General Public License v3.0 or later — see [LICENSE](LICENSE).
+
+In short: you're free to use, study, modify and redistribute Regi, including
+commercially. What you can't do is ship a closed-source fork — anything you
+distribute, or run as a network service, has to carry the same freedoms and
+come with its source.
+
+Bundled dependencies keep their own licenses: `stasel/WebRTC` (BSD-3-Clause
+plus the WebRTC patent grant) and `apple/swift-protobuf` (Apache 2.0). Both
+are AGPLv3-compatible.
 
 ## Acknowledgements
 

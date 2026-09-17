@@ -25,7 +25,7 @@
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
     <key>NSHumanReadableCopyright</key>
-    <string></string>
+    <string>Copyright © 2026 Maurus Cuelenaere. Licensed under the GNU Affero General Public License v3.0 or later.</string>
     <!--
         JetKVM devices ship with self-signed TLS certificates by default.
         With ATS active, the network stack fails the TLS handshake at the

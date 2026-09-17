@@ -1,0 +1,42 @@
+Regi — a native macOS client for JetKVM, PiKVM and VNC
+Copyright (C) 2026 Maurus Cuelenaere
+
+This program is free software: you can redistribute it and/or modify it
+under the terms of the GNU Affero General Public License as published by
+the Free Software Foundation, either version 3 of the License, or (at your
+option) any later version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT
+ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+FITNESS FOR A PARTICULAR PURPOSE.  See the GNU Affero General Public
+License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+
+NAME AND BRANDING
+-----------------
+
+The AGPL covers the source code. It does not grant rights to the name "Regi",
+the logo, or the app icon — if you distribute a fork, give it your own name.
+
+
+THIRD-PARTY COMPONENTS
+----------------------
+
+This product bundles the following components, which remain under their own
+licenses:
+
+  stasel/WebRTC (WebRTC.framework distribution)
+    BSD 3-Clause License, plus the additional WebRTC patent grant.
+    https://github.com/stasel/WebRTC
+    https://webrtc.googlesource.com/src/+/main/LICENSE
+
+  apple/swift-protobuf
+    Apache License 2.0.
+    https://github.com/apple/swift-protobuf
+
+Both are compatible with the AGPL-3.0-or-later terms above. Note that
+Apache 2.0 is compatible with GPLv3/AGPLv3 but NOT with GPLv2 — keep this in
+mind before relicensing to any GPLv2-family license.
