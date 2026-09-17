@@ -65,7 +65,6 @@ struct WebRTCStatsParser {
         let packetsReceived: Int64 = (v["packetsReceived"] as? NSNumber)?.int64Value ?? 0
         let packetsLost: Int64 = (v["packetsLost"] as? NSNumber)?.int64Value ?? 0
         let framesPerSecond: Double = (v["framesPerSecond"] as? NSNumber)?.doubleValue ?? 0
-        let framesDropped: Int64 = (v["framesDropped"] as? NSNumber)?.int64Value ?? 0
         let framesDecoded: Int64 = (v["framesDecoded"] as? NSNumber)?.int64Value ?? 0
         let jitterSeconds: Double? = (v["jitter"] as? NSNumber)?.doubleValue
         let totalDecodeTime: Double = (v["totalDecodeTime"] as? NSNumber)?.doubleValue ?? 0
@@ -138,7 +137,6 @@ struct WebRTCStatsParser {
             bitrateBitsPerSecond: bitrateBitsPerSecond,
             connectionType: connectionType,
             framesPerSecond: framesPerSecond,
-            framesDropped: framesDropped,
             codec: codec,
             freezeCount: freezeCount,
             totalFreezesDurationSec: totalFreezesDurationSec,

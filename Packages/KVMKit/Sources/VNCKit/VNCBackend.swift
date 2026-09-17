@@ -648,7 +648,6 @@ public final class VNCBackend: KVMBackend {
             bitrateBitsPerSecond: Double(deltaBytes) * 8 / dt,
             connectionType: nil,
             framesPerSecond: fps,
-            framesDropped: 0,
             codec: codecLabel,
             freezeCount: 0,
             totalFreezesDurationSec: 0,
