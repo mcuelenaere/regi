@@ -6,50 +6,29 @@ private let log = Logger(subsystem: "app.regi.mac", category: "http")
 
 /// HTTP client for JetKVM's REST endpoints.
 ///
-/// One client per device. Cookies are managed by URLSession's own
-/// `HTTPCookieStorage` — `.ephemeral` URLSessionConfigurations ship a
-/// fresh in-memory cookie storage per instance, scoped to that
-/// session. `Set-Cookie` on responses is parsed and stored
-/// automatically (with full RFC-6265 attributes); `Cookie` is
-/// attached to subsequent requests for matching URLs without our
-/// help. The same storage is exposed via `cookieStorage` so
-/// `SignalingClient` can share it for the WebSocket upgrade.
+/// One client per device. The session, its cookie storage and the TLS-trust
+/// handling live in `HTTPTransport`; `Set-Cookie` on responses is parsed and
+/// stored automatically (with full RFC-6265 attributes) and `Cookie` is
+/// attached to subsequent requests for matching URLs without our help. The
+/// same storage is exposed via `cookieStorage` so `SignalingClient` can share
+/// it for the WebSocket upgrade.
 public final class HTTPClient: @unchecked Sendable {
-    public let endpoint: DeviceEndpoint
-    public let urlSession: URLSession
-    private let tlsDelegate: TLSDelegate
+    private let transport: HTTPTransport
 
     private let encoder: JSONEncoder = JSONEncoder()
     private let decoder: JSONDecoder = JSONDecoder()
 
-    /// Designated initializer. Public callers use the no-config
-    /// overload; tests inject a `URLSessionConfiguration` with
-    /// `protocolClasses = [MockURLProtocol.self]` so the round-trip
-    /// can be verified without a real device.
-    internal init(endpoint: DeviceEndpoint, configuration: URLSessionConfiguration) {
-        self.endpoint = endpoint
-        configuration.timeoutIntervalForRequest = 10
-        configuration.timeoutIntervalForResource = 30
-        let delegate = TLSDelegate(allowSelfSignedCertificate: endpoint.allowSelfSignedCertificate)
-        self.tlsDelegate = delegate
-        self.urlSession = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
+    public init(endpoint: DeviceEndpoint) {
+        self.transport = HTTPTransport(endpoint: endpoint)
     }
 
-    public convenience init(endpoint: DeviceEndpoint) {
-        // `.ephemeral` returns a fresh per-call config with a
-        // brand-new in-memory `HTTPCookieStorage`. Per-HTTPClient
-        // scoping falls out naturally — no risk of leaking cookies
-        // between sessions, no shared global state.
-        self.init(endpoint: endpoint, configuration: .ephemeral)
-    }
+    public var endpoint: DeviceEndpoint { transport.endpoint }
 
     /// The `HTTPCookieStorage` URLSession uses to capture and
     /// attach cookies for requests made through this client. Shared
     /// with `SignalingClient` (via `Session.connect`) so the WS
     /// upgrade carries the auth cookie URLSession captured here.
-    public var cookieStorage: HTTPCookieStorage? {
-        urlSession.configuration.httpCookieStorage
-    }
+    public var cookieStorage: HTTPCookieStorage? { transport.cookieStorage }
 
     // MARK: - Endpoints
 
@@ -73,19 +52,15 @@ public final class HTTPClient: @unchecked Sendable {
     /// the session's `HTTPCookieStorage`; subsequent requests
     /// automatically include it via the `Cookie:` header.
     public func login(password: String) async throws {
-        let url = endpoint.httpURL(path: "/auth/login-local")
-        var req = URLRequest(url: url)
+        var req = URLRequest(url: endpoint.httpURL(path: "/auth/login-local"))
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue("application/json", forHTTPHeaderField: "Accept")
         req.httpBody = try encoder.encode(LoginRequest(password: password))
-        let (data, response) = try await rawCall(req)
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw HTTPClientError.invalidResponse
-        }
-        log.debug("login response status=\(httpResponse.statusCode, privacy: .public) headers=\(self.headerKeys(httpResponse), privacy: .public)")
-        if !(200..<300).contains(httpResponse.statusCode) {
-            throw mapError(statusCode: httpResponse.statusCode, headers: httpResponse.allHeaderFields, body: data)
+        let (data, http) = try await transport.call(req)
+        log.debug("login response status=\(http.statusCode, privacy: .public) headers=\(self.headerKeys(http), privacy: .public)")
+        if !(200..<300).contains(http.statusCode) {
+            throw mapError(statusCode: http.statusCode, headers: http.allHeaderFields, body: data)
         }
         log.debug("login OK")
     }
@@ -98,61 +73,14 @@ public final class HTTPClient: @unchecked Sendable {
         req.httpMethod = "GET"
         req.setValue("application/json", forHTTPHeaderField: "Accept")
         log.debug("GET \(url.absoluteString, privacy: .public)")
-        return try await perform(req)
-    }
-
-    private func perform<T: Decodable>(_ request: URLRequest) async throws -> T {
-        let data = try await performRaw(request)
+        let (data, http) = try await transport.call(req)
+        guard (200..<300).contains(http.statusCode) else {
+            throw mapError(statusCode: http.statusCode, headers: http.allHeaderFields, body: data)
+        }
         do {
             return try decoder.decode(T.self, from: data)
         } catch {
             throw HTTPClientError.decoding(String(describing: error))
-        }
-    }
-
-    private func performRaw(_ request: URLRequest) async throws -> Data {
-        let (data, response) = try await rawCall(request)
-        guard let http = response as? HTTPURLResponse else {
-            throw HTTPClientError.invalidResponse
-        }
-        guard (200..<300).contains(http.statusCode) else {
-            throw mapError(statusCode: http.statusCode, headers: http.allHeaderFields, body: data)
-        }
-        return data
-    }
-
-    private func rawCall(_ request: URLRequest) async throws -> (Data, URLResponse) {
-        do {
-            return try await urlSession.data(for: request)
-        } catch let urlErr as URLError where Self.isTLSTrustError(urlErr.code) {
-            // System trust store rejected the cert chain and the user
-            // hasn't opted into trusting it (allowSelfSignedCertificate
-            // is false, or TLSDelegate fell through to default
-            // handling). Surface as a distinct error so Session can
-            // transition to .awaitingTrustOverride and the UI can
-            // prompt the user.
-            throw HTTPClientError.untrustedServerCertificate(
-                reason: urlErr.localizedDescription
-            )
-        } catch {
-            throw HTTPClientError.transport(String(describing: error))
-        }
-    }
-
-    /// True for the URLError codes that mean "the TLS handshake's cert
-    /// chain didn't pass system trust evaluation." We treat all of
-    /// these the same — the user opt-in we'd offer (`SecTrustSet-
-    /// Exceptions` via TLSDelegate) overrides chain-of-trust *and*
-    /// hostname *and* validity-period checks anyway.
-    private static func isTLSTrustError(_ code: URLError.Code) -> Bool {
-        switch code {
-        case .serverCertificateUntrusted,
-             .serverCertificateHasUnknownRoot,
-             .serverCertificateHasBadDate,
-             .serverCertificateNotYetValid:
-            return true
-        default:
-            return false
         }
     }
 

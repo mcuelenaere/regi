@@ -4,50 +4,35 @@ import OSLog
 
 private let log = Logger(subsystem: "app.regi.mac", category: "pikvm-http")
 
-/// HTTP client for PiKVM's KVMD auth endpoints. One per device. Like
-/// `HTTPClient`, it uses an ephemeral `URLSession` whose
-/// `HTTPCookieStorage` captures the `auth_token` cookie on login; that
-/// same storage is shared with the Janus and `/api/ws` WebSocket clients
-/// so their upgrades carry the cookie (nginx auth-gates both).
-///
-/// Reuses `HTTPClientError` and the TLS-trust handling from the JetKVM
-/// path so the App layer's `.awaitingTrustOverride` flow works
-/// unchanged for self-signed PiKVM certs.
+/// HTTP client for PiKVM's KVMD auth endpoints. One per device. Shares
+/// `HTTPTransport` with the JetKVM path, so the ephemeral session, the
+/// `auth_token` cookie capture and the self-signed-cert handling behave
+/// identically and the App layer's `.awaitingTrustOverride` flow works
+/// unchanged. That same storage is shared with the Janus and `/api/ws`
+/// WebSocket clients so their upgrades carry the cookie (nginx auth-gates
+/// both).
 public final class PiKVMHTTPClient: @unchecked Sendable {
-    public let endpoint: DeviceEndpoint
-    public let urlSession: URLSession
-    private let tlsDelegate: TLSDelegate
+    private let transport: HTTPTransport
 
-    internal init(endpoint: DeviceEndpoint, configuration: URLSessionConfiguration) {
-        self.endpoint = endpoint
-        configuration.timeoutIntervalForRequest = 10
-        configuration.timeoutIntervalForResource = 30
-        let delegate = TLSDelegate(allowSelfSignedCertificate: endpoint.allowSelfSignedCertificate)
-        self.tlsDelegate = delegate
-        self.urlSession = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
+    public init(endpoint: DeviceEndpoint) {
+        self.transport = HTTPTransport(endpoint: endpoint)
     }
 
-    public convenience init(endpoint: DeviceEndpoint) {
-        self.init(endpoint: endpoint, configuration: .ephemeral)
-    }
+    public var endpoint: DeviceEndpoint { transport.endpoint }
 
     /// Shared with the WebSocket clients so their upgrades carry the
     /// `auth_token` cookie URLSession captured on login.
-    public var cookieStorage: HTTPCookieStorage? {
-        urlSession.configuration.httpCookieStorage
-    }
+    public var cookieStorage: HTTPCookieStorage? { transport.cookieStorage }
 
     /// `POST /api/auth/login` — form-encoded `user`/`passwd`. On 200 the
     /// server's `Set-Cookie: auth_token=…` is captured automatically;
     /// 403 means bad credentials.
     public func login(user: String, password: String) async throws {
-        let url = endpoint.httpURL(path: "/api/auth/login")
-        var req = URLRequest(url: url)
+        var req = URLRequest(url: endpoint.httpURL(path: "/api/auth/login"))
         req.httpMethod = "POST"
         req.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         req.httpBody = Self.formBody(["user": user, "passwd": password])
-        let (data, response) = try await rawCall(req)
-        guard let http = response as? HTTPURLResponse else { throw HTTPClientError.invalidResponse }
+        let (data, http) = try await transport.call(req)
         log.debug("login status=\(http.statusCode, privacy: .public)")
         guard (200..<300).contains(http.statusCode) else {
             // KVMD returns 403 for bad credentials (no WWW-Authenticate).
@@ -59,16 +44,6 @@ public final class PiKVMHTTPClient: @unchecked Sendable {
     }
 
     // MARK: - Internal
-
-    private func rawCall(_ request: URLRequest) async throws -> (Data, URLResponse) {
-        do {
-            return try await urlSession.data(for: request)
-        } catch let urlErr as URLError where Self.isTLSTrustError(urlErr.code) {
-            throw HTTPClientError.untrustedServerCertificate(reason: urlErr.localizedDescription)
-        } catch {
-            throw HTTPClientError.transport(String(describing: error))
-        }
-    }
 
     static func formBody(_ fields: [String: String]) -> Data {
         var allowed = CharacterSet.urlQueryAllowed
@@ -87,17 +62,5 @@ public final class PiKVMHTTPClient: @unchecked Sendable {
             return e
         }
         return String(data: body, encoding: .utf8).flatMap { $0.isEmpty ? nil : $0 }
-    }
-
-    private static func isTLSTrustError(_ code: URLError.Code) -> Bool {
-        switch code {
-        case .serverCertificateUntrusted,
-             .serverCertificateHasUnknownRoot,
-             .serverCertificateHasBadDate,
-             .serverCertificateNotYetValid:
-            return true
-        default:
-            return false
-        }
     }
 }
