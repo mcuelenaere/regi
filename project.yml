@@ -27,13 +27,14 @@ settingGroups:
     # requirement, and an ad-hoc signature's requirement is its own cdhash —
     # which changes every build, silently revoking keyboard capture each time.
     #
-    # Automatic style pins the requirement to the leaf certificate's common
-    # name, so renewing that certificate drops the grant (this one expires
-    # 2027-09-16), and a Developer ID-signed release build has a different
-    # requirement again. Signing Developer ID here would anchor on the team OU
-    # and avoid both, at the cost of Manual style.
-    CODE_SIGN_IDENTITY: "Apple Development"
-    CODE_SIGN_STYLE: Automatic
+    # Developer ID rather than Apple Development: the requirement then anchors
+    # on the team OU rather than a leaf certificate's common name, so it
+    # survives certificate churn — an auto-created dev cert being revoked is
+    # what broke this before — and matches the notarized release build, so one
+    # grant covers both. Manual style because Xcode rejects a Developer ID
+    # identity under automatic signing at build time.
+    CODE_SIGN_IDENTITY: "Developer ID Application"
+    CODE_SIGN_STYLE: Manual
     DEVELOPMENT_TEAM: NX94Z8676R
 
     # Required before a build can be notarized; harmless until then.
