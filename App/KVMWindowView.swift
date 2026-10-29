@@ -439,6 +439,8 @@ struct KVMWindowView: View {
 /// Modeled on the JetKVM web frontend's "HDMI signal error" card.
 private struct NoSignalPlaceholder: View {
     let error: String
+    @Environment(Session.self) private var session
+    @State private var waking = false
 
     private var humanReadableError: String {
         error.replacingOccurrences(of: "_", with: " ")
@@ -462,6 +464,19 @@ private struct NoSignalPlaceholder: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .padding(.top, 4)
+            // Same gate as the web UI: only "no_signal" can be a sleeping host.
+            if error == "no_signal" && session.canWakeHost {
+                Button {
+                    waking = true
+                    Task {
+                        await session.wakeHost()
+                        waking = false
+                    }
+                } label: {
+                    Label(waking ? "Trying to wake…" : "Try to wake", systemImage: "power")
+                }
+                .disabled(waking)
+            }
         }
         .padding(28)
         .frame(maxWidth: 460, alignment: .leading)

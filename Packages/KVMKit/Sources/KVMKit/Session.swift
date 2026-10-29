@@ -60,6 +60,14 @@ public final class Session {
     public var failsafe: FailsafeModeNotification? { jetKVM?.failsafe }
     public var clipboardAgentState: ClipboardAgentState { jetKVM?.clipboardAgentState ?? .absent }
     public var clipboardBridge: ClipboardBridge? { jetKVM?.clipboardBridge }
+    public var canWakeHost: Bool {
+        jetKVM?.deviceMetadata?.firmwareIsAtLeast(JetKVMBackend.wakeHostMinVersion) == true
+    }
+
+    /// Nudge a sleeping host through the JetKVM's wake HID device.
+    public func wakeHost() async {
+        await jetKVM?.wakeHostRPC()
+    }
 
     /// VNC's text-only clipboard surface (nil for other backends). The
     /// App-layer `VNCClipboardSyncManager` binds to it.

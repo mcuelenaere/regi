@@ -63,6 +63,18 @@ extension JetKVMBackend {
         try await rpcCallVoid(method: "setVideoStreamPaused", params: Params(paused: paused))
     }
 
+    // MARK: - Host wake
+    //
+    // Since 0.5.9 the keyboard/mouse gadgets no longer wake a sleeping
+    // host (jetkvm/kvm#1471 set their `wakeup_on_write` to 0). Wake now
+    // goes through a dedicated vendor HID device that the firmware
+    // pulses three times. Returns once the pulses are sent (~600 ms);
+    // whether the host actually wakes shows up later as a videoState change.
+    // Failures are logged, not thrown: the UI has nothing better to do with them.
+    public func wakeHostRPC() async {
+        _ = await fetch("wakeHost") { try await self.rpcCallVoid(method: "wakeHost") }
+    }
+
     // MARK: - Scroll wheel
     //
     // Scroll lives on the JSON-RPC channel rather than the binary

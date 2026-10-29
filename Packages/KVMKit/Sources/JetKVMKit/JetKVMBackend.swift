@@ -141,6 +141,10 @@ public final class JetKVMBackend: KVMBackend {
     /// `wheelReport` method is used below this version.
     public static let binaryWheelMinVersion = "0.5.9"
 
+    /// Minimum firmware with the `wakeHost` RPC. Older firmware lets
+    /// ordinary keyboard/mouse input wake the host instead.
+    public static let wakeHostMinVersion = "0.5.9"
+
     private var endpoint: DeviceEndpoint?
     private var http: HTTPClient?
     private var signaling: SignalingClient?
