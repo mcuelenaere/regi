@@ -697,7 +697,7 @@ private final class PeerDelegate: NSObject, RTCPeerConnectionDelegate, @unchecke
         case .closed: mapped = .closed
         @unknown default: mapped = .new
         }
-        log.info("ICE state → \(String(describing: mapped), privacy: .public)")
+        log.notice("ICE state → \(String(describing: mapped), privacy: .public)")
         stateContinuation.yield(mapped)
     }
 

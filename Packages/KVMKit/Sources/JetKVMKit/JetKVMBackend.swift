@@ -627,8 +627,7 @@ public final class JetKVMBackend: KVMBackend {
                     }
                 }
             } catch {
-                log.error("signaling pump terminated: \(describe(error), privacy: .public)")
-                await self?.fail(describe(error))
+                await self?.signalingEnded(error)
             }
         })
 
@@ -970,6 +969,24 @@ public final class JetKVMBackend: KVMBackend {
             log.error("reconnect attempt \(self.reconnectAttempt, privacy: .public) failed: \(describe(error), privacy: .public)")
             await teardown()
             scheduleReconnect()
+        }
+    }
+
+    /// Signaling only carries the offer/answer/ICE exchange; once ICE is
+    /// up the session runs without it, and `handleRTCState` decides whether
+    /// the session is really dead (it reconnects on `.failed`/`.closed`).
+    /// Failing here would pre-empt that: a dead socket is noticed instantly
+    /// while ICE takes ~30s to give up, so a terminal error would land where
+    /// an automatic reconnect was coming. Before ICE connects, signaling is
+    /// still load-bearing, so the same rule as `connect()` applies.
+    private func signalingEnded(_ error: Error) async {
+        log.error("signaling pump terminated: \(describe(error), privacy: .public)")
+        if case .connected = state { return }
+        if reconnectAttempt > 0 {
+            await teardown()
+            scheduleReconnect()
+        } else {
+            await fail(describe(error))
         }
     }
 
