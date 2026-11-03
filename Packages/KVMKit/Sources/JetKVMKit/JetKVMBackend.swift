@@ -135,12 +135,6 @@ public final class JetKVMBackend: KVMBackend {
     public private(set) var statsHistory: [ConnectionStats] = []
     public static let maxStatsHistory = 60
 
-    /// Minimum JetKVM firmware version that dispatches the binary
-    /// `wheelReport` opcode (0x04) over the HID-RPC channel. Older
-    /// firmware silently drops unknown opcodes, so the JSON-RPC
-    /// `wheelReport` method is used below this version.
-    public static let binaryWheelMinVersion = "0.5.9"
-
     /// Minimum firmware with the `wakeHost` RPC. Older firmware lets
     /// ordinary keyboard/mouse input wake the host instead.
     public static let wakeHostMinVersion = "0.5.9"
@@ -561,37 +555,20 @@ public final class JetKVMBackend: KVMBackend {
         }
     }
 
-    /// Forward a scroll-wheel event. Routes through the binary
-    /// `wheelReport` opcode (0x04) on the unreliable-ordered HID
-    /// channel when the firmware is recent enough to dispatch it
-    /// (saves ~70 bytes/event vs JSON-RPC and drops the per-event JSON
-    /// parse on the device). Falls back to the JSON-RPC `wheelReport`
-    /// method on older firmware. Reliable, not unreliable: wheel deltas
-    /// are relative, so a dropped frame is a scroll notch that silently
-    /// never happened rather than a stale value the next report fixes.
-    ///
-    /// Gating is by firmware version (>= 0.5.9 ships the binary
-    /// dispatch handler) rather than a runtime capability
-    /// advertisement — no opcode-list field exists in the
-    /// `device-metadata` payload and there's no plan to add one
-    /// upstream. Fire-and-forget; failures are logged but not
-    /// propagated, matching sendKeypress / sendPointer semantics so
-    /// call sites don't have to await.
+    /// Forward a scroll-wheel event over the JSON-RPC `wheelReport`
+    /// method, the same path the official web UI uses. Upstream firmware
+    /// defines HID-RPC opcode 0x04 but never dispatches it (only a fork
+    /// does), so the binary channel would drop scroll silently.
+    /// Fire-and-forget; failures are logged but not propagated, matching
+    /// sendKeypress / sendPointer semantics so call sites don't have to await.
     public func sendWheelReport(wheelY: Int8, wheelX: Int8) {
         if wheelY == 0 && wheelX == 0 { return }
-        let useBinary = deviceMetadata?.firmwareIsAtLeast(Self.binaryWheelMinVersion) == true
-        if useBinary {
-            guard hidReady, let webrtc else { return }
-            let message = HIDRPCMessage.wheelReport(deltaY: wheelY, deltaX: wheelX)
-            Task { await webrtc.sendHID(message, on: .reliable) }
-        } else {
-            guard rpcReady else { return }
-            Task { [weak self] in
-                do {
-                    try await self?.sendWheelReportRPC(wheelY: wheelY, wheelX: wheelX)
-                } catch {
-                    log.error("wheelReport(y=\(wheelY, privacy: .public), x=\(wheelX, privacy: .public)) failed: \(describe(error), privacy: .public)")
-                }
+        guard rpcReady else { return }
+        Task { [weak self] in
+            do {
+                try await self?.sendWheelReportRPC(wheelY: wheelY, wheelX: wheelX)
+            } catch {
+                log.error("wheelReport(y=\(wheelY, privacy: .public), x=\(wheelX, privacy: .public)) failed: \(describe(error), privacy: .public)")
             }
         }
     }
