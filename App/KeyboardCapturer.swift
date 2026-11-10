@@ -162,7 +162,9 @@ final class KeyboardCapturer {
         // Remember which window the user toggled this in — we'll
         // gate event-swallowing on this window being key, so a
         // capture in window A doesn't steal keys aimed at window B.
-        boundWindow = NSApp.keyWindow
+        // mainWindow, not keyWindow: the toggle lives in a toolbar menu,
+        // and while it tracks, the key window can be the menu's popup.
+        boundWindow = NSApp.mainWindow ?? NSApp.keyWindow
         let promptKey = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
         let options: [String: Bool] = [promptKey: true]
         guard AXIsProcessTrustedWithOptions(options as CFDictionary) else {
@@ -362,9 +364,10 @@ final class KeyboardCapturer {
         event: CGEvent
     ) -> Unmanaged<CGEvent>? {
         MainActor.assumeIsolated {
-            // Only swallow when our app is the frontmost. Otherwise
-            // we'd grab Cmd+Tab system-wide, which is rude.
-            guard NSApp.isActive else {
+            // Only swallow while the capturing window is key. Otherwise
+            // we'd grab Cmd+Tab system-wide, or eat typing aimed at
+            // another of our windows (e.g. the Hosts window's sheets).
+            guard NSApp.isActive, boundWindow?.isKeyWindow == true else {
                 return Unmanaged.passUnretained(event)
             }
 
