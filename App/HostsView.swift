@@ -79,8 +79,12 @@ struct HostsView: View {
             if entries.isEmpty {
                 emptyState
             } else {
-                List(entries, selection: $selection) { entry in
-                    row(for: entry)
+                // Two ForEachs so only saved hosts are draggable:
+                // discovered ones have no persisted order.
+                List(selection: $selection) {
+                    ForEach(entries.filter(\.isSaved)) { row(for: $0) }
+                        .onMove { store.move(fromOffsets: $0, toOffset: $1) }
+                    ForEach(entries.filter { !$0.isSaved }) { row(for: $0) }
                 }
                 .listStyle(.inset)
                 // Selection + double-click-to-connect + per-row context
@@ -304,6 +308,11 @@ enum HostListEntry: Identifiable, Hashable {
         case .saved(let h): return "saved:\(h.id.uuidString)"
         case .discovered(let h): return "discovered:\(h.instanceName)"
         }
+    }
+
+    var isSaved: Bool {
+        if case .saved = self { return true }
+        return false
     }
 }
 

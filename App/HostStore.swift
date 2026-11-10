@@ -3,6 +3,7 @@
 import Foundation
 import OSLog
 import Observation
+import SwiftUI  // MutableCollection.move(fromOffsets:toOffset:)
 
 private let log = Logger(subsystem: "app.regi.mac", category: "host-store")
 
@@ -52,6 +53,12 @@ final class HostStore {
 
     func delete(id: SavedHost.ID) {
         hosts.removeAll(where: { $0.id == id })
+        persist()
+    }
+
+    /// Reorder, with List.onMove's offset semantics.
+    func move(fromOffsets source: IndexSet, toOffset destination: Int) {
+        hosts.move(fromOffsets: source, toOffset: destination)
         persist()
     }
 
