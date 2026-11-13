@@ -62,7 +62,9 @@ class Client:
         return result.get("isError", False), body, time.time() - started
 
     def script(self, session, source, **extra):
-        return self.call("run_script", session=session, script=source, **extra)
+        """A failed script is a normal result with ok: false, so its screenshot reaches the client."""
+        err, body, secs = self.call("run_script", session=session, script=source, **extra)
+        return err or (isinstance(body, dict) and body.get("ok") is False), body, secs
 
 
 def check(name, ok, detail=""):

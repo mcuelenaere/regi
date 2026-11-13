@@ -36,6 +36,10 @@ enum MCPTools {
         var summary: String
         /// Set when the call failed but still has content to return.
         var failure: String?
+        /// Report the failure in the content only, not as an MCP error:
+        /// clients keep just the text of an error result, and a failed
+        /// script's screenshot is the part that explains it.
+        var failureInContent = false
     }
 
     struct Failure: Error, CustomStringConvertible {
@@ -58,7 +62,7 @@ enum MCPTools {
                           tool: params.name, details: outcome.summary,
                           result: outcome.failure.map { String($0.prefix(300)) } ?? "ok",
                           isError: outcome.failure != nil, duration: Date().timeIntervalSince(started)))
-        return CallTool.Result(content: outcome.content, isError: outcome.failure != nil)
+        return CallTool.Result(content: outcome.content, isError: outcome.failure != nil && !outcome.failureInContent)
     }
 
     private static func run(_ name: String, _ a: Args, connection: UUID) async throws -> Outcome {
@@ -271,6 +275,7 @@ enum MCPTools {
         }
 
         var reply: [String: Value] = ["log": .array(report.log.map(Value.string))]
+        if case .failure = report.result { reply["ok"] = false } else { reply["ok"] = true }
         // Snapshots the script asked for, each after its caption.
         var images: [Tool.Content] = report.snapshots.flatMap { snapshot in
             [textContent(snapshot.caption), imageContent(snapshot.jpeg)]
@@ -296,7 +301,8 @@ enum MCPTools {
                 images += [textContent("The screen when the script failed (1280 px wide at most; framebuffer = image pixel ÷ scale, see list_sessions for its size)."),
                            imageContent(jpeg)]
             }
-            return Outcome(content: [json(.object(reply))] + images, summary: oneLine(script), failure: failure.message)
+            return Outcome(content: [json(.object(reply))] + images, summary: oneLine(script), failure: failure.message,
+                           failureInContent: true)
         }
     }
 
@@ -465,10 +471,11 @@ enum MCPTools {
         maxWidth. At most \(ScriptRun.maxSnapshots) per run; each image comes with a caption that maps its \
         pixels back to framebuffer pixels.
 
-        Returns {result, log, elapsed_s}, then any snapshots. trace: true adds the trace: one timed line per \
-        key press, typing, click (what was asked for and where it landed), wait and snapshot. On failure the call \
-        is an error with {error, line, log, trace, screen}: the message, the script line, your log() output, the \
-        trace, and the text on screen, followed by a screenshot of that moment.
+        Returns {ok: true, result, log, elapsed_s}, then any snapshots. trace: true adds the trace: one timed \
+        line per key press, typing, click (what was asked for and where it landed), wait and snapshot. A script \
+        that fails returns {ok: false, error, line, log, trace, screen}: the message, the script line, your log() \
+        output, the trace, and the text on screen, followed by any snapshots and a screenshot of that moment. \
+        Check ok before trusting result.
 
         Example:
         await keys.press("ctrl+alt+delete");
