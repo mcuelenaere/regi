@@ -26,16 +26,15 @@ final class AuthTests: XCTestCase {
         let decoded = try decoder.decode(LocalDevice.self, from: json)
         XCTAssertEqual(decoded.authMode, .password)
         XCTAssertEqual(decoded.deviceID, "abc-123")
-        XCTAssertFalse(decoded.loopbackOnly)
     }
 
     func testLocalDeviceDecodesNoPasswordMode() throws {
+        // Verbatim from a JetKVM Mini: no `loopbackOnly` key.
         let json = #"""
-        {"authMode":"noPassword","deviceId":"xyz","loopbackOnly":true}
+        {"authMode":"noPassword","deviceId":"80f1b2dc3be0"}
         """#.data(using: .utf8)!
         let decoded = try decoder.decode(LocalDevice.self, from: json)
         XCTAssertEqual(decoded.authMode, .noPassword)
-        XCTAssertTrue(decoded.loopbackOnly)
     }
 
     func testLocalDeviceDecodesNullAuthMode() throws {

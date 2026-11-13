@@ -46,9 +46,10 @@ public final class JetKVMBackend: KVMBackend {
     /// JetKVM exposes the full control-plane feature set.
     public let capabilities: KVMCapabilities = .jetKVM
 
-    /// ATX power control — available once the control-plane RPC channel is up.
+    /// ATX power control — available once `getATXState` has answered.
+    /// JetKVM Mini has no ATX methods, so it never answers and the menu stays hidden.
     public var availablePowerActions: [KVMPowerAction] {
-        rpcReady ? [.powerButtonShort, .reset, .powerButtonLong] : []
+        rpcReady && atxState != nil ? [.powerButtonShort, .reset, .powerButtonLong] : []
     }
 
     /// The device's own web UI, dropped straight onto its settings route —
