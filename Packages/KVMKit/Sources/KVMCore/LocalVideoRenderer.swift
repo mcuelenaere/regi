@@ -46,6 +46,8 @@ public final class LocalVideoRenderer: KVMVideoRenderer {
         }
     }
 
+    public func latestFrame() -> CVPixelBuffer? { retainedBuffers.last }
+
     public func detach() {
         source.onFrame = nil
         retainedBuffers.removeAll()

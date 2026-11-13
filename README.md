@@ -73,6 +73,23 @@ is in the macOS integration around it.
 - **First-class native UI.** SwiftUI, Mission Control thumbnails,
   Window menu entries with each host's display name, native
   fullscreen, real app icon in the Dock.
+- **MCP server** *(off by default)*. Lets an LLM client (Claude Code, Claude
+  Desktop, Cursor, …) list your hosts, open sessions, take screenshots, use
+  power controls, and above all run scripts: `run_script` takes JavaScript
+  that reads the screen with on-device OCR, types, clicks and waits for text,
+  so a whole flow (reset, wait for the BIOS prompt, open the boot menu, pick
+  an entry) is one call instead of a screenshot-and-click round trip per step.
+  Scripts run in a sandboxed JavaScriptCore context with no network or files.
+  While one runs, your own keyboard and mouse on that host are paused and the
+  window shows a Stop Script button. Sessions are ordinary Regi windows, with a
+  banner while a client is connected and every call listed under
+  Window ▸ MCP Activity. Turn it on in Regi ▸ Settings… ▸ MCP and give your
+  client the bundled command, `Regi.app/Contents/MacOS/regi-mcp` (no
+  arguments), e.g. `claude mcp add regi -- /Applications/Regi.app/Contents/MacOS/regi-mcp`.
+  For Claude Desktop, `Tools/claude-extension/build.sh` packages it as
+  `Regi.mcpb`: double-click to install. The client can start before Regi:
+  until Regi is up its tools are listed and calls ask you to open it, and
+  nothing ever launches Regi for you.
 
 
 ## Differences vs. the JetKVM web frontend

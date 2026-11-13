@@ -46,10 +46,9 @@ jobs:
           xcodegen generate
 
       # The WebRTC binary target is ~100MB. SwiftPM caches it under
-      # the project's DerivedData; key on KVMKit's Package.swift so a
-      # pin change invalidates the cache. That manifest is the only
-      # place the pins live — the Xcode project references KVMKit as a
-      # local package and carries no remote pin of its own, and the
+      # the project's DerivedData; key on the two files that hold remote
+      # pins so a pin change invalidates the cache: KVMKit's
+      # Package.swift, and project.yml for the app-only MCP SDK. The
       # workspace Package.resolved is gitignored, so hashing that here
       # would silently collapse the key to a constant. The package
       # tests below also reuse the same cache via package-level
@@ -61,7 +60,7 @@ jobs:
           path: |
             ~/Library/Developer/Xcode/DerivedData/**/SourcePackages/artifacts
             ~/Library/Developer/Xcode/DerivedData/**/SourcePackages/checkouts
-          key: ${{ runner.os }}-spm-${{ hashFiles('Packages/KVMKit/Package.swift') }}
+          key: ${{ runner.os }}-spm-${{ hashFiles('Packages/KVMKit/Package.swift', 'project.yml') }}
           restore-keys: |
             ${{ runner.os }}-spm-
 

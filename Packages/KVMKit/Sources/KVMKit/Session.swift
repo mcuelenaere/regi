@@ -138,7 +138,21 @@ public final class Session {
 
     // MARK: - Input (forwarded)
 
+    /// While true, this Mac's keyboard and mouse don't reach the host: an
+    /// automation client is driving it, and a stray key or click would change
+    /// what it sees. Input sent inside `Session.$isAutomation.withValue(true)`
+    /// still goes through. Key releases always do, so a key the user held
+    /// when this was set can still be let go. The gate is here rather than in
+    /// the views so every local input path is covered.
+    @ObservationIgnored public var localInputSuspended = false
+
+    /// Marks input as the automation's own; see `localInputSuspended`.
+    @TaskLocal public static var isAutomation = false
+
+    private var acceptsInput: Bool { !localInputSuspended || Self.isAutomation }
+
     public func sendKeypress(virtualKeyCode keyCode: UInt16, pressed: Bool, source: KeyEventSource) {
+        guard acceptsInput || !pressed else { return }
         backend?.sendKeypress(virtualKeyCode: keyCode, pressed: pressed, source: source)
     }
 
@@ -149,6 +163,9 @@ public final class Session {
     /// window, such as releasing ⌘ after ⌘Tab.
     public func handleFlagsChanged(virtualKeyCode keyCode: UInt16, rawFlags: UInt64,
                                    source: KeyEventSource) {
+        // Dropped whole while suspended: the next one after carries the full
+        // flags and the tracker re-synchronises from them.
+        guard acceptsInput else { return }
         backend?.handleFlagsChanged(virtualKeyCode: keyCode, rawFlags: rawFlags, source: source)
     }
 
@@ -165,22 +182,34 @@ public final class Session {
     /// outside is guesswork.
     static let inputTrace = Logger(subsystem: "app.regi.input", category: "outbound")
 
+    /// The last absolute position sent to the host, in normalized
+    /// `AbsolutePointer` units, whoever sent it — the local mouse or an
+    /// automation client — so the latter can act "at the current position".
+    /// Not observed: it changes at pointer rate and no view reads it.
+    @ObservationIgnored public private(set) var lastPointer: (x: Int32, y: Int32)?
+
     public func sendPointerMotion(normalizedX: Int32, normalizedY: Int32, buttons: MouseButtons) {
+        guard acceptsInput else { return }
         Self.inputTrace.debug("motion x=\(normalizedX) y=\(normalizedY) buttons=\(buttons.rawValue)")
+        lastPointer = (normalizedX, normalizedY)
         backend?.sendPointerMotion(normalizedX: normalizedX, normalizedY: normalizedY, buttons: buttons)
     }
 
     public func sendPointerButtonChange(normalizedX: Int32, normalizedY: Int32, buttons: MouseButtons) {
+        guard acceptsInput else { return }
         Self.inputTrace.debug("button x=\(normalizedX) y=\(normalizedY) buttons=\(buttons.rawValue)")
+        lastPointer = (normalizedX, normalizedY)
         backend?.sendPointerButtonChange(normalizedX: normalizedX, normalizedY: normalizedY, buttons: buttons)
     }
 
     public func sendMouseRelative(dx: Int8, dy: Int8, buttons: MouseButtons) {
+        guard acceptsInput else { return }
         Self.inputTrace.debug("relative dx=\(dx) dy=\(dy) buttons=\(buttons.rawValue)")
         backend?.sendMouseRelative(dx: dx, dy: dy, buttons: buttons)
     }
 
     public func sendWheelReport(wheelY: Int8, wheelX: Int8) {
+        guard acceptsInput else { return }
         backend?.sendWheelReport(wheelY: wheelY, wheelX: wheelX)
     }
 

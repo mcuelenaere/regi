@@ -75,6 +75,10 @@ struct KVMSessionWindowID: Hashable, Codable {
 /// `openWindow(id: "hosts")` under the hood whether or not an
 /// instance currently exists.
 private final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        MCPHost.shared.applySettings()
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
     }
@@ -326,6 +330,16 @@ struct RegiApp: App {
             }
         }
         .defaultSize(width: 1280, height: 800)
+
+        // Every MCP tool call. Single-instance, like Hosts.
+        Window("MCP Activity", id: "mcp-activity") {
+            MCPActivityView()
+        }
+        .defaultSize(width: 980, height: 420)
+
+        Settings {
+            MCPSettingsView()
+        }
     }
 }
 
