@@ -54,8 +54,8 @@ struct MCPActivityView: View {
     }
 }
 
-/// Replaces `MCPAgentBanner` on a session window while a client's script runs
-/// there: the user's keyboard and mouse are paused, and Stop ends the script.
+/// Over a session window's video while a client's script runs there: the
+/// user's keyboard and mouse are paused, and Stop ends the script.
 struct MCPScriptBanner: View {
     let run: ScriptRun
 
@@ -71,23 +71,24 @@ struct MCPScriptBanner: View {
     }
 }
 
-/// Shown on every session window while an MCP client is connected.
-struct MCPAgentBanner: View {
+/// In every session window's toolbar while an MCP client is connected.
+struct MCPAgentMenu: View {
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         let names = MCPHost.shared.connections.values.map(\.name).sorted()
-        HStack(spacing: 10) {
-            Image(systemName: "point.3.connected.trianglepath.dotted")
-            Text(names.count == 1
-                 ? "\(names[0]) is connected over MCP and can operate this session."
-                 : "\(names.count) MCP clients are connected and can operate this session.")
-                .frame(maxWidth: .infinity, alignment: .leading)
-            Button("Activity") { openWindow(id: "mcp-activity") }
-            Button("Stop") { MCPHost.shared.disable() }
-                .help("Disconnect every MCP client and turn the MCP server off")
+        let status = names.count == 1
+            ? "\(names[0]) is connected over MCP and can operate this session."
+            : "\(names.count) MCP clients are connected and can operate this session."
+        Menu {
+            Text(status)
+            Divider()
+            Button("Show Activity…") { openWindow(id: "mcp-activity") }
+            Button("Disconnect and Turn Off MCP") { MCPHost.shared.disable() }
+        } label: {
+            Label("MCP", systemImage: "point.3.connected.trianglepath.dotted")
+                .foregroundStyle(.tint)
         }
-        .padding(8)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6))
+        .help(status)
     }
 }

@@ -10,6 +10,7 @@ FIXTURE_SESSION, if given, a still_vnc.py screen showing two "OK" buttons.
 Both must be open in the test Regi already. Prints PASS/FAIL per check and
 exits non-zero on any failure. Standard library only.
 """
+import base64
 import json
 import subprocess
 import sys
@@ -52,6 +53,7 @@ class Client:
         """(is_error, body, seconds); body is parsed JSON when the text is JSON."""
         started = time.time()
         result = self.request("tools/call", {"name": tool, "arguments": arguments})["result"]
+        self.content = result["content"]   # every part, images included
         text = next((c["text"] for c in result["content"] if c["type"] == "text"), "")
         try:
             body = json.loads(text)
@@ -74,6 +76,21 @@ def in_background(work):
     thread = threading.Thread(target=lambda: box.setdefault("result", work()))
     thread.start()
     return lambda: (thread.join(), box["result"])[1]
+
+
+def jpeg_size(content):
+    """(width, height) of a base64 JPEG image part, from its SOF marker."""
+    data, i = base64.b64decode(content["data"]), 2
+    while i < len(data):
+        marker, length = data[i + 1], int.from_bytes(data[i + 2:i + 4], "big")
+        if marker in (0xC0, 0xC2):
+            return int.from_bytes(data[i + 7:i + 9], "big"), int.from_bytes(data[i + 5:i + 7], "big")
+        i += 2 + length
+    return None
+
+
+def images(client):
+    return [jpeg_size(c) for c in client.content if c["type"] == "image"]
 
 
 def short(value, limit=300):
@@ -125,6 +142,23 @@ check("a throw reports its line and the screen",
 err, body, _ = a.script(qemu, "await sleep(1);\nawait pointer.click('no such text anywhere');")
 check("an API failure points at the calling line",
       err and body.get("line") == 2 and body["error"].startswith("no text on screen matches"), short(body))
+
+err, body, _ = a.script(qemu, 'await keys.press("shift");\nawait pointer.click("no such text anywhere");')
+check("a failure carries the trace and a screenshot",
+      err and any("press shift" in line for line in body.get("trace", [])) and len(images(a)) == 1,
+      short(body.get("trace")) + f", images {images(a)}")
+
+err, body, _ = a.script(qemu, 'await pointer.move(/select boot device/i);\nreturn 1;', trace=True)
+check("trace: true traces a success, with where a target landed",
+      not err and any(line.endswith(")") and "→" in line for line in body.get("trace", [])), short(body.get("trace")))
+
+err, body, _ = a.script(qemu, "await screen.snapshot('menu', { region: { x: 0, y: 0, width: 300, height: 120 } });\n"
+                              "await screen.snapshot({ maxWidth: 360 });\nreturn 1;")
+check("snapshots attach images, a region at full resolution", not err and images(a) == [(300, 120), (360, 200)],
+      f"images {images(a)}")
+
+err, body, _ = a.script(qemu, "for (let i = 0; i < 4; i++) await screen.snapshot({ maxWidth: 100 });")
+check("snapshots are capped at 3", err and "at most 3" in body["error"] and body.get("line") == 1, body["error"])
 
 err, body, _ = a.script(qemu, "let x = ;")
 check("a syntax error reports its line", err and "SyntaxError" in body["error"] and body.get("line") == 1, short(body))

@@ -25,10 +25,16 @@ enum ScreenReader {
         return (CVPixelBufferGetWidth(buffer), CVPixelBufferGetHeight(buffer))
     }
 
-    /// The latest frame, copied out of the decoder's buffer and scaled.
-    static func frame(of session: Session, scale: Double = 1) -> CGImage? {
+    /// The latest frame, copied out of the decoder's buffer, cropped to
+    /// `region` (framebuffer pixels, top-left origin) and then scaled.
+    static func frame(of session: Session, region: CGRect? = nil, scale: Double = 1) -> CGImage? {
         guard let buffer = session.videoRenderer?.latestFrame() else { return nil }
         var image = CIImage(cvPixelBuffer: buffer)
+        if let region {
+            // Core Image counts y from the bottom.
+            image = image.cropped(to: CGRect(x: region.minX, y: image.extent.height - region.maxY,
+                                             width: region.width, height: region.height))
+        }
         if scale < 1 {
             let filter = CIFilter.lanczosScaleTransform()
             filter.inputImage = image

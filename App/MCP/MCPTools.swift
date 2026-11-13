@@ -3,6 +3,7 @@
 import Foundation
 import KVMKit
 import MCP
+import SwiftUI
 
 /// The MCP tool surface. Sessions and screenshots have their own tools; the
 /// work itself — reading text, typing, clicking, waiting — happens in
@@ -62,7 +63,7 @@ enum MCPTools {
 
     private static func run(_ name: String, _ a: Args, connection: UUID) async throws -> Outcome {
         switch name {
-        case "list_hosts": return try listHosts()
+        case "list_hosts": return try await listHosts()
         case "open_session": return try await openSession(a)
         case "close_session": return try await closeSession(a)
         case "list_sessions": return listSessions()
@@ -97,8 +98,8 @@ enum MCPTools {
 
     // MARK: - Hosts and sessions
 
-    private static func listHosts() throws -> Outcome {
-        guard let store = MCPHost.shared.hostStore else { throw notLoaded }
+    private static func listHosts() async throws -> Outcome {
+        let (store, _) = try await hostsWindow()
         let hosts: [Value] = store.hosts.map { host in
             let id = MCPHost.OpenSession.id(host.host, host.port)
             return ["id": .string(id), "name": .string(host.displayName), "kind": .string(host.kind.displayName),
@@ -107,11 +108,21 @@ enum MCPTools {
         return Outcome(content: [json(.array(hosts))], summary: "\(hosts.count) hosts")
     }
 
-    private static let notLoaded = Failure("Regi's host list isn't loaded; open its Hosts window once")
+    /// The saved hosts and SwiftUI's `openWindow`, which `HostsView` hands
+    /// over when it appears. Regi can launch with no windows at all, so open
+    /// the Hosts window if it never has been.
+    private static func hostsWindow() async throws -> (HostStore, OpenWindowAction) {
+        if MCPHost.shared.hostStore == nil { openHostsViaMenu() }
+        for _ in 0..<20 {
+            if let store = MCPHost.shared.hostStore, let openWindow = MCPHost.shared.openWindow { return (store, openWindow) }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        throw Failure("Regi's host list isn't loaded and its Hosts window didn't open; ask the user to open it (Window ▸ Hosts)")
+    }
 
     private static func openSession(_ a: Args) async throws -> Outcome {
         let wanted = try a.required("host")
-        guard let store = MCPHost.shared.hostStore, let openWindow = MCPHost.shared.openWindow else { throw notLoaded }
+        let (store, openWindow) = try await hostsWindow()
         guard let host = store.hosts.first(where: { MCPHost.OpenSession.id($0.host, $0.port) == wanted })
             ?? store.hosts.first(where: { $0.displayName.caseInsensitiveCompare(wanted) == .orderedSame })
         else { throw Failure("no saved host \"\(wanted)\"; see list_hosts") }
@@ -236,8 +247,7 @@ enum MCPTools {
             notes.insert("\(size.width)×\(size.height), the full framebuffer: coordinates take these pixels.", at: 0)
         }
         if let warning = signalWarning(open) { notes.append(warning) }
-        return Outcome(content: [.image(data: data.base64EncodedString(), mimeType: mime, annotations: nil, _meta: nil),
-                                 textContent(notes.joined(separator: " "))],
+        return Outcome(content: [imageContent(data, mimeType: mime), textContent(notes.joined(separator: " "))],
                        summary: "\(image.width)×\(image.height) \(mime.dropFirst(6)), \(data.count / 1024) KB")
     }
 
@@ -261,21 +271,45 @@ enum MCPTools {
         }
 
         var reply: [String: Value] = ["log": .array(report.log.map(Value.string))]
+        // Snapshots the script asked for, each after its caption.
+        var images: [Tool.Content] = report.snapshots.flatMap { snapshot in
+            [textContent(snapshot.caption), imageContent(snapshot.jpeg)]
+        }
+        let trace = Value.array(report.trace.map(Value.string))
         switch report.result {
         case .success(let result):
             reply["result"] = (try? JSONDecoder().decode(Value.self, from: Data(result.utf8))) ?? .null
             reply["elapsed_s"] = .double((report.elapsed * 10).rounded() / 10)
+            if a.raw["trace"]?.boolValue == true { reply["trace"] = trace }
             if report.unfinishedInput > 0 {
                 reply["warning"] = .string("\(report.unfinishedInput) keyboard or pointer call(s) had not finished when the script returned, so they were cut short or skipped. Await every call.")
             }
             if let warning = signalWarning(open) { reply["video"] = .string(warning) }
-            return Outcome(content: [json(.object(reply))], summary: oneLine(script))
+            return Outcome(content: [json(.object(reply))] + images, summary: oneLine(script))
         case .failure(let failure):
             reply["error"] = .string(failure.message)
             if let line = failure.line { reply["line"] = .int(line) }
+            reply["trace"] = trace
             reply["screen"] = await screenText(open)
-            return Outcome(content: [json(.object(reply))], summary: oneLine(script), failure: failure.message)
+            // What the screen looked like when it failed: often what explains it.
+            if let jpeg = await failureShot(open) {
+                images += [textContent("The screen when the script failed (1280 px wide at most; framebuffer = image pixel ÷ scale, see list_sessions for its size)."),
+                           imageContent(jpeg)]
+            }
+            return Outcome(content: [json(.object(reply))] + images, summary: oneLine(script), failure: failure.message)
         }
+    }
+
+    private static func failureShot(_ open: MCPHost.OpenSession) async -> Data? {
+        guard MCPHost.shared.sessions[open.id]?.session === open.session,
+              let size = ScreenReader.size(of: open.session),
+              let image = ScreenReader.frame(of: open.session, scale: min(1, 1280 / Double(size.width)))
+        else { return nil }
+        return await Task.detached { ScreenReader.encode(image, png: false) }.value
+    }
+
+    static func imageContent(_ data: Data, mimeType: String = "image/jpeg") -> Tool.Content {
+        .image(data: data.base64EncodedString(), mimeType: mimeType, annotations: nil, _meta: nil)
     }
 
     /// What is on screen now, as text lines, for a failed script's report.
@@ -374,7 +408,8 @@ enum MCPTools {
                  description: runScriptDescription,
                  inputSchema: object(["session": session,
                                       "script": property("string", "JavaScript: the body of an async function."),
-                                      "timeout_s": property("number", "Stop the script after this long; 60 by default, at most 600.")],
+                                      "timeout_s": property("number", "Stop the script after this long; 60 by default, at most 600."),
+                                      "trace": property("boolean", "Return the trace on success too (a failure always has it).")],
                                      required: ["session", "script"])),
             Tool(name: "power",
                  description: """
@@ -403,6 +438,7 @@ enum MCPTools {
         screen.find(what: string | RegExp, region?): Line[]
         screen.waitForText(what, { timeoutS = 30, gone = false, region }?): Line | null
         screen.waitStable({ quietMs = 500, timeoutS = 10 }?): boolean   // true once the picture stops changing
+        screen.snapshot(label?, { region, maxWidth = 1280 }?)          // attach a JPEG to the reply for you to see
         keys.press(...chords, { intervalMs = 100 }?)
         keys.type(text, { delayMs = 15 }?)
         pointer.click(target, { button = "left", count = 1 }?)
@@ -415,12 +451,24 @@ enum MCPTools {
         Text: a string matches case-insensitively as a substring, and exact matches win over partial ones; a \
         RegExp is tested against each line. A string or RegExp target must match exactly one line: none or several \
         throws, listing the screen's text (with positions when several match), so pick one and pass it or {x, y}. \
-        waitForText throws on timeout, with the visible text; gone: true waits for the text to disappear.
+        waitForText throws on timeout, with the visible text; gone: true waits for the text to disappear. Text \
+        is matched anywhere on screen, address-bar suggestions and tab titles included: pass a region to wait for \
+        the page's own text.
+
+        Timing: keys typed while a page or window is still opening are lost. After anything that navigates or \
+        opens something, wait for text that only the new content shows (in a region), or waitStable, before typing.
 
         Keys: \(KeyNames.accepted) keys.type sends printable ASCII, newline (Enter) and tab as US-layout keystrokes.
 
-        Returns {result, log, elapsed_s}. On failure the call is an error with {error, line, log, screen}: the \
-        message, the script line, your log() output, and the text on screen at that moment.
+        Seeing: screen.snapshot shows you what OCR can't read (icons, layout, colours). Image tokens grow with \
+        pixels, so pass a region when you know where to look; it is cropped at full resolution, then scaled to \
+        maxWidth. At most \(ScriptRun.maxSnapshots) per run; each image comes with a caption that maps its \
+        pixels back to framebuffer pixels.
+
+        Returns {result, log, elapsed_s}, then any snapshots. trace: true adds the trace: one timed line per \
+        key press, typing, click (what was asked for and where it landed), wait and snapshot. On failure the call \
+        is an error with {error, line, log, trace, screen}: the message, the script line, your log() output, the \
+        trace, and the text on screen, followed by a screenshot of that moment.
 
         Example:
         await keys.press("ctrl+alt+delete");

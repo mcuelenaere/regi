@@ -181,8 +181,6 @@ struct KVMWindowView: View {
             VStack(spacing: 8) {
                 if let run = runningScript {
                     MCPScriptBanner(run: run)
-                } else if !MCPHost.shared.connections.isEmpty {
-                    MCPAgentBanner()
                 }
                 if case .kicked = session.state {
                     banner(
@@ -224,6 +222,13 @@ struct KVMWindowView: View {
             .padding()
         }
         .toolbar {
+            // In the toolbar rather than over the video: it stays up for as
+            // long as a client is connected.
+            if !MCPHost.shared.connections.isEmpty {
+                ToolbarItem(placement: .primaryAction) {
+                    MCPAgentMenu()
+                }
+            }
             ToolbarItem(placement: .primaryAction) {
                 Menu {
                     Toggle(isOn: keyboardCaptureBinding) {

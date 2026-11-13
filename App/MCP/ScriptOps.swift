@@ -24,7 +24,7 @@ enum ScriptOps {
         }
         let started = Date()
         do {
-            let (value, summary) = try await perform(name, args, open)
+            let (value, summary) = try await perform(name, args, open, run)
             if let summary { record(run, name, summary, error: nil, since: started) }
             return value
         } catch {
@@ -44,13 +44,15 @@ enum ScriptOps {
                                     duration: Date().timeIntervalSince(started)))
     }
 
-    private static func perform(_ name: String, _ a: MCPTools.Args, _ open: MCPHost.OpenSession) async throws -> (Value, String?) {
+    private static func perform(_ name: String, _ a: MCPTools.Args, _ open: MCPHost.OpenSession,
+                                _ run: ScriptRun) async throws -> (Value, String?) {
         let session = open.session
         switch name {
         case "size":
             guard let size = ScreenReader.size(of: session) else { throw MCPTools.noVideo(open) }
             return (["width": .int(size.width), "height": .int(size.height)], nil)
         case "ocr": return (try await ocr(a, open), nil)
+        case "snapshot": return try await snapshot(a, open, run)
         case "stable": return try await stable(a, open)
         case "press": return try await press(a, session)
         case "type": return try await type(a, session)
@@ -85,6 +87,44 @@ enum ScriptOps {
                     "box": [.int(Int(box.minX)), .int(Int(box.minY)), .int(Int(box.width.rounded())), .int(Int(box.height.rounded()))],
                     "confidence": .double((Double(line.confidence) * 100).rounded() / 100)]
         })
+    }
+
+    /// A JPEG of the screen, or of a region of it, attached to the reply for
+    /// the LLM to look at. Cropped at full resolution, then scaled down to
+    /// `max_width`: a small region costs few image tokens and stays sharp.
+    private static func snapshot(_ a: MCPTools.Args, _ open: MCPHost.OpenSession, _ run: ScriptRun) async throws -> (Value, String?) {
+        guard let size = ScreenReader.size(of: open.session) else { throw MCPTools.noVideo(open) }
+        let full = CGRect(x: 0, y: 0, width: size.width, height: size.height)
+        var region = full
+        if let r = a.raw["region"]?.objectValue {
+            func number(_ key: String) -> Double { r[key]?.doubleValue ?? r[key]?.intValue.map(Double.init) ?? 0 }
+            region = CGRect(x: number("x"), y: number("y"), width: number("width"), height: number("height"))
+                .integral.intersection(full)
+            guard !region.isNull, !region.isEmpty else {
+                throw Failure("region must lie inside the \(size.width)×\(size.height) framebuffer")
+            }
+        }
+        let maxWidth = min(max(a.number("max_width") ?? 1280, 64), 1920)
+        let scale = min(1, maxWidth / region.width)
+        guard let image = ScreenReader.frame(of: open.session, region: region == full ? nil : region, scale: scale),
+              let jpeg = await Task.detached(operation: { ScreenReader.encode(image, png: false) }).value
+        else { throw Failure("couldn't capture the frame") }
+
+        let label = a.string("label") ?? ""
+        let place = region == full ? "the whole screen" : "region x \(Int(region.minX)), y \(Int(region.minY)), \(Int(region.width))×\(Int(region.height))"
+        // How a position in the image maps back to framebuffer pixels.
+        let x = Int(region.minX), y = Int(region.minY), s = String(format: "%.3f", scale)
+        let mapping: String
+        switch (region == full, scale < 1) {
+        case (true, false): mapping = "image pixels are framebuffer pixels"
+        case (true, true): mapping = "framebuffer = image pixel ÷ \(s)"
+        case (false, false): mapping = "framebuffer = (\(x), \(y)) + image pixel"
+        case (false, true): mapping = "framebuffer = (\(x), \(y)) + image pixel ÷ \(s)"
+        }
+        let number = try run.attach(jpeg) { number in
+            "snapshot \(number)\(label.isEmpty ? "" : " \u{201C}\(label)\u{201D}"): \(place), \(image.width)×\(image.height); \(mapping)"
+        }
+        return (["number": .int(number), "width": .int(image.width), "height": .int(image.height)], nil)
     }
 
     /// Stable once no two thumbnails 100 ms apart differ by more than the

@@ -28,10 +28,21 @@ final class ScriptRun: @unchecked Sendable {
     struct Report {
         let result: Result<String, Failure>
         let log: [String]
+        /// What the script did, one line per action, timed from its start.
+        let trace: [String]
+        let snapshots: [Snapshot]
         let elapsed: TimeInterval
         /// Keyboard or pointer calls still pending when the script returned.
         let unfinishedInput: Int
     }
+
+    /// An image `screen.snapshot` attached to the reply.
+    struct Snapshot {
+        let jpeg: Data
+        let caption: String
+    }
+
+    static let maxSnapshots = 3
 
     /// Used on the main actor only.
     let open: MCPHost.OpenSession
@@ -49,6 +60,8 @@ final class ScriptRun: @unchecked Sendable {
     private var outcome: Result<String, Failure>?
     private var waiter: CheckedContinuation<Result<String, Failure>, Never>?
     private var logLines: [String] = []
+    private var traceLines: [String] = []
+    private var snapshots: [Snapshot] = []
     private var unfinishedInput = 0
     private var ranAway = false
     private var tasks: [Task<Void, Never>] = []
@@ -119,8 +132,20 @@ final class ScriptRun: @unchecked Sendable {
         inputQueue.finish()
         // Drop the JavaScript on its own queue, behind whatever it is still doing.
         queue.async { self.pending = [:]; self.context = nil }
-        let (lines, unfinished) = lock.withLock { (logLines, unfinishedInput) }
-        return Report(result: result, log: lines, elapsed: Date().timeIntervalSince(started), unfinishedInput: unfinished)
+        let (lines, trace, images, unfinished) = lock.withLock { (logLines, traceLines, snapshots, unfinishedInput) }
+        return Report(result: result, log: lines, trace: trace, snapshots: images,
+                      elapsed: Date().timeIntervalSince(started), unfinishedInput: unfinished)
+    }
+
+    /// The number the new snapshot got, from 1; throws once the cap is reached.
+    func attach(_ jpeg: Data, caption: (Int) -> String) throws -> Int {
+        try lock.withLock {
+            guard snapshots.count < Self.maxSnapshots else {
+                throw MCPTools.Failure("at most \(Self.maxSnapshots) snapshots per run; use a region and fewer calls")
+            }
+            snapshots.append(Snapshot(jpeg: jpeg, caption: caption(snapshots.count + 1)))
+            return snapshots.count
+        }
     }
 
     /// The banner's Stop, a disconnecting client, a closed window, a timeout.
@@ -181,6 +206,12 @@ final class ScriptRun: @unchecked Sendable {
                 self.logLines.append(String(text.prefix(4000)))
             }
         }
+        let trace: @convention(block) (String) -> Void = { [weak self] text in
+            self?.lock.withLock {
+                guard let self, self.traceLines.count < 300 else { return }
+                self.traceLines.append(String(text.prefix(300)))
+            }
+        }
         let done: @convention(block) (String) -> Void = { [weak self] json in
             guard let self, returned == nil else { return }
             returned = .success(json)
@@ -189,7 +220,8 @@ final class ScriptRun: @unchecked Sendable {
             guard let self, returned == nil else { return }
             returned = .failure(Failure(message: message, line: line > 0 ? Int(line) : nil))
         }
-        for (name, block) in [("__call", call as Any), ("__sleep", sleep), ("__log", say), ("__done", done), ("__fail", fail)] {
+        for (name, block) in [("__call", call as Any), ("__sleep", sleep), ("__log", say), ("__trace", trace),
+                              ("__done", done), ("__fail", fail)] {
             context.setObject(block, forKeyedSubscript: name as NSString)
         }
         context.evaluateScript(Self.prelude, withSourceURL: URL(string: "regi.js"))
@@ -319,7 +351,10 @@ final class ScriptRun: @unchecked Sendable {
     private static let prelude = #"""
         "use strict";
         (() => {
-          const native = { call: __call, sleep: __sleep, log: __log };
+          const native = { call: __call, sleep: __sleep, log: __log, trace: __trace };
+          const started = Date.now();
+          const trace = (text) => native.trace(`${((Date.now() - started) / 1000).toFixed(1)} s  ${text}`);
+          const quote = (text, limit = 60) => JSON.stringify(text.length > limit ? text.slice(0, limit) + "…" : text);
 
           const lineOf = (stack) => {
             const match = /script\.js:(\d+)/.exec(String(stack ?? ""));
@@ -370,6 +405,14 @@ final class ScriptRun: @unchecked Sendable {
 
           const read = (region) => op("ocr", region ? { region } : {});
 
+          // A target as the trace shows it: what it was asked as, and where it landed.
+          const label = (target, at) => {
+            const asked = target instanceof RegExp ? String(target)
+              : typeof target === "string" ? quote(target)
+              : target && typeof target.text === "string" ? quote(target.text) : null;
+            return asked ? `${asked} → (${at.x}, ${at.y})` : `(${at.x}, ${at.y})`;
+          };
+
           const point = async (target) => {
             if (target && typeof target === "object" && !(target instanceof RegExp)) {
               if (typeof target.x !== "number" || typeof target.y !== "number") {
@@ -399,20 +442,35 @@ final class ScriptRun: @unchecked Sendable {
             text: api(async (region) => read(region)),
             find: api(async (what, region) => select(await read(region), what)),
             waitForText: api(async (what, { timeoutS = 30, gone = false, region } = {}) => {
-              const deadline = Date.now() + timeoutS * 1000;
+              const begun = Date.now(), deadline = begun + timeoutS * 1000;
+              const waited = () => `${((Date.now() - begun) / 1000).toFixed(1)} s`;
               for (;;) {
                 const lines = await read(region);
                 const found = select(lines, what);
-                if (!gone && found.length) return found[0];
-                if (gone && !found.length) return null;
+                if (!gone && found.length) {
+                  trace(`waitForText ${describe(what)}: ${quote(found[0].text)} at (${found[0].x}, ${found[0].y}) after ${waited()}`);
+                  return found[0];
+                }
+                if (gone && !found.length) {
+                  trace(`waitForText ${describe(what)} gone after ${waited()}`);
+                  return null;
+                }
                 if (Date.now() >= deadline) {
                   throw new Error(`waited ${timeoutS} s for ${describe(what)} to ${gone ? "disappear" : "appear"}. On screen: ${visible(lines)}`);
                 }
                 await native.sleep(200);
               }
             }),
-            waitStable: api(async ({ quietMs = 500, timeoutS = 10 } = {}) =>
-              (await op("stable", { quiet_ms: quietMs, timeout_s: timeoutS })).stable),
+            waitStable: api(async ({ quietMs = 500, timeoutS = 10 } = {}) => {
+              const result = await op("stable", { quiet_ms: quietMs, timeout_s: timeoutS });
+              trace(`waitStable: ${result.stable ? "stable" : "still changing"} after ${result.elapsed_ms} ms`);
+              return result.stable;
+            }),
+            snapshot: api(async (...args) => {
+              const [[caption], { region, maxWidth = 1280 }] = split(args);
+              const result = await op("snapshot", { label: caption === undefined ? "" : String(caption), region, max_width: maxWidth });
+              trace(`snapshot ${result.number}${caption === undefined ? "" : " " + quote(String(caption))}`);
+            }),
           };
 
           const keys = {
@@ -421,9 +479,11 @@ final class ScriptRun: @unchecked Sendable {
               const list = chords.flat().map(String);
               if (!list.length) throw new Error('keys.press needs a chord, e.g. keys.press("enter")');
               await op("press", { chords: list, interval_ms: intervalMs });
+              trace(`press ${list.join(", ")}`);
             }),
             type: api(async (text, { delayMs = 15 } = {}) => {
               await op("type", { text: String(text), delay_ms: delayMs });
+              trace(`type ${quote(String(text))}`);
             }),
           };
 
@@ -431,20 +491,26 @@ final class ScriptRun: @unchecked Sendable {
             click: api(async (target, { button = "left", count = 1 } = {}) => {
               const at = target === undefined ? {} : await point(target);
               await op("click", { ...at, button, count });
+              const how = (button === "left" ? "" : ` ${button}`) + (count > 1 ? ` ×${count}` : "");
+              trace(`click${how} ${target === undefined ? "at the pointer" : label(target, at)}`);
             }),
             move: api(async (target, { durationMs = 0 } = {}) => {
-              await op("move", { ...(await point(target)), duration_ms: durationMs });
+              const at = await point(target);
+              await op("move", { ...at, duration_ms: durationMs });
+              trace(`move ${label(target, at)}`);
             }),
             drag: api(async (from, to, { durationMs = 300, button = "left" } = {}) => {
               const a = await point(from), b = await point(to);
               await op("drag", { from_x: a.x, from_y: a.y, to_x: b.x, to_y: b.y, duration_ms: durationMs, button });
+              trace(`drag ${label(from, a)} to ${label(to, b)}`);
             }),
             scroll: api(async (dy = 0, dx = 0) => {
               await op("scroll", { dy, dx });
+              trace(`scroll dy=${dy} dx=${dx}`);
             }),
           };
 
-          const sleep = api(async (ms) => { await native.sleep(Number(ms) || 0); });
+          const sleep = api(async (ms) => { await native.sleep(Number(ms) || 0); trace(`sleep ${Number(ms) || 0} ms`); });
           const show = (value) => {
             if (typeof value === "string") return value;
             try { return JSON.stringify(value) ?? String(value); } catch { return String(value); }
