@@ -7,7 +7,7 @@ package regiprobe.telemetry.v1;
 // through the KVM's video path, so every byte is paid for twice: once in QR
 // capacity and once in how small the on-screen band can be.
 //
-// Regenerate with scripts/generate_probe_proto.sh and commit the result.
+// Regenerate with scripts/generate_proto.sh and commit the result.
 
 // Fields are DELTAS against the previous event in the frame. proto3 omits
 // zero-valued fields entirely, so the encoder biases the common case to zero:

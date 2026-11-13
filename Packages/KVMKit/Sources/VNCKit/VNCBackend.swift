@@ -10,7 +10,7 @@ private let log = Logger(subsystem: "app.regi.mac", category: "vnc")
 
 /// RFB 3.8 backend for standalone VNC servers (QEMU/libvirt `-vnc`, and Proxmox
 /// VMs reached via their QEMU VNC port). Decodes the framebuffer locally and
-/// presents it through `LocalVideoOutput` — no WebRTC. Reached through the
+/// presents it through `VideoFramePresenter` — no WebRTC. Reached through the
 /// `Session` façade for `DeviceKind.vnc`.
 ///
 /// `@MainActor` like the other backends so SwiftUI observes its state directly;
@@ -650,7 +650,6 @@ public final class VNCBackend: KVMBackend {
             bitrateBitsPerSecond: Double(deltaBytes) * 8 / dt,
             connectionType: nil,
             framesPerSecond: fps,
-            framesDropped: 0,
             codec: codecLabel,
             freezeCount: 0,
             totalFreezesDurationSec: 0,

@@ -47,10 +47,6 @@ public struct ConnectionStats: Sendable, Equatable {
     /// Decoded-frames-per-second from the inbound-rtp stat.
     public let framesPerSecond: Double
 
-    /// Frames the network reported as received but the decode
-    /// pipeline didn't finish.
-    public let framesDropped: Int64
-
     /// Negotiated codec (e.g. "video/H264", "video/H265"). nil if
     /// the codec stat hasn't surfaced yet.
     public let codec: String?
@@ -99,7 +95,6 @@ public struct ConnectionStats: Sendable, Equatable {
         bitrateBitsPerSecond: Double?,
         connectionType: ConnectionType?,
         framesPerSecond: Double,
-        framesDropped: Int64,
         codec: String?,
         freezeCount: Int64,
         totalFreezesDurationSec: Double,
@@ -116,7 +111,6 @@ public struct ConnectionStats: Sendable, Equatable {
         self.bitrateBitsPerSecond = bitrateBitsPerSecond
         self.connectionType = connectionType
         self.framesPerSecond = framesPerSecond
-        self.framesDropped = framesDropped
         self.codec = codec
         self.freezeCount = freezeCount
         self.totalFreezesDurationSec = totalFreezesDurationSec
