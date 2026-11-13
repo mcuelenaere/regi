@@ -60,7 +60,7 @@ enum MCPTools {
         host.record(.init(time: started, client: host.clientName(connection),
                           session: args.string("session") ?? args.string("host") ?? "",
                           tool: params.name, details: outcome.summary,
-                          result: outcome.failure.map { String($0.prefix(300)) } ?? "ok",
+                          result: outcome.failure ?? "ok",
                           isError: outcome.failure != nil, duration: Date().timeIntervalSince(started)))
         return CallTool.Result(content: outcome.content, isError: outcome.failure != nil && !outcome.failureInContent)
     }
@@ -290,7 +290,7 @@ enum MCPTools {
                 reply["warning"] = .string("\(report.unfinishedInput) keyboard or pointer call(s) had not finished when the script returned, so they were cut short or skipped. Await every call.")
             }
             if let warning = signalWarning(open) { reply["video"] = .string(warning) }
-            return Outcome(content: [json(.object(reply))] + images, summary: oneLine(script))
+            return Outcome(content: [json(.object(reply))] + images, summary: script)
         case .failure(let failure):
             reply["error"] = .string(failure.message)
             if let line = failure.line { reply["line"] = .int(line) }
@@ -301,7 +301,7 @@ enum MCPTools {
                 images += [textContent("The screen when the script failed (1280 px wide at most; framebuffer = image pixel ÷ scale, see list_sessions for its size)."),
                            imageContent(jpeg)]
             }
-            return Outcome(content: [json(.object(reply))] + images, summary: oneLine(script), failure: failure.message,
+            return Outcome(content: [json(.object(reply))] + images, summary: script, failure: failure.message,
                            failureInContent: true)
         }
     }

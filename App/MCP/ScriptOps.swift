@@ -40,7 +40,7 @@ enum ScriptOps {
     private static func record(_ run: ScriptRun, _ name: String, _ details: String, error: String?, since started: Date) {
         MCPHost.shared.record(.init(time: started, client: run.client, session: run.open.id,
                                     tool: "run_script ▸ \(name)", details: details,
-                                    result: error.map { String($0.prefix(300)) } ?? "ok", isError: error != nil,
+                                    result: error ?? "ok", isError: error != nil,
                                     duration: Date().timeIntervalSince(started)))
     }
 
