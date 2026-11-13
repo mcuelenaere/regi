@@ -45,6 +45,7 @@ public actor SignalingClient {
     private var session: URLSession?
     private var task: URLSessionWebSocketTask?
     private var receiveTask: Task<Void, Never>?
+    private var heartbeatTask: Task<Void, Never>?
     private var streamContinuation: AsyncThrowingStream<SignalingMessage, Error>.Continuation?
     private var tlsDelegate: TLSDelegate?
 
@@ -84,7 +85,10 @@ public actor SignalingClient {
         self.session = session
 
         let url = endpoint.webSocketURL(path: signalingPath)
-        let request = URLRequest(url: url)
+        var request = URLRequest(url: url)
+        // JetKVM Mini rejects the upgrade with 403 unless Origin matches
+        // Host. Upstream accepts same-origin too, so always send it.
+        request.setValue(endpoint.httpURL(path: "").absoluteString, forHTTPHeaderField: "Origin")
         let task = session.webSocketTask(with: request)
         self.task = task
         task.resume()
@@ -109,6 +113,15 @@ public actor SignalingClient {
         // can cancel it on disconnect.
         receiveTask = Task { [weak self] in
             await self?.receiveLoop(task: task)
+        }
+        // JetKVM Mini closes the socket after 90 s without a client
+        // message, and its peer goes down with it. Both firmwares answer
+        // a text "ping" with "pong" (`web.go:432-444`).
+        heartbeatTask = Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(30))
+                try? await task.send(.string("ping"))
+            }
         }
 
         return (metadata, stream)
@@ -147,6 +160,8 @@ public actor SignalingClient {
     private func cancelReceive() async {
         receiveTask?.cancel()
         receiveTask = nil
+        heartbeatTask?.cancel()
+        heartbeatTask = nil
         streamContinuation?.finish()
         streamContinuation = nil
     }

@@ -17,22 +17,20 @@ public struct DeviceStatus: Codable, Sendable, Equatable {
 
 /// Response from `GET /device` — protected endpoint, requires auth except in
 /// `noPassword` mode where the protected middleware lets unauthenticated
-/// requests through (`web.go:561-577`).
+/// requests through (`web.go:561-577`). JetKVM Mini firmware omits the
+/// upstream `loopbackOnly` field, so it isn't modelled.
 public struct LocalDevice: Codable, Sendable, Equatable {
     public let authMode: AuthMode?
     public let deviceID: String
-    public let loopbackOnly: Bool
 
-    public init(authMode: AuthMode?, deviceID: String, loopbackOnly: Bool) {
+    public init(authMode: AuthMode?, deviceID: String) {
         self.authMode = authMode
         self.deviceID = deviceID
-        self.loopbackOnly = loopbackOnly
     }
 
     private enum CodingKeys: String, CodingKey {
         case authMode
         case deviceID = "deviceId"
-        case loopbackOnly
     }
 }
 
