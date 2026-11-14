@@ -133,7 +133,19 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" > /dev/null
           security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
           rm "$RUNNER_TEMP/cert.p12"
-          security find-identity -v -p codesigning "$KEYCHAIN"
+          # The runner image lacks the Developer ID intermediates, so
+          # without them the identity shows up as untrusted (G1 for
+          # certs issued before 2022, G2 after).
+          for ca in DeveloperIDCA DeveloperIDG2CA; do
+            curl -fsSL "https://www.apple.com/certificateauthority/$ca.cer" -o "$RUNNER_TEMP/$ca.cer"
+            security import "$RUNNER_TEMP/$ca.cer" -k "$KEYCHAIN" -T /usr/bin/codesign
+          done
+          # Without -v, so an untrusted or keyless identity shows why.
+          security find-identity -p codesigning "$KEYCHAIN"
+          if ! security find-identity -v -p codesigning "$KEYCHAIN" | grep -q "Developer ID Application"; then
+            echo "::error::No valid Developer ID Application identity after import (does the .p12 include the private key?)"
+            exit 1
+          fi
 
       # Signing settings (Developer ID, team, hardened runtime) come
       # from project.yml, the same as local builds.
