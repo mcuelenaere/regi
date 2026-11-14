@@ -10,7 +10,7 @@ let package = Package(
     dependencies: [
         // Already vendored for JetKVMKit's clipboard agent proto; pinned to the
         // same version so one protoc-gen-swift serves both.
-        .package(url: "https://github.com/apple/swift-protobuf.git", from: "1.40.0")
+        .package(url: "https://github.com/apple/swift-protobuf.git", from: "1.41.0")
     ],
     targets: [
         .target(
