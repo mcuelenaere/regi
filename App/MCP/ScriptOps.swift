@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import CoreGraphics
 import Foundation
 import KVMKit
 import MCP
@@ -28,7 +29,7 @@ enum ScriptOps {
             if let summary { record(run, name, summary, error: nil, since: started) }
             return value
         } catch {
-            if !(error is CancellationError), name != "ocr", name != "size" {
+            if !(error is CancellationError), !["ocr", "elements", "size"].contains(name) {
                 record(run, name, "", error: "\(error)", since: started)
             }
             throw error
@@ -52,6 +53,7 @@ enum ScriptOps {
             guard let size = ScreenReader.size(of: session) else { throw MCPTools.noVideo(open) }
             return (["width": .int(size.width), "height": .int(size.height)], nil)
         case "ocr": return (try await ocr(a, open), nil)
+        case "elements": return (try await elements(a, open), nil)
         case "snapshot": return try await snapshot(a, open, run)
         case "stable": return try await stable(a, open)
         case "press": return try await press(a, session)
@@ -66,27 +68,60 @@ enum ScriptOps {
 
     // MARK: - Screen
 
-    private static func ocr(_ a: MCPTools.Args, _ open: MCPHost.OpenSession) async throws -> Value {
-        guard var image = ScreenReader.frame(of: open.session) else { throw MCPTools.noVideo(open) }
-        var origin = CGPoint.zero
-        if let region = a.raw["region"]?.objectValue {
-            func number(_ key: String) -> Double { region[key]?.doubleValue ?? region[key]?.intValue.map(Double.init) ?? 0 }
-            let rect = CGRect(x: number("x"), y: number("y"), width: number("width"), height: number("height")).integral
-                .intersection(CGRect(x: 0, y: 0, width: image.width, height: image.height))
-            guard !rect.isNull, !rect.isEmpty, let cropped = image.cropping(to: rect) else {
-                throw Failure("region must lie inside the \(image.width)×\(image.height) framebuffer")
-            }
-            image = cropped
-            origin = rect.origin
+    /// The `region` argument, clipped to `image`; nil when there is none.
+    private static func region(_ a: MCPTools.Args, in image: CGImage) throws -> CGRect? {
+        guard let region = a.raw["region"]?.objectValue else { return nil }
+        func number(_ key: String) -> Double { region[key]?.doubleValue ?? region[key]?.intValue.map(Double.init) ?? 0 }
+        let rect = CGRect(x: number("x"), y: number("y"), width: number("width"), height: number("height")).integral
+            .intersection(CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        guard !rect.isNull, !rect.isEmpty else {
+            throw Failure("region must lie inside the \(image.width)×\(image.height) framebuffer")
         }
-        let target = image
-        let lines = try await Task.detached { try ScreenReader.recognizeText(in: target) }.value
-        return .array(lines.map { line in
-            let box = line.box.offsetBy(dx: origin.x, dy: origin.y)
-            return ["text": .string(line.text), "x": .int(Int(box.midX)), "y": .int(Int(box.midY)),
-                    "box": [.int(Int(box.minX)), .int(Int(box.minY)), .int(Int(box.width.rounded())), .int(Int(box.height.rounded()))],
-                    "confidence": .double((Double(line.confidence) * 100).rounded() / 100)]
-        })
+        return rect
+    }
+
+    /// What a script sees of a box: its centre as a click target, the box, a confidence.
+    private static func place(_ box: CGRect, _ confidence: Float, text: String) -> Value {
+        ["text": .string(text), "x": .int(Int(box.midX)), "y": .int(Int(box.midY)),
+         "box": [.int(Int(box.minX)), .int(Int(box.minY)), .int(Int(box.width.rounded())), .int(Int(box.height.rounded()))],
+         "confidence": .double((Double(confidence) * 100).rounded() / 100)]
+    }
+
+    /// OCR of the frame, or of just the region: a crop reads small text better.
+    private static func ocr(_ a: MCPTools.Args, _ open: MCPHost.OpenSession) async throws -> Value {
+        guard let frame = ScreenReader.frame(of: open.session) else { throw MCPTools.noVideo(open) }
+        let rect = try region(a, in: frame)
+        var image = frame
+        if let rect {
+            guard let cropped = frame.cropping(to: rect) else { throw Failure("couldn't crop the frame") }
+            image = cropped
+        }
+        let origin = rect?.origin ?? .zero
+        let lines = try await Task.detached { try ScreenReader.recognizeText(in: image) }.value
+        return .array(lines.map { place($0.box.offsetBy(dx: origin.x, dy: origin.y), $0.confidence, text: $0.text) })
+    }
+
+    /// Detected controls, each with the OCR text it shares at least half of
+    /// the smaller box with ("" for an icon), both read from the same frame.
+    /// Overlap rather than containment: on text screens the detector boxes
+    /// single words, which must not pass for icons. The detector always sees
+    /// the whole frame: it was trained on screenshots at their own scale, and
+    /// a blown-up crop loses controls (Calculator's ÷ × − +). A region only
+    /// keeps the elements centred inside it. Top to bottom, left to right.
+    private static func elements(_ a: MCPTools.Args, _ open: MCPHost.OpenSession) async throws -> Value {
+        guard let image = ScreenReader.frame(of: open.session) else { throw MCPTools.noVideo(open) }
+        let rect = try region(a, in: image)
+        async let detected = Task.detached { try ScreenReader.detectElements(in: image) }.value
+        async let read = Task.detached { try ScreenReader.recognizeText(in: image) }.value
+        guard let elements = try await detected else { throw Failure("this build of Regi has no UI element detector") }
+        let lines = try await read
+        return .array(elements
+            .filter { rect?.contains(CGPoint(x: $0.box.midX, y: $0.box.midY)) ?? true }
+            .sorted { ($0.box.minY, $0.box.minX) < ($1.box.minY, $1.box.minX) }
+            .map { element in
+                let text = lines.filter { ScreenReader.overlaps(element.box, $0.box) }.map(\.text)
+                return place(element.box, element.confidence, text: text.joined(separator: " "))
+            })
     }
 
     /// A JPEG of the screen, or of a region of it, attached to the reply for
@@ -106,9 +141,20 @@ enum ScriptOps {
         }
         let maxWidth = min(max(a.number("max_width") ?? 1280, 64), 1920)
         let scale = min(1, maxWidth / region.width)
-        guard let image = ScreenReader.frame(of: open.session, region: region == full ? nil : region, scale: scale),
-              let jpeg = await Task.detached(operation: { ScreenReader.encode(image, png: false) }).value
-        else { throw Failure("couldn't capture the frame") }
+        // Boxes to number, in framebuffer pixels, mapped into the image.
+        let marks = try (a.raw["marks"]?.arrayValue ?? []).map { mark -> CGRect in
+            let numbers = mark.objectValue?["box"]?.arrayValue?.compactMap { $0.doubleValue ?? $0.intValue.map(Double.init) } ?? []
+            guard numbers.count == 4 else { throw Failure("marks are elements from screen.elements() or lines from screen.text()") }
+            return CGRect(x: (numbers[0] - region.minX) * scale, y: (numbers[1] - region.minY) * scale,
+                          width: numbers[2] * scale, height: numbers[3] * scale)
+        }
+        guard let frame = ScreenReader.frame(of: open.session, region: region == full ? nil : region, scale: scale) else {
+            throw Failure("couldn't capture the frame")
+        }
+        let image = marks.isEmpty ? frame : await Task.detached { ScreenReader.mark(frame, boxes: marks) }.value
+        guard let jpeg = await Task.detached(operation: { ScreenReader.encode(image, png: false) }).value else {
+            throw Failure("couldn't capture the frame")
+        }
 
         let label = a.string("label") ?? ""
         let place = region == full ? "the whole screen" : "region x \(Int(region.minX)), y \(Int(region.minY)), \(Int(region.width))×\(Int(region.height))"
@@ -123,6 +169,7 @@ enum ScriptOps {
         }
         let number = try run.attach(jpeg) { number in
             "snapshot \(number)\(label.isEmpty ? "" : " \u{201C}\(label)\u{201D}"): \(place), \(image.width)×\(image.height); \(mapping)"
+                + (marks.isEmpty ? "" : "; \(marks.count) boxes tagged with their index in marks")
         }
         return (["number": .int(number), "width": .int(image.width), "height": .int(image.height)], nil)
     }

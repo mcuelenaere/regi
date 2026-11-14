@@ -441,6 +441,7 @@ final class ScriptRun: @unchecked Sendable {
             size: api(async () => op("size")),
             text: api(async (region) => read(region)),
             find: api(async (what, region) => select(await read(region), what)),
+            elements: api(async (region) => op("elements", region ? { region } : {})),
             waitForText: api(async (what, { timeoutS = 30, gone = false, region } = {}) => {
               const begun = Date.now(), deadline = begun + timeoutS * 1000;
               const waited = () => `${((Date.now() - begun) / 1000).toFixed(1)} s`;
@@ -467,9 +468,13 @@ final class ScriptRun: @unchecked Sendable {
               return result.stable;
             }),
             snapshot: api(async (...args) => {
-              const [[caption], { region, maxWidth = 1280 }] = split(args);
-              const result = await op("snapshot", { label: caption === undefined ? "" : String(caption), region, max_width: maxWidth });
-              trace(`snapshot ${result.number}${caption === undefined ? "" : " " + quote(String(caption))}`);
+              const [[caption], { region, maxWidth = 1280, marks }] = split(args);
+              if (marks !== undefined && !Array.isArray(marks)) throw new Error("marks is an array of elements or lines");
+              const result = await op("snapshot", {
+                label: caption === undefined ? "" : String(caption), region, max_width: maxWidth,
+                marks: marks?.map((m) => ({ box: m?.box })),
+              });
+              trace(`snapshot ${result.number}${caption === undefined ? "" : " " + quote(String(caption))}${marks ? `, ${marks.length} marks` : ""}`);
             }),
           };
 

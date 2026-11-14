@@ -1,14 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import AppKit
 import CoreImage
 import CoreImage.CIFilterBuiltins
+import CoreML
 import ImageIO
 import KVMKit
 import UniformTypeIdentifiers
 import Vision
 
-/// The remote display as pixels and as text: frames out of a session's video,
-/// on-device OCR, and the thumbnails `waitStable` compares.
+/// The remote display as pixels, text and controls: frames out of a session's
+/// video, on-device OCR, the UI element detector, and the thumbnails
+/// `waitStable` compares.
 @MainActor
 enum ScreenReader {
     struct Line: Sendable {
@@ -106,11 +109,74 @@ enum ScreenReader {
         }
     }
 
-    /// Same text seen by both passes: most of the smaller box is shared.
-    nonisolated private static func overlaps(_ a: CGRect, _ b: CGRect) -> Bool {
+    struct Element: Sendable {
+        /// Framebuffer pixels, top-left origin.
+        let box: CGRect
+        let confidence: Float
+    }
+
+    /// OmniParser's icon detector (YOLOv8, AGPL-3.0), compiled into the app:
+    /// one class, "something you can interact with". Nil if the build lacks it.
+    nonisolated(unsafe) private static let detector: VNCoreMLModel? = {
+        guard let url = Bundle.main.url(forResource: "UIElementDetector", withExtension: "mlmodelc") else { return nil }
+        return try? VNCoreMLModel(for: MLModel(contentsOf: url))
+    }()
+
+    /// Controls on screen, text or not: buttons, icons, fields, rows. The
+    /// image is letterboxed into the model's square input; confidence and
+    /// overlap thresholds are built into the model (Tools/ui-detector).
+    nonisolated static func detectElements(in image: CGImage) throws -> [Element]? {
+        guard let detector else { return nil }
+        let request = VNCoreMLRequest(model: detector)
+        request.imageCropAndScaleOption = .scaleFit
+        try VNImageRequestHandler(cgImage: image).perform([request])
+        let width = CGFloat(image.width), height = CGFloat(image.height)
+        return (request.results as? [VNRecognizedObjectObservation] ?? []).map { observation in
+            let b = observation.boundingBox  // normalized, bottom-left origin
+            return Element(box: CGRect(x: b.minX * width, y: (1 - b.maxY) * height,
+                                       width: b.width * width, height: b.height * height),
+                           confidence: observation.confidence)
+        }
+    }
+
+    /// Same thing seen twice: most of the smaller box is shared.
+    nonisolated static func overlaps(_ a: CGRect, _ b: CGRect) -> Bool {
         let shared = a.intersection(b)
         guard !shared.isNull else { return false }
         return shared.width * shared.height >= 0.5 * min(a.width * a.height, b.width * b.height)
+    }
+
+    /// `image` with each box outlined and tagged with its index, so whoever
+    /// looks at it can name a box by number. Boxes are image pixels, top-left
+    /// origin. Tags sit just above a box, inside it when there's no room.
+    nonisolated static func mark(_ image: CGImage, boxes: [CGRect]) -> CGImage {
+        let width = image.width, height = image.height
+        guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                                      space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        else { return image }
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
+        let colours: [NSColor] = [.systemRed, .systemBlue, .systemGreen, .systemOrange, .systemPurple, .systemPink, .systemTeal]
+        for (index, box) in boxes.enumerated() {
+            let colour = colours[index % colours.count]
+            let rect = CGRect(x: box.minX, y: CGFloat(height) - box.maxY, width: box.width, height: box.height)
+            context.setStrokeColor(colour.cgColor)
+            context.setLineWidth(2)
+            context.stroke(rect)
+            let tag = NSAttributedString(string: "\(index)", attributes: [
+                .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .bold), .foregroundColor: NSColor.white])
+            let size = tag.size()
+            let above = rect.maxY + size.height + 2 <= CGFloat(height)
+            let back = CGRect(x: rect.minX, y: above ? rect.maxY : rect.maxY - size.height - 2,
+                              width: size.width + 4, height: size.height + 2)
+            context.setFillColor(colour.cgColor)
+            context.fill(back)
+            tag.draw(at: CGPoint(x: back.minX + 2, y: back.minY + 1))
+        }
+        NSGraphicsContext.restoreGraphicsState()
+        return context.makeImage() ?? image
     }
 
     nonisolated static func encode(_ image: CGImage, png: Bool) -> Data? {

@@ -76,7 +76,8 @@ is in the macOS integration around it.
 - **MCP server** *(off by default)*. Lets an LLM client (Claude Code, Claude
   Desktop, Cursor, …) list your hosts, open sessions, take screenshots, use
   power controls, and above all run scripts: `run_script` takes JavaScript
-  that reads the screen with on-device OCR, types, clicks and waits for text,
+  that reads the screen with on-device OCR and a UI element detector (for
+  icons and other controls without text), types, clicks and waits for text,
   so a whole flow (reset, wait for the BIOS prompt, open the boot menu, pick
   an entry) is one call instead of a screenshot-and-click round trip per step.
   Scripts run in a sandboxed JavaScriptCore context with no network or files.
@@ -144,10 +145,14 @@ Grab `Regi.dmg` from the [latest release](https://github.com/mcuelenaere/regi/re
 [XcodeGen](https://xcodegen.com) and is not checked in, so generate it once after
 cloning:
 
+The UI element detector's Core ML weights are stored with Git LFS, so install
+it before cloning (without it the build has a 130-byte pointer instead of a model):
+
 ```sh
+brew install git-lfs xcodegen
+git lfs install
 git clone https://github.com/mcuelenaere/regi.git
 cd regi
-brew install xcodegen
 xcodegen generate
 open Regi.xcodeproj
 ```
@@ -178,7 +183,9 @@ come with its source.
 
 Bundled dependencies keep their own licenses: `stasel/WebRTC` (BSD-3-Clause
 plus the WebRTC patent grant) and `apple/swift-protobuf` (Apache 2.0). Both
-are AGPLv3-compatible.
+are AGPLv3-compatible. The UI element detector is Microsoft OmniParser's
+`icon_detect` model (AGPL-3.0, `App/MCP/UIElementDetector.LICENSE`),
+converted to Core ML by `Tools/ui-detector/convert.py`.
 
 ## Acknowledgements
 
@@ -190,3 +197,5 @@ are AGPLv3-compatible.
   WebRTC.framework SwiftPM distribution.
 - [`apple/swift-protobuf`](https://github.com/apple/swift-protobuf) for the
   clipboard transfer wire format.
+- [Microsoft OmniParser](https://github.com/microsoft/OmniParser) for the
+  icon detector behind `screen.elements()`.

@@ -16,6 +16,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          lfs: true   # the UI element detector's Core ML weights
 
       # Runs before the build: a missing header is a one-line fix, and there
       # is no reason to spend 20 minutes compiling to find that out.

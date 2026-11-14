@@ -438,13 +438,15 @@ enum MCPTools {
 
         API. Coordinates are framebuffer pixels; every function but log returns a Promise.
         type Line = { text, x, y, box: [x, y, w, h], confidence }   // x, y: the centre, a ready click target
-        type Target = string | RegExp | Line | { x, y }
+        type Element = Line                                          // a detected control; text is "" for an icon
+        type Target = string | RegExp | Line | Element | { x, y }
         screen.size(): { width, height }
         screen.text(region?: { x, y, width, height }): Line[]        // on-device OCR, top to bottom
         screen.find(what: string | RegExp, region?): Line[]
+        screen.elements(region?): Element[]                          // buttons, icons, fields, rows, with the text inside each; region keeps those centred in it
         screen.waitForText(what, { timeoutS = 30, gone = false, region }?): Line | null
         screen.waitStable({ quietMs = 500, timeoutS = 10 }?): boolean   // true once the picture stops changing
-        screen.snapshot(label?, { region, maxWidth = 1280 }?)          // attach a JPEG to the reply for you to see
+        screen.snapshot(label?, { region, maxWidth = 1280, marks }?)   // attach a JPEG to the reply for you to see
         keys.press(...chords, { intervalMs = 100 }?)
         keys.type(text, { delayMs = 15 }?)
         pointer.click(target, { button = "left", count = 1 }?)
@@ -470,6 +472,14 @@ enum MCPTools {
         pixels, so pass a region when you know where to look; it is cropped at full resolution, then scaled to \
         maxWidth. At most \(ScriptRun.maxSnapshots) per run; each image comes with a caption that maps its \
         pixels back to framebuffer pixels.
+
+        Controls without text: screen.elements() runs an on-device detector for interactive things (buttons, \
+        icons, toggles, fields, list rows) and attaches the OCR text inside each. Icon-only controls are \
+        elements.filter(e => !e.text); find one by position relative to text you can read, e.g. the element just \
+        left of a "Wi-Fi" line. When you can't tell which icon is which, return the candidates and \
+        snapshot(label, { marks: candidates }): each box is drawn tagged with its index in marks, so you can \
+        pick one by number next call. Elements are detections, not facts: a few miss, a few are spurious, so \
+        keep marks to the candidates (a region or a filter), not the whole screen.
 
         Returns {ok: true, result, log, elapsed_s}, then any snapshots. trace: true adds the trace: one timed \
         line per key press, typing, click (what was asked for and where it landed), wait and snapshot. A script \

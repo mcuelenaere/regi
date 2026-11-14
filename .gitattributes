@@ -1,0 +1,2 @@
+# Core ML weights: tens of MB, kept out of the git history.
+**/*.mlpackage/**/weights/** filter=lfs diff=lfs merge=lfs -text

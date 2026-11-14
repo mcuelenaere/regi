@@ -126,6 +126,19 @@ check("a RegExp matching several lines refuses to click", err and "lines match" 
 err, body, _ = a.script(qemu, 'return JSON.parse(await __call("stable", JSON.stringify({ quiet_ms: 500, timeout_s: 5 })));')
 check("waitStable settles on the boot menu", not err and body["result"]["stable"], short(body.get("result")))
 
+# The detector boxes words on text screens; they carry their text, so none passes for an icon.
+err, body, _ = a.script(qemu, "const e = await screen.elements();\nreturn { n: e.length, icons: e.filter(x => !x.text).map(x => x.box) };")
+check("elements on a text screen all carry text", not err and body["result"]["n"] > 0 and body["result"]["icons"] == [],
+      short(body.get("result") if isinstance(body, dict) else body))
+
+err, body, _ = a.script(qemu, "const e = await screen.elements({ x: 0, y: 40, width: 400, height: 120 });\n"
+                              "return e.map(x => [x.x, x.y]);")
+inside = not err and body["result"] and all(0 <= x <= 400 and 40 <= y <= 160 for x, y in body["result"])
+check("elements in a region come back in framebuffer pixels", inside, short(body.get("result") if isinstance(body, dict) else body))
+
+err, body, _ = a.script(qemu, "await screen.snapshot({ marks: [{ x: 1, y: 2 }] });")
+check("marks without a box are refused", err and "marks are" in str(body.get("error")), short(body.get("error") if isinstance(body, dict) else body))
+
 # Runaway JavaScript is stopped, and Regi keeps answering meanwhile.
 finish = in_background(lambda: a.script(qemu, "while (true) {}"))
 time.sleep(0.3)
@@ -207,6 +220,10 @@ if fixture:
     check("clicking an ambiguous OK lists both", err and body["error"].startswith("2 lines match"), short(body.get("error")))
     err, body, _ = a.script(fixture, 'return JSON.parse(await __call("stable", JSON.stringify({ quiet_ms: 500, timeout_s: 5 })));')
     check("waitStable settles on a still screen", not err and body["result"]["stable"], short(body.get("result")))
+    err, body, _ = a.script(fixture, "const ok = (await screen.elements()).filter(e => /^ok$/i.test(e.text));\n"
+                                     "await screen.snapshot('ok buttons', { marks: ok });\nreturn ok.map(e => [e.x, e.y]);")
+    check("both OK buttons are elements, numbered on a snapshot",
+          not err and len(body["result"]) == 2 and len(images(a)) == 1, short(body) + f", images {images(a)}")
 
 print(f"\n{failures} failed" if failures else "\nall passed")
 for client in (a, b):
