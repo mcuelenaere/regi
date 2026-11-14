@@ -139,6 +139,16 @@ enum ScreenReader {
         }
     }
 
+    /// Load the detector and run it once on a blank frame: Core ML compiles
+    /// the model for this Mac on first use, about 4 s on a 1080p frame.
+    nonisolated static func warmUp() {
+        guard let context = CGContext(data: nil, width: 64, height: 64, bitsPerComponent: 8, bytesPerRow: 0,
+                                      space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
+              let blank = context.makeImage() else { return }
+        _ = try? detectElements(in: blank)
+    }
+
     /// Same thing seen twice: most of the smaller box is shared.
     nonisolated static func overlaps(_ a: CGRect, _ b: CGRect) -> Bool {
         let shared = a.intersection(b)

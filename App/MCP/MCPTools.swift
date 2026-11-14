@@ -474,9 +474,10 @@ enum MCPTools {
         pixels back to framebuffer pixels.
 
         Controls without text: screen.elements() runs an on-device detector for interactive things (buttons, \
-        icons, toggles, fields, list rows) and attaches the OCR text inside each. Icon-only controls are \
-        elements.filter(e => !e.text); find one by position relative to text you can read, e.g. the element just \
-        left of a "Wi-Fi" line. When you can't tell which icon is which, return the candidates and \
+        icons, toggles, fields, list rows) and attaches the OCR text inside each. Icons mostly have text "", \
+        but OCR reads some symbols (÷, ×, +, >) as a character, so don't rely on !e.text alone: pick by \
+        position relative to text you can read, e.g. the element just left of a "Wi-Fi" line, or the one \
+        right of "%". When you can't tell which icon is which, return the candidates and \
         snapshot(label, { marks: candidates }): each box is drawn tagged with its index in marks, so you can \
         pick one by number next call. Elements are detections, not facts: a few miss, a few are spurious, so \
         keep marks to the candidates (a region or a filter), not the whole screen.

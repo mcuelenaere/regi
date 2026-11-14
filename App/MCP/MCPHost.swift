@@ -145,6 +145,8 @@ final class MCPHost {
             listener.start(queue: .main)
             self.listener = listener
             writeToolCache()
+            // Loading and first-running the detector takes ~4 s; pay it now, not in a script.
+            Task.detached(priority: .utility) { ScreenReader.warmUp() }
         } catch {
             status = .failed("\(error)")
             log.error("MCP server not started: \(error, privacy: .public)")
