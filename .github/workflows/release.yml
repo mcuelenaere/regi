@@ -125,9 +125,6 @@ jobs:
           KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
           KEYCHAIN_PASSWORD="$(uuidgen)"
           echo "$P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
-          # Structure only (bag types, algorithms), no key material.
-          echo "p12: $(wc -c < "$RUNNER_TEMP/cert.p12") bytes; $(openssl version)"
-          openssl pkcs12 -in "$RUNNER_TEMP/cert.p12" -passin env:P12_PASSWORD -info -noout 2>&1 || true
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
           security set-keychain-settings -lut 3600 "$KEYCHAIN"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
