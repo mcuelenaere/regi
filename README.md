@@ -87,8 +87,9 @@ is in the macOS integration around it.
   Window ▸ MCP Activity. Turn it on in Regi ▸ Settings… ▸ MCP and give your
   client the bundled command, `Regi.app/Contents/MacOS/regi-mcp` (no
   arguments), e.g. `claude mcp add regi -- /Applications/Regi.app/Contents/MacOS/regi-mcp`.
-  For Claude Desktop, `Tools/claude-extension/build.sh` packages it as
-  `Regi.mcpb`: double-click to install. The client can start before Regi:
+  For Claude Desktop, Settings ▸ MCP ▸ Add to Claude Desktop… installs Regi
+  as an extension that runs that copy of Regi (add it again if you move
+  the app). The client can start before Regi:
   until Regi is up its tools are listed and calls ask you to open it, and
   nothing ever launches Regi for you.
 

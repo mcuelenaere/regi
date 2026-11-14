@@ -4,7 +4,7 @@
   "display_name": "Regi",
   "version": "__VERSION__",
   "description": "See and operate the computers Regi reaches through JetKVM, PiKVM and VNC.",
-  "long_description": "Lets Claude list your saved hosts, open sessions as ordinary Regi windows, take screenshots, use power controls, and run short scripts that read the screen with on-device OCR, type, click and wait, so a whole sequence of steps is one call. While a script runs, your keyboard and mouse on that host are paused and the window shows a Stop button. Calls need Regi running with Settings ▸ MCP turned on; until then Claude is told to ask you to open it, and the extension never launches Regi itself. Every call is listed in Regi's MCP Activity window.",
+  "long_description": "Lets Claude list your saved hosts, open sessions as ordinary Regi windows, take screenshots, use power controls, and run short scripts that read the screen with on-device OCR, type, click and wait, so a whole sequence of steps is one call. While a script runs, your keyboard and mouse on that host are paused and the window shows a Stop button. It runs the copy of Regi it was added from (Settings ▸ MCP ▸ Add to Claude Desktop), so add it again if you move Regi. Calls need Regi running with Settings ▸ MCP turned on; until then Claude is told to ask you to open it, and the extension never launches Regi itself. Every call is listed in Regi's MCP Activity window.",
   "author": {
     "name": "Maurus Cuelenaere"
   },

@@ -8,6 +8,7 @@ import SwiftUI
 struct MCPSettingsView: View {
     @AppStorage(MCPHost.enabledKey) private var enabled = false
     @Environment(\.openWindow) private var openWindow
+    @State private var extensionError: String?
 
     var body: some View {
         Form {
@@ -24,10 +25,20 @@ struct MCPSettingsView: View {
                 CopyRow(title: "Command", value: MCPHost.bridgePath)
                 CopyRow(title: "JSON", value: jsonSnippet)
                 CopyRow(title: "Claude Code", value: "claude mcp add regi -- \(shellQuoted(MCPHost.bridgePath))")
+                LabeledContent("Claude Desktop") {
+                    VStack(alignment: .trailing, spacing: 4) {
+                        Button("Add to Claude Desktop…") {
+                            do { try ClaudeExtension.add(); extensionError = nil } catch { extensionError = "\(error)" }
+                        }
+                        if let extensionError {
+                            Text(verbatim: extensionError).font(.caption).foregroundStyle(.red)
+                        }
+                    }
+                }
             } header: {
                 Text("Client setup")
             } footer: {
-                Text("MCP clients start the command; it needs no arguments.")
+                Text("MCP clients start the command; it needs no arguments. The Claude Desktop extension runs this copy of Regi's command: if you move Regi, add it again.")
             }
 
             Section {
