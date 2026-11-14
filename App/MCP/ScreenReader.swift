@@ -158,7 +158,9 @@ enum ScreenReader {
 
     /// `image` with each box outlined and tagged with its index, so whoever
     /// looks at it can name a box by number. Boxes are image pixels, top-left
-    /// origin. Tags sit just above a box, inside it when there's no room.
+    /// origin. A tag is sized to its box (a scaled-down screen has tiny boxes)
+    /// and sits in the box's top-left corner, or just above a box too small
+    /// to hold it; its background lets the picture show through.
     nonisolated static func mark(_ image: CGImage, boxes: [CGRect]) -> CGImage {
         let width = image.width, height = image.height
         guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
@@ -173,17 +175,19 @@ enum ScreenReader {
             let colour = colours[index % colours.count]
             let rect = CGRect(x: box.minX, y: CGFloat(height) - box.maxY, width: box.width, height: box.height)
             context.setStrokeColor(colour.cgColor)
-            context.setLineWidth(2)
+            context.setLineWidth(min(2, max(1, min(rect.width, rect.height) / 12)))
             context.stroke(rect)
             let tag = NSAttributedString(string: "\(index)", attributes: [
-                .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .bold), .foregroundColor: NSColor.white])
+                .font: NSFont.monospacedDigitSystemFont(ofSize: min(11, max(7, rect.height * 0.45)), weight: .bold),
+                .foregroundColor: NSColor.white])
             let size = tag.size()
-            let above = rect.maxY + size.height + 2 <= CGFloat(height)
-            let back = CGRect(x: rect.minX, y: above ? rect.maxY : rect.maxY - size.height - 2,
-                              width: size.width + 4, height: size.height + 2)
-            context.setFillColor(colour.cgColor)
-            context.fill(back)
-            tag.draw(at: CGPoint(x: back.minX + 2, y: back.minY + 1))
+            let back = CGSize(width: size.width + 3, height: size.height)
+            let fits = rect.width >= back.width * 1.5 && rect.height >= back.height * 1.5
+            let above = !fits && rect.maxY + back.height <= CGFloat(height)
+            let origin = CGPoint(x: rect.minX, y: fits || !above ? rect.maxY - back.height : rect.maxY)
+            context.setFillColor(colour.withAlphaComponent(0.75).cgColor)
+            context.fill(CGRect(origin: origin, size: back))
+            tag.draw(at: CGPoint(x: origin.x + 1.5, y: origin.y))
         }
         NSGraphicsContext.restoreGraphicsState()
         return context.makeImage() ?? image
