@@ -28,61 +28,66 @@ final class ClipboardFilePromiseRegistry {
     private var folderIdentifier = ""
     private var folderName = ""
     private var redeem: Redeem?
-
-    /// The File Provider item identifier for a promise. Carries the
-    /// offer id, so an item left over from a superseded offer resolves to
-    /// nothing rather than to whatever now sits at that index.
-    static func identifier(for promise: ClipboardFilePromise) -> String {
-        "\(promise.clipboardId)-\(promise.index)"
-    }
+    /// The sync manager whose bridge can redeem the current files. Each
+    /// KVM window has its own, and only that one may withdraw them.
+    private var owner: ObjectIdentifier?
+    /// Bumped per offer. The peer's clipboard ids restart at 1 on every
+    /// connection and repeat across hosts, so on their own they would
+    /// hand a new file an identifier — and a path — the system already
+    /// has materialised bytes for.
+    private var generation = 0
 
     /// Replace the current offer's files. Called on every inbound offer,
     /// including ones carrying no files at all — that still clears the
     /// previous offer's, which is the point.
     ///
-    /// Returns whether the offered set actually changed — a text-only
-    /// offer following another text-only offer changes nothing, and must
-    /// not pay for an XPC round trip before the pasteboard is written.
-    @discardableResult
-    func publish(_ promises: [ClipboardFilePromise], redeem: @escaping Redeem) -> Bool {
+    /// Returns where each file appears relative to the domain root, and
+    /// whether the offered set actually changed — a text-only offer
+    /// following another text-only offer changes nothing, and must not
+    /// pay for an XPC round trip.
+    func publish(
+        _ promises: [ClipboardFilePromise],
+        owner: ObjectIdentifier,
+        redeem: @escaping Redeem
+    ) -> (paths: [String], changed: Bool) {
+        guard !promises.isEmpty else { return ([], clear()) }
+        generation += 1
         // One offer may carry two files of the same name, copied from
         // different directories. On disk `O_EXCL` sorts that out; here the
         // names are only ever presented, so nothing would.
         let names = ClipboardFileRules.disambiguated(fileNames: promises.map(\.fileName))
         let incoming = zip(promises, names).map { promise, name in
-            (identifier: Self.identifier(for: promise), filename: name, size: promise.size)
+            (identifier: "\(generation)-\(promise.index)", filename: name, size: promise.size)
         }
-        let changed = incoming.map(\.identifier) != entries.map(\.identifier)
-            || incoming.map(\.filename) != entries.map(\.filename)
-
-        self.promises = Dictionary(
-            uniqueKeysWithValues: promises.map { (Self.identifier(for: $0), $0) }
-        )
+        self.promises = Dictionary(uniqueKeysWithValues: zip(incoming.map(\.identifier), promises).map { ($0, $1) })
         self.entries = incoming
-        // Everything in one offer shares a clipboard id; an empty offer
-        // needs no folder at all.
-        if let first = promises.first {
-            folderName = "\(first.clipboardId)"
-            folderIdentifier = "offer-\(first.clipboardId)"
-        } else {
-            folderName = ""
-            folderIdentifier = ""
-        }
+        folderName = "\(generation)"
+        folderIdentifier = "offer-\(generation)"
         self.redeem = redeem
-        if changed {
-            log.info("[FP] registry now offering \(promises.count, privacy: .public) file(s) in '\(self.folderName, privacy: .public)': \(names.joined(separator: ", "), privacy: .public)")
-        }
-        return changed
+        self.owner = owner
+        log.info("[FP] registry now offering \(promises.count, privacy: .public) file(s) in '\(self.folderName, privacy: .public)': \(names.joined(separator: ", "), privacy: .public)")
+        return (names.map { "\(folderName)/\($0)" }, true)
     }
 
-    func clear() {
-        guard !entries.isEmpty else { return }
+    /// Withdraw the files if `owner` is the one offering them. Returns
+    /// whether anything was withdrawn.
+    @discardableResult
+    func withdraw(owner: ObjectIdentifier) -> Bool {
+        guard self.owner == owner else { return false }
+        return clear()
+    }
+
+    @discardableResult
+    private func clear() -> Bool {
+        guard !entries.isEmpty else { return false }
         log.info("[FP] registry cleared")
         promises.removeAll()
         entries.removeAll()
         folderName = ""
         folderIdentifier = ""
         redeem = nil
+        owner = nil
+        return true
     }
 
     var manifest: ClipboardFileManifest {
@@ -94,12 +99,6 @@ final class ClipboardFilePromiseRegistry {
                 ClipboardFileDescriptor(identifier: $0.identifier, filename: $0.filename, size: $0.size)
             }
         )
-    }
-
-    /// Where a file we are offering appears, relative to the domain root.
-    func relativePath(forIdentifier identifier: String) -> String? {
-        guard let entry = entries.first(where: { $0.identifier == identifier }) else { return nil }
-        return "\(folderName)/\(entry.filename)"
     }
 
     /// Pull one file. Throws if the identifier belongs to an offer that

@@ -22,15 +22,15 @@ private let log = Logger(subsystem: "app.regi.mac", category: "fileprovider")
 enum ClipboardFileProviderDomain {
 
     static let identifier = NSFileProviderDomainIdentifier("app.regi.mac.clipboard")
+    private static let domain = NSFileProviderDomain(
+        identifier: identifier,
+        displayName: String(localized: "Regi Clipboard")
+    )
 
     /// Register the domain, replacing any left over from a previous run.
     /// Returns nil on success, or the error to explain why not.
     @discardableResult
     static func register() async -> Error? {
-        let domain = NSFileProviderDomain(
-            identifier: identifier,
-            displayName: String(localized: "Regi Clipboard")
-        )
         do {
             let existing = try await NSFileProviderManager.domains()
             log.info("[FP] \(existing.count, privacy: .public) existing domain(s): \(existing.map(\.identifier.rawValue).joined(separator: ", "), privacy: .public)")
@@ -45,10 +45,9 @@ enum ClipboardFileProviderDomain {
             log.info("[FP] domain registered OK: \(identifier.rawValue, privacy: .public)")
             await connectToExtension()
             startKeepAlive()
-            if let manager = NSFileProviderManager(for: domain) {
-                let root = try await manager.getUserVisibleURL(for: .rootContainer)
-                log.info("[FP] user-visible root: \(root.path, privacy: .public)")
-            }
+            // Warms the cache, so the first paste doesn't wait on it.
+            let root = await rootURL()
+            log.info("[FP] user-visible root: \(root?.path ?? "none", privacy: .public)")
             return nil
         } catch {
             log.error("[FP] domain registration FAILED: \(String(describing: error), privacy: .public)")
@@ -79,7 +78,6 @@ enum ClipboardFileProviderDomain {
     /// is simply how `NSFileProviderService` is shaped — only the app can
     /// initiate.
     static func connectToExtension() async {
-        let domain = NSFileProviderDomain(identifier: identifier, displayName: "Regi Clipboard")
         guard let manager = NSFileProviderManager(for: domain) else {
             log.error("[FP] no manager for domain; cannot connect")
             return
@@ -114,22 +112,7 @@ enum ClipboardFileProviderDomain {
             // Nothing is actually connected until a message crosses, and
             // every other call here runs the other way. Without this the
             // extension never sees the connection at all.
-            let established = await withTimeout(callTimeout, default: false) {
-                await withCheckedContinuation { continuation in
-                    var resumed = false
-                    let finish: (Bool) -> Void = { value in
-                        guard !resumed else { return }
-                        resumed = true
-                        continuation.resume(returning: value)
-                    }
-                    let proxy = connection.remoteObjectProxyWithErrorHandler { error in
-                        log.error("[FP] handshake failed: \(String(describing: error), privacy: .public)")
-                        finish(false)
-                    } as? ClipboardFileProviderPinging
-                    guard let proxy else { return finish(false) }
-                    proxy.ping { connected in finish(connected) }
-                }
-            }
+            let established = await pingSucceeds()
             log.info("[FP] connected to extension (handshake \(established ? "ok" : "failed", privacy: .public))")
         } catch {
             log.error("[FP] connecting to extension failed: \(String(describing: error), privacy: .public)")
@@ -184,20 +167,32 @@ enum ClipboardFileProviderDomain {
     }
 
     /// Run `work`, giving up with `default` if it outlasts `limit`.
+    ///
+    /// Not a task group: a group waits for every child before it returns,
+    /// and the child that matters here is a continuation XPC may never
+    /// resume — the very case the timeout exists for.
     private static func withTimeout<T: Sendable>(
         _ limit: Duration,
         default fallback: T,
         _ work: @escaping @Sendable () async -> T
     ) async -> T {
-        await withTaskGroup(of: T.self) { group in
-            group.addTask { await work() }
-            group.addTask {
+        await withCheckedContinuation { continuation in
+            let once = ResumeOnce(continuation)
+            Task { await once.resume(work()) }
+            Task {
                 try? await Task.sleep(for: limit)
-                return fallback
+                once.resume(fallback)
             }
-            let first = await group.next() ?? fallback
-            group.cancelAll()
-            return first
+        }
+    }
+
+    @MainActor
+    private final class ResumeOnce<T: Sendable> {
+        private var continuation: CheckedContinuation<T, Never>?
+        init(_ continuation: CheckedContinuation<T, Never>) { self.continuation = continuation }
+        func resume(_ value: T) {
+            continuation?.resume(returning: value)
+            continuation = nil
         }
     }
 
@@ -224,9 +219,7 @@ enum ClipboardFileProviderDomain {
         guard !isReconnecting else { return }
         isReconnecting = true
         defer { isReconnecting = false }
-        connection?.invalidationHandler = nil
-        connection?.interruptionHandler = nil
-        connection = nil
+        disconnect()
         try? await Task.sleep(for: .seconds(1))
         await connectToExtension()
     }
@@ -241,7 +234,6 @@ enum ClipboardFileProviderDomain {
 
     /// Tell the system the offered set has changed, so Finder re-reads it.
     static func signalChange() async {
-        let domain = NSFileProviderDomain(identifier: identifier, displayName: "Regi Clipboard")
         guard let manager = NSFileProviderManager(for: domain) else { return }
         do {
             try await manager.signalEnumerator(for: .rootContainer)
@@ -258,7 +250,6 @@ enum ClipboardFileProviderDomain {
     /// Where the domain is mounted in the user's file system.
     static func rootURL() async -> URL? {
         if let cachedRoot { return cachedRoot }
-        let domain = NSFileProviderDomain(identifier: identifier, displayName: "Regi Clipboard")
         guard let manager = NSFileProviderManager(for: domain) else { return nil }
         cachedRoot = try? await manager.getUserVisibleURL(for: .rootContainer)
         return cachedRoot
@@ -275,7 +266,6 @@ enum ClipboardFileProviderDomain {
     }
 
     static func unregister() async {
-        let domain = NSFileProviderDomain(identifier: identifier, displayName: "Regi Clipboard")
         do {
             try await NSFileProviderManager.remove(domain)
             log.info("[FP] domain removed")

@@ -419,7 +419,7 @@ final class ClipboardFileWriter {
 /// 10 GiB file costs the same resident memory as a 10 KiB one, which is
 /// the whole reason `ClipboardSource` grew a URL-returning variant
 /// alongside `fetchData(mime:token:)`.
-final class ClipboardFileReader {
+final class ClipboardFileReader: @unchecked Sendable {
     private var descriptor: Int32
 
     init(url: URL) throws {

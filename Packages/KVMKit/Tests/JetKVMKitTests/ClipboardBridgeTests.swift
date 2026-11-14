@@ -245,7 +245,8 @@ final class ClipboardBridgeTests: XCTestCase {
             if ids.count > before { return (task, ids[before]) }
         }
         task.cancel()
-        throw XCTSkip("promise '\(promise.fileName)' never opened a stream")
+        XCTFail("promise '\(promise.fileName)' never opened a stream")
+        throw CancellationError()
     }
 
     /// Redeem a promise and play the peer answering it in full.
@@ -1445,7 +1446,7 @@ final class ClipboardBridgeTests: XCTestCase {
 
         let outcome = await pullTask.result
         XCTAssertEqual(promiseError(outcome), .superseded)
-        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: directory.path), [])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
         // And the abandoned pull is cancelled on the wire.
         let cancels = try sink.messages().compactMap { message -> StreamCancel? in
             if case .streamCancel(let c) = message { return c }
@@ -1491,10 +1492,7 @@ final class ClipboardBridgeTests: XCTestCase {
             XCTAssertEqual(error as? ClipboardPromiseError, .superseded)
         }
         _ = await next.value
-        XCTAssertEqual(
-            try FileManager.default.contentsOfDirectory(atPath: filesDirectory(bridge, clipboardId: 18).path),
-            []
-        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: filesDirectory(bridge, clipboardId: 18).path))
     }
 
     /// A promise from an offer the peer has already replaced is refused
@@ -1557,10 +1555,7 @@ final class ClipboardBridgeTests: XCTestCase {
 
         let outcome = await pullTask.result
         XCTAssertEqual(promiseError(outcome), .superseded)
-        XCTAssertEqual(
-            try FileManager.default.contentsOfDirectory(atPath: filesDirectory(bridge, clipboardId: 17).path),
-            []
-        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: filesDirectory(bridge, clipboardId: 17).path))
     }
 
     // MARK: - Outbound: files

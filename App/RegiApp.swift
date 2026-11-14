@@ -87,15 +87,27 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     /// only serve files while Regi is running to pull them, so leaving the
     /// domain mounted would put a folder in Finder that answers every read
     /// with an error.
-    func applicationWillTerminate(_ notification: Notification) {
-        let done = DispatchSemaphore(value: 0)
+    ///
+    /// Deferred termination rather than blocking in `willTerminate`: the
+    /// teardown runs on the main actor, so waiting for it on the main
+    /// thread only ever timed out.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        var replied = false
+        let reply = {
+            guard !replied else { return }
+            replied = true
+            sender.reply(toApplicationShouldTerminate: true)
+        }
         Task { @MainActor in
             await ClipboardFileProviderDomain.teardown()
-            done.signal()
+            reply()
         }
-        // Termination does not wait for async work on its own, and an
-        // un-torn-down domain outlives the process.
-        _ = done.wait(timeout: .now() + 2)
+        // Removing a domain is an XPC call; quitting must not hang on it.
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(2))
+            reply()
+        }
+        return .terminateLater
     }
 
     /// Dock left-click reopen handler. When no windows are visible,

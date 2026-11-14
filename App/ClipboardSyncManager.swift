@@ -62,6 +62,17 @@ final class ClipboardSyncManager {
 
     deinit {
         inboundTask?.cancel()
+        // A closed window's bridge can redeem nothing.
+        let id = ObjectIdentifier(self)
+        Task { @MainActor in Self.withdrawFiles(owner: id) }
+    }
+
+    /// Take `owner`'s files out of the File Provider, if it is the one
+    /// offering them, so Finder stops listing what nobody can fetch.
+    private static func withdrawFiles(owner: ObjectIdentifier) {
+        if ClipboardFilePromiseRegistry.shared.withdraw(owner: owner) {
+            Task { await ClipboardFileProviderDomain.signalChange() }
+        }
     }
 
     /// Called by the view when the user flips the toggle.
@@ -96,9 +107,17 @@ final class ClipboardSyncManager {
         }
         inboundTask?.cancel()
         inboundTask = nil
+        // The old bridge's promises died with it.
+        if inboundTaskBridgeID != nil { Self.withdrawFiles(owner: ObjectIdentifier(self)) }
         inboundTaskBridgeID = nil
         guard let bridge = currentBridge else { return }
         inboundTaskBridgeID = ObjectIdentifier(bridge)
+        // The bridge drops its promises on its own (a Hello, a dropped
+        // channel, an offer we cannot take); Finder has to follow.
+        bridge.onFilesWithdrawn = { [weak self] in
+            guard let self else { return }
+            Self.withdrawFiles(owner: ObjectIdentifier(self))
+        }
         inboundTask = Task { @MainActor [weak self, weak bridge] in
             guard let bridge else { return }
             log.info("[MANAGER] inboundOffers consumer task starting (new bridge)")
@@ -178,11 +197,7 @@ final class ClipboardSyncManager {
         monitor.stop()
         // Nothing can redeem the host's files once we are not syncing, so
         // withdraw them rather than leave unfetchable items in Finder.
-        if ClipboardFilePromiseRegistry.shared.publish([], redeem: { _ in
-            throw ClipboardPromiseError.superseded
-        }) {
-            Task { await ClipboardFileProviderDomain.signalChange() }
-        }
+        Self.withdrawFiles(owner: ObjectIdentifier(self))
         // Don't cancel inboundTask — see ensureInboundConsumer().
         // applyInboundOffer's isActive guard drops anything that
         // arrives while we're inactive.
@@ -253,7 +268,7 @@ final class ClipboardSyncManager {
         // replaced: Universal Clipboard force-resolves that flavour about
         // 100ms after every clipboard change, so "lazy" there meant
         // transferring every file whether or not anyone pasted.
-        let fileURLs = await Self.publishToFileProvider(offer.files) { [weak self] promise in
+        let fileURLs = await publishToFileProvider(offer.files) { [weak self] promise in
             guard let bridge = self?.session.clipboardBridge else {
                 throw ClipboardPromiseError.superseded
             }
@@ -290,23 +305,30 @@ final class ClipboardSyncManager {
     /// Hand the offer's files to the File Provider domain and resolve the
     /// user-visible URL of each. Returns only the ones that resolved — a
     /// file we cannot name is one we must not put on the pasteboard.
-    private static func publishToFileProvider(
+    private func publishToFileProvider(
         _ promises: [ClipboardFilePromise],
         redeem: @escaping ClipboardFilePromiseRegistry.Redeem
     ) async -> [URL] {
-        let changed = ClipboardFilePromiseRegistry.shared.publish(promises, redeem: redeem)
-        if !promises.isEmpty {
-            // The extension may have been recycled since the last offer;
-            // reconnect now rather than discover it when the user pastes.
-            await ClipboardFileProviderDomain.ensureConnected()
-        }
+        let (paths, changed) = ClipboardFilePromiseRegistry.shared.publish(
+            promises, owner: ObjectIdentifier(self), redeem: redeem
+        )
         if changed {
-            // Publishing replaces the previous offer's files wholesale, so
-            // the system has to be told even when this offer carries none —
-            // that is how a superseded file disappears from Finder.
-            await ClipboardFileProviderDomain.signalChange()
+            // Off the pasteboard's path: a recycled extension can take
+            // seconds to answer, and nobody can paste before the
+            // pasteboard is written anyway. Publishing replaces the
+            // previous offer's files wholesale, so the system is told
+            // even when this offer carries none — that is how a
+            // superseded file disappears from Finder.
+            Task {
+                if !promises.isEmpty {
+                    // The extension may have been recycled since the last
+                    // offer; reconnect now rather than when the user pastes.
+                    await ClipboardFileProviderDomain.ensureConnected()
+                }
+                await ClipboardFileProviderDomain.signalChange()
+            }
         }
-        guard !promises.isEmpty else { return [] }
+        guard !paths.isEmpty else { return [] }
 
         guard let root = await ClipboardFileProviderDomain.rootURL() else {
             log.error("[MANAGER] no File Provider domain root; inbound files cannot be offered")
@@ -317,14 +339,7 @@ final class ClipboardSyncManager {
         // signal, and making the pasteboard wait for that is the latency
         // this whole line of work set out to remove. The layout is known
         // in advance, and is valid by the time anyone pastes.
-        return promises.compactMap { promise in
-            let id = ClipboardFilePromiseRegistry.identifier(for: promise)
-            guard let path = ClipboardFilePromiseRegistry.shared.relativePath(forIdentifier: id) else {
-                log.error("[MANAGER] no path for '\(promise.fileName, privacy: .public)'; leaving it off the pasteboard")
-                return nil
-            }
-            return root.appendingPathComponent(path)
-        }
+        return paths.map { root.appendingPathComponent($0) }
     }
 
     // MARK: - Inbound file storage

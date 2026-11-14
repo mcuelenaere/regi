@@ -250,6 +250,11 @@ public final class ClipboardBridge {
     /// a no-op; inbound offers still resolve and reach `inboundOffers`.
     public var source: ClipboardSource?
 
+    /// Called when the current offer's file promises stop being
+    /// redeemable — superseded, or the peer session reset — so the App
+    /// layer can stop advertising them.
+    public var onFilesWithdrawn: (() -> Void)?
+
     /// Where inbound files land. Each offer gets its own subdirectory, so
     /// two clipboard events carrying `report.pdf` don't have to fight over
     /// the name. The App layer points this somewhere durable; the default
@@ -406,10 +411,16 @@ public final class ClipboardBridge {
         /// Offer order, so `ResolvedOffer.files` matches the sender's.
         var order: [UInt32] = []
         var byIndex: [UInt32: AnnouncedFile] = [:]
-        /// What we've already agreed to write for this offer. Fed to each
-        /// new writer's free-space preflight so redeeming twenty promises
+        /// What pulls in flight have agreed to write. Fed to each new
+        /// writer's free-space preflight so redeeming twenty promises
         /// can't pass twenty independent checks and still fill the volume.
-        var reservedBytes: UInt64 = 0
+        /// Derived rather than counted, so a failed pull gives its share
+        /// back; a landed file already shows in the free space.
+        var reservedBytes: UInt64 {
+            byIndex.values.reduce(0) { total, file in
+                file.streamId == nil ? total : total.addingReportingOverflow(file.size).partialValue
+            }
+        }
 
         var promises: [ClipboardFilePromise] {
             order.compactMap { index in
@@ -876,9 +887,12 @@ public final class ClipboardBridge {
         declaredSize: UInt64?,
         dragId: UInt32?
     ) async {
+        // Every read happens off the main actor. The file may be one of
+        // Regi's own File Provider items — pasted from another host, now
+        // relayed — and materialising it needs the main actor to pull it.
         let reader: ClipboardFileReader
         do {
-            reader = try ClipboardFileReader(url: url)
+            reader = try await Task.detached { try ClipboardFileReader(url: url) }.value
         } catch {
             log.error("[BRIDGE] stream \(streamId, privacy: .public): cannot open '\(name, privacy: .public)': \(String(describing: error), privacy: .public); closing NOT_FOUND")
             await sendStreamClose(streamId: streamId, status: .streamStatusNotFound)
@@ -948,7 +962,9 @@ public final class ClipboardBridge {
             }
             let slice: Data
             do {
-                slice = try reader.read(upTo: Self.streamChunkBytes)
+                slice = try await Task.detached { [chunk = Self.streamChunkBytes] in
+                    try reader.read(upTo: chunk)
+                }.value
             } catch {
                 log.error("[BRIDGE] stream \(streamId, privacy: .public): read failed at \(readTotal, privacy: .public): \(String(describing: error), privacy: .public)")
                 await sendStreamClose(streamId: streamId, status: .streamStatusIoError)
@@ -1358,7 +1374,7 @@ public final class ClipboardBridge {
     /// Pull one announced file and return where it landed.
     ///
     /// Called when something actually asks for the file — AppKit
-    /// fulfilling an `NSFilePromiseProvider` the App layer put on the
+    /// reading the File Provider item the App layer put on the
     /// pasteboard — which is what keeps a copy the user never pastes off
     /// the wire and off the disk. Everything the spec requires of a
     /// receiver still happens here, just later: validated name, hidden
@@ -1404,9 +1420,6 @@ public final class ClipboardBridge {
             log.error("[BRIDGE] promise \(promise.clipboardId, privacy: .public)/\(promise.index, privacy: .public): cannot accept '\(file.name, privacy: .public)': \(String(describing: error), privacy: .public)")
             throw ClipboardPromiseError.failed(String(describing: error))
         }
-        announcedFiles?.reservedBytes = current.reservedBytes
-            .addingReportingOverflow(file.size).partialValue
-
         // A tiny file rode the offer frame; it still has to reach the
         // disk, since what we hand back is a file reference.
         if let inline = file.inline {
@@ -1507,10 +1520,14 @@ public final class ClipboardBridge {
             doomed.append(streamId)
         }
         announcedFiles = nil
+        // Nothing can ask for these again, and the File Provider holds its
+        // own copy of anything that was read.
+        try? FileManager.default.removeItem(at: filesDirectory(forClipboardId: current.clipboardId))
         promiseOutcomes.removeAll()
         let waiters = promiseWaiters.values.flatMap { $0 }
         promiseWaiters.removeAll()
         if !current.byIndex.isEmpty {
+            onFilesWithdrawn?()
             log.debug("[BRIDGE] dropping \(current.byIndex.count, privacy: .public) file promise(s) of offer \(current.clipboardId, privacy: .public): \(reason, privacy: .public)")
         }
         for continuation in waiters {

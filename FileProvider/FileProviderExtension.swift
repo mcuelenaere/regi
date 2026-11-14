@@ -58,13 +58,16 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
             return Progress()
         }
         host.manifest { manifest in
+            guard let manifest else {
+                completionHandler(nil, NSFileProviderError(.serverUnreachable))
+                return
+            }
             if !manifest.isEmpty, identifier.rawValue == manifest.folderIdentifier {
                 completionHandler(OfferFolderItem(manifest), nil)
                 return
             }
             guard let descriptor = manifest.files.first(where: { $0.identifier == identifier.rawValue }) else {
-                // Either Regi is gone or the offer was superseded; both mean
-                // this item no longer exists.
+                // The offer was superseded; this item no longer exists.
                 completionHandler(nil, NSFileProviderError(.noSuchItem))
                 return
             }
@@ -82,31 +85,46 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
     ) -> Progress {
         log.info("[FP] fetchContents for \(itemIdentifier.rawValue, privacy: .public)")
         let progress = Progress(totalUnitCount: 1)
+        // Answer exactly once: the pull can't be stopped from here, but a
+        // cancelled read must not wait for it.
+        let lock = NSLock()
+        var answered = false
+        let finish: (URL?, NSFileProviderItem?, Error?) -> Bool = { url, item, error in
+            lock.lock()
+            let first = !answered
+            answered = true
+            lock.unlock()
+            if first { completionHandler(url, item, error) }
+            return first
+        }
+        progress.cancellationHandler = { _ = finish(nil, nil, CocoaError(.userCancelled)) }
 
         host.manifest { [weak self] manifest in
-            guard let self else {
-                completionHandler(nil, nil, NSFileProviderError(.noSuchItem))
+            guard let self, let manifest else {
+                _ = finish(nil, nil, NSFileProviderError(.serverUnreachable))
                 return
             }
             guard let descriptor = manifest.files.first(where: { $0.identifier == itemIdentifier.rawValue }) else {
                 log.error("[FP] fetchContents: \(itemIdentifier.rawValue, privacy: .public) is not on offer any more")
-                completionHandler(nil, nil, NSFileProviderError(.noSuchItem))
+                _ = finish(nil, nil, NSFileProviderError(.noSuchItem))
                 return
             }
             self.host.fetchFile(identifier: descriptor.identifier) { handle, failure in
                 guard let handle else {
                     log.error("[FP] fetchContents: pull failed: \(failure ?? "no host", privacy: .public)")
-                    completionHandler(nil, nil, NSFileProviderError(.serverUnreachable))
+                    _ = finish(nil, nil, NSFileProviderError(.serverUnreachable))
                     return
                 }
                 do {
                     let staged = try self.stage(handle, named: descriptor.filename)
                     progress.completedUnitCount = 1
                     log.info("[FP] fetchContents: materialised '\(descriptor.filename, privacy: .public)'")
-                    completionHandler(staged, ClipboardFileItem(descriptor, parent: manifest.folderIdentifier), nil)
+                    if !finish(staged, ClipboardFileItem(descriptor, parent: manifest.folderIdentifier), nil) {
+                        try? FileManager.default.removeItem(at: staged)
+                    }
                 } catch {
                     log.error("[FP] fetchContents: staging failed: \(String(describing: error), privacy: .public)")
-                    completionHandler(nil, nil, error)
+                    _ = finish(nil, nil, error)
                 }
             }
         }
@@ -114,8 +132,10 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
     }
 
     /// Copy the bytes out of the descriptor Regi handed us and into a file
-    /// the system can take ownership of. Chunked, so a multi-gigabyte
-    /// paste costs a buffer rather than its own size in memory.
+    /// the system can take ownership of. A clone where the volume allows
+    /// it, which is instant and costs no space; otherwise chunked, so a
+    /// multi-gigabyte paste costs a buffer rather than its own size in
+    /// memory.
     private func stage(_ handle: FileHandle, named filename: String) throws -> URL {
         // Must live in the domain's own temporary directory: the system
         // takes ownership of what we hand back, and will not accept a file
@@ -125,6 +145,10 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, 
         }
         let directory = try manager.temporaryDirectoryURL()
         let staged = directory.appendingPathComponent("\(UUID().uuidString)-\(filename)")
+        if fclonefileat(handle.fileDescriptor, AT_FDCWD, staged.path, 0) == 0 {
+            try? handle.close()
+            return staged
+        }
         guard FileManager.default.createFile(atPath: staged.path, contents: nil) else {
             throw NSFileProviderError(.cannotSynchronize)
         }
@@ -206,14 +230,19 @@ private final class HostConnection: @unchecked Sendable {
     }
 
     func adopt(_ connection: NSXPCConnection) {
+        // Without these a Regi that quit or crashed still looked connected,
+        // and every request went to a dead peer instead of waiting for the
+        // next one.
+        let drop: () -> Void = { [weak self, weak connection] in
+            guard let self else { return }
+            self.lock.lock(); defer { self.lock.unlock() }
+            if self.connection === connection { self.connection = nil }
+        }
+        connection.invalidationHandler = drop
+        connection.interruptionHandler = drop
         lock.lock(); defer { lock.unlock() }
         self.connection = connection
         log.info("[FP] adopted connection from Regi")
-    }
-
-    func invalidate() {
-        lock.lock(); defer { lock.unlock() }
-        connection = nil
     }
 
     /// A proxy whose error handler is wired to `onFailure`, so a dead peer
@@ -252,28 +281,28 @@ private final class HostConnection: @unchecked Sendable {
         poll()
     }
 
-    /// Empty when Regi isn't running — which is the honest answer, since a
-    /// promise is only redeemable while its offer is the live clipboard.
-    func manifest(_ completion: @escaping (ClipboardFileManifest) -> Void) {
+    /// Nil when Regi can't be reached. Not empty: an empty manifest tells
+    /// the system every item is gone, while this may just be a reconnect.
+    func manifest(_ completion: @escaping (ClipboardFileManifest?) -> Void) {
         var answered = false
-        let finish: (ClipboardFileManifest) -> Void = { value in
+        let finish: (ClipboardFileManifest?) -> Void = { value in
             guard !answered else { return }
             answered = true
             completion(value)
         }
         awaitConnection(timeout: Self.connectWait) { [weak self] connected in
             guard connected, let self,
-                  let proxy = self.proxy(onFailure: { _ in finish(.empty) })
+                  let proxy = self.proxy(onFailure: { _ in finish(nil) })
             else {
                 log.error("[FP] manifest: no connection to Regi")
-                return finish(.empty)
+                return finish(nil)
             }
             proxy.listPromisedFiles { data in
                 guard let data,
                       let decoded = try? JSONDecoder().decode(ClipboardFileManifest.self, from: data)
                 else {
                     log.error("[FP] manifest: no/undecodable reply")
-                    return finish(.empty)
+                    return finish(nil)
                 }
                 log.debug("[FP] manifest → \(decoded.files.count, privacy: .public) in '\(decoded.folderName, privacy: .public)'")
                 finish(decoded)
@@ -330,6 +359,11 @@ final class ClipboardFileServiceSource: NSObject, NSFileProviderServiceSource, N
 
     func listener(_ listener: NSXPCListener, shouldAcceptNewConnection connection: NSXPCConnection) -> Bool {
         log.info("[FP] shouldAcceptNewConnection")
+        // Whoever connects becomes the host every read is served from, so
+        // only Regi itself, signed by the same team, may.
+        connection.setCodeSigningRequirement(
+            #"identifier "app.regi.mac" and anchor apple generic and certificate leaf[subject.OU] = "NX94Z8676R""#
+        )
         // Regi exports the host object, which is what we actually call.
         connection.remoteObjectInterface = ClipboardFileProviderIPC.hostInterface()
         // And we export a ping, purely so Regi has something to send that
@@ -444,10 +478,6 @@ private final class ClipboardFileItem: NSObject, NSFileProviderItem {
 private final class ClipboardEnumerator: NSObject, NSFileProviderEnumerator {
     private let host: HostConnection
     private let container: NSFileProviderItemIdentifier
-    /// What we last told the system about, so a superseded offer's items
-    /// can be reported as deleted rather than lingering in Finder.
-    private var lastReported: Set<String> = []
-    private let lock = NSLock()
 
     init(host: HostConnection, container: NSFileProviderItemIdentifier) {
         self.host = host
@@ -469,8 +499,10 @@ private final class ClipboardEnumerator: NSObject, NSFileProviderEnumerator {
         log.debug("[FP] enumerateItems container=\(self.container.rawValue, privacy: .public)")
         host.manifest { [weak self] manifest in
             guard let self else { return observer.finishEnumerating(upTo: nil) }
+            guard let manifest else {
+                return observer.finishEnumeratingWithError(NSFileProviderError(.serverUnreachable))
+            }
             let items = self.contents(of: manifest)
-            self.remember(items)
             observer.didEnumerate(items)
             observer.finishEnumerating(upTo: nil)
         }
@@ -482,13 +514,19 @@ private final class ClipboardEnumerator: NSObject, NSFileProviderEnumerator {
             guard let self else {
                 return observer.finishEnumeratingChanges(upTo: anchor, moreComing: false)
             }
+            guard let manifest else {
+                return observer.finishEnumeratingWithError(NSFileProviderError(.serverUnreachable))
+            }
             // The working set is asked about everything, not one container,
             // so report the whole offer there.
             let items = self.container == .workingSet
                 ? Self.everything(in: manifest)
                 : self.contents(of: manifest)
+            // What was there is read off the anchor rather than remembered:
+            // the system recycles enumerators and whole processes, and a
+            // fresh one would otherwise never report the old offer gone.
             let current = Set(items.map(\.itemIdentifier.rawValue))
-            let gone = self.remember(items).subtracting(current)
+            let gone = self.identifiers(in: anchor).subtracting(current)
             if !gone.isEmpty {
                 log.debug("[FP] enumerateChanges: \(gone.count, privacy: .public) item(s) gone")
                 observer.didDeleteItems(withIdentifiers: gone.map { NSFileProviderItemIdentifier($0) })
@@ -499,7 +537,7 @@ private final class ClipboardEnumerator: NSObject, NSFileProviderEnumerator {
     }
 
     func currentSyncAnchor(completionHandler: @escaping (NSFileProviderSyncAnchor?) -> Void) {
-        host.manifest { completionHandler(Self.anchor(for: $0)) }
+        host.manifest { completionHandler($0.map(Self.anchor(for:))) }
     }
 
     private static func everything(in manifest: ClipboardFileManifest) -> [NSFileProviderItem] {
@@ -515,11 +553,17 @@ private final class ClipboardEnumerator: NSObject, NSFileProviderEnumerator {
         return NSFileProviderSyncAnchor(Data(stamp.utf8))
     }
 
-    @discardableResult
-    private func remember(_ items: [NSFileProviderItem]) -> Set<String> {
-        lock.lock(); defer { lock.unlock() }
-        let previous = lastReported
-        lastReported = Set(items.map(\.itemIdentifier.rawValue))
-        return previous
+    /// Which of this container's items an anchor from `anchor(for:)` says
+    /// existed then.
+    private func identifiers(in anchor: NSFileProviderSyncAnchor) -> Set<String> {
+        let parts = String(decoding: anchor.rawValue, as: UTF8.self)
+            .split(separator: "|", maxSplits: 1, omittingEmptySubsequences: false)
+        guard let folder = parts.first.map(String.init), !folder.isEmpty else { return [] }
+        let files = parts.count > 1 ? parts[1].split(separator: ",").map(String.init) : []
+        switch container {
+        case .workingSet: return Set([folder] + files)
+        case .rootContainer: return [folder]
+        default: return container.rawValue == folder ? Set(files) : []
+        }
     }
 }
