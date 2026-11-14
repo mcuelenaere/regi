@@ -91,6 +91,10 @@ targets:
     sources: [MCPBridge]
     settings:
       groups: [macApp]
+      base:
+        # Ships only inside Regi.app. Installing it into the archive too
+        # makes it a generic archive that -exportArchive can't export.
+        SKIP_INSTALL: YES
 
   RegiProbe:
     type: application
