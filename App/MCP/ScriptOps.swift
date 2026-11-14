@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import CoreGraphics
+import CoreVideo
 import Foundation
 import KVMKit
 import MCP
@@ -24,7 +25,13 @@ enum ScriptOps {
             throw Failure("the session's window was closed")
         }
         let started = Date()
-        if ScriptRun.inputOps.contains(name) { run.beforeInput = ScreenReader.thumbnail(of: open.session) }
+        if ScriptRun.inputOps.contains(name) {
+            // The backends drop input silently while not connected.
+            guard case .connected = open.session.state else {
+                throw Failure("\(open.id) is \(MCPTools.describe(open.session)), so input would be lost")
+            }
+            run.beforeInput = await ScreenReader.thumbnail(of: open.session)
+        }
         do {
             let (value, summary) = try await perform(name, args, open, run)
             if let summary { record(run, name, summary, error: nil, since: started) }
@@ -53,7 +60,7 @@ enum ScriptOps {
         case "size":
             guard let size = ScreenReader.size(of: session) else { throw MCPTools.noVideo(open) }
             return (["width": .int(size.width), "height": .int(size.height)], nil)
-        case "ocr": return (try await ocr(a, open), nil)
+        case "ocr": return (try await ocr(a, open, run), nil)
         case "elements": return (try await elements(a, open), nil)
         case "snapshot": return try await snapshot(a, open, run)
         case "stable": return try await stable(a, open, run)
@@ -69,14 +76,14 @@ enum ScriptOps {
 
     // MARK: - Screen
 
-    /// The `region` argument, clipped to `image`; nil when there is none.
-    private static func region(_ a: MCPTools.Args, in image: CGImage) throws -> CGRect? {
+    /// The `region` argument, clipped to the framebuffer; nil when there is none.
+    private static func region(_ a: MCPTools.Args, width: Int, height: Int) throws -> CGRect? {
         guard let region = a.raw["region"]?.objectValue else { return nil }
         func number(_ key: String) -> Double { region[key]?.doubleValue ?? region[key]?.intValue.map(Double.init) ?? 0 }
         let rect = CGRect(x: number("x"), y: number("y"), width: number("width"), height: number("height")).integral
-            .intersection(CGRect(x: 0, y: 0, width: image.width, height: image.height))
+            .intersection(CGRect(x: 0, y: 0, width: width, height: height))
         guard !rect.isNull, !rect.isEmpty else {
-            throw Failure("region must lie inside the \(image.width)×\(image.height) framebuffer")
+            throw Failure("region must lie inside the \(width)×\(height) framebuffer")
         }
         return rect
     }
@@ -89,17 +96,20 @@ enum ScriptOps {
     }
 
     /// OCR of the frame, or of just the region: a crop reads small text better.
-    private static func ocr(_ a: MCPTools.Args, _ open: MCPHost.OpenSession) async throws -> Value {
-        guard let frame = ScreenReader.frame(of: open.session) else { throw MCPTools.noVideo(open) }
-        let rect = try region(a, in: frame)
-        var image = frame
-        if let rect {
-            guard let cropped = frame.cropping(to: rect) else { throw Failure("couldn't crop the frame") }
-            image = cropped
-        }
+    /// The same frame and region read the same, so `waitForText` polling a
+    /// screen that hasn't changed reuses the last result.
+    private static func ocr(_ a: MCPTools.Args, _ open: MCPHost.OpenSession, _ run: ScriptRun) async throws -> Value {
+        guard let buffer = ScreenReader.buffer(of: open.session) else { throw MCPTools.noVideo(open) }
+        let rect = try region(a, width: CVPixelBufferGetWidth(buffer), height: CVPixelBufferGetHeight(buffer))
+        if let last = run.lastOCR, last.buffer === buffer, last.region == rect { return last.value }
+        let lines = try await Task.detached {
+            guard let image = ScreenReader.render(buffer, region: rect) else { throw Failure("couldn't capture the frame") }
+            return try ScreenReader.recognizeText(in: image)
+        }.value
         let origin = rect?.origin ?? .zero
-        let lines = try await Task.detached { try ScreenReader.recognizeText(in: image) }.value
-        return .array(lines.map { place($0.box.offsetBy(dx: origin.x, dy: origin.y), $0.confidence, text: $0.text) })
+        let value = Value.array(lines.map { place($0.box.offsetBy(dx: origin.x, dy: origin.y), $0.confidence, text: $0.text) })
+        run.lastOCR = (buffer, rect, value)
+        return value
     }
 
     /// Detected controls, each with the OCR text it shares at least half of
@@ -110,8 +120,8 @@ enum ScriptOps {
     /// a blown-up crop loses controls (Calculator's ÷ × − +). A region only
     /// keeps the elements centred inside it. Top to bottom, left to right.
     private static func elements(_ a: MCPTools.Args, _ open: MCPHost.OpenSession) async throws -> Value {
-        guard let image = ScreenReader.frame(of: open.session) else { throw MCPTools.noVideo(open) }
-        let rect = try region(a, in: image)
+        guard let image = await ScreenReader.frame(of: open.session) else { throw MCPTools.noVideo(open) }
+        let rect = try region(a, width: image.width, height: image.height)
         async let detected = Task.detached { try ScreenReader.detectElements(in: image) }.value
         async let read = Task.detached { try ScreenReader.recognizeText(in: image) }.value
         guard let elements = try await detected else { throw Failure("this build of Regi has no UI element detector") }
@@ -131,15 +141,7 @@ enum ScriptOps {
     private static func snapshot(_ a: MCPTools.Args, _ open: MCPHost.OpenSession, _ run: ScriptRun) async throws -> (Value, String?) {
         guard let size = ScreenReader.size(of: open.session) else { throw MCPTools.noVideo(open) }
         let full = CGRect(x: 0, y: 0, width: size.width, height: size.height)
-        var region = full
-        if let r = a.raw["region"]?.objectValue {
-            func number(_ key: String) -> Double { r[key]?.doubleValue ?? r[key]?.intValue.map(Double.init) ?? 0 }
-            region = CGRect(x: number("x"), y: number("y"), width: number("width"), height: number("height"))
-                .integral.intersection(full)
-            guard !region.isNull, !region.isEmpty else {
-                throw Failure("region must lie inside the \(size.width)×\(size.height) framebuffer")
-            }
-        }
+        let region = try region(a, width: size.width, height: size.height) ?? full
         let maxWidth = min(max(a.number("max_width") ?? 1280, 64), 1920)
         let scale = min(1, maxWidth / region.width)
         // Boxes to number, in framebuffer pixels, mapped into the image.
@@ -149,7 +151,7 @@ enum ScriptOps {
             return CGRect(x: (numbers[0] - region.minX) * scale, y: (numbers[1] - region.minY) * scale,
                           width: numbers[2] * scale, height: numbers[3] * scale)
         }
-        guard let frame = ScreenReader.frame(of: open.session, region: region == full ? nil : region, scale: scale) else {
+        guard let frame = await ScreenReader.frame(of: open.session, region: region == full ? nil : region, scale: scale) else {
             throw Failure("couldn't capture the frame")
         }
         let image = marks.isEmpty ? frame : await Task.detached { ScreenReader.mark(frame, boxes: marks) }.value
@@ -191,7 +193,7 @@ enum ScriptOps {
         let timeout = min(max(a.number("timeout_s") ?? 10, 0.1), 600)
         let threshold = a.number("threshold") ?? stableThreshold
         let started = Date()
-        guard var previous = ScreenReader.thumbnail(of: open.session) else { throw MCPTools.noVideo(open) }
+        guard var previous = await ScreenReader.thumbnail(of: open.session) else { throw MCPTools.noVideo(open) }
         if a.raw["after_change"]?.boolValue == true {
             let before = run.beforeInput ?? previous
             while ScreenReader.difference(before, previous) <= threshold {
@@ -202,14 +204,14 @@ enum ScriptOps {
                             "no change after \(ms) ms")
                 }
                 try await Task.sleep(for: .milliseconds(100))
-                guard let next = ScreenReader.thumbnail(of: open.session) else { throw MCPTools.noVideo(open) }
+                guard let next = await ScreenReader.thumbnail(of: open.session) else { throw MCPTools.noVideo(open) }
                 previous = next
             }
         }
         var quietSince = Date(), changed = a.raw["after_change"]?.boolValue == true, noise = 0.0, peak = 0.0
         while true {
             try await Task.sleep(for: .milliseconds(100))
-            guard let next = ScreenReader.thumbnail(of: open.session) else { throw MCPTools.noVideo(open) }
+            guard let next = await ScreenReader.thumbnail(of: open.session) else { throw MCPTools.noVideo(open) }
             let difference = ScreenReader.difference(previous, next)
             previous = next
             peak = max(peak, difference)
@@ -258,7 +260,8 @@ enum ScriptOps {
         }
         if let key = chord.key {
             session.sendKeypress(virtualKeyCode: key, pressed: true, source: .eventTap)
-            await pause(40)
+            // macOS ignores a Caps Lock tap shorter than about 150 ms.
+            await pause(key == KeyNames.capsLock ? 200 : 40)
             session.sendKeypress(virtualKeyCode: key, pressed: false, source: .eventTap)
         }
         for modifier in chord.modifiers.reversed() {
@@ -306,7 +309,7 @@ enum ScriptOps {
         guard let size = ScreenReader.size(of: open.session) else { throw MCPTools.noVideo(open) }
         let x = try a.requiredNumber(xKey), y = try a.requiredNumber(yKey)
         guard x >= 0, y >= 0, x < Double(size.width), y < Double(size.height) else {
-            throw Failure("(\(Int(x)), \(Int(y))) is outside the \(size.width)×\(size.height) framebuffer")
+            throw Failure("(\(String(format: "%g", x)), \(String(format: "%g", y))) is outside the \(size.width)×\(size.height) framebuffer")
         }
         // Aim at the pixel's centre.
         return (AbsolutePointer.normalize(CGFloat(x) + 0.5, extent: CGFloat(size.width)),
@@ -327,6 +330,8 @@ enum ScriptOps {
     private static func glide(_ session: Session, to: Point, durationMs: Double, buttons: MouseButtons) async -> Point {
         guard durationMs > 0, let from = session.lastPointer else {
             session.sendPointerMotion(normalizedX: to.x, normalizedY: to.y, buttons: buttons)
+            // Backends drop motion within 8 ms of the last; keep the next one clear.
+            await pause(16)
             return to
         }
         let steps = max(2, Int(durationMs / 16))
@@ -397,9 +402,11 @@ enum ScriptOps {
     }
 
     private static func scroll(_ a: MCPTools.Args, _ session: Session) async throws -> (Value, String?) {
-        let dy = Int(a.number("dy") ?? 0), dx = Int(a.number("dx") ?? 0)
+        // Range-checked before Int(), which traps past Int.max.
+        let rawY = a.number("dy") ?? 0, rawX = a.number("dx") ?? 0
+        guard abs(rawY) <= 100, abs(rawX) <= 100 else { throw Failure("at most 100 notches per call") }
+        let dy = Int(rawY), dx = Int(rawX)
         guard dy != 0 || dx != 0 else { throw Failure("pointer.scroll needs dy and/or dx, in wheel notches") }
-        guard abs(dy) <= 100, abs(dx) <= 100 else { throw Failure("at most 100 notches per call") }
         // One notch per report, so hosts that integrate wheel velocity see
         // every step. HID wheel reports count up as away-from-user (scroll up).
         for step in 0..<max(abs(dy), abs(dx)) {

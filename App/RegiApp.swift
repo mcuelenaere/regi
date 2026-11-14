@@ -274,7 +274,8 @@ struct RegiCommands: Commands {
 @main
 struct RegiApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @State private var hostStore = HostStore()
+    /// Shared with the MCP server, which lists and opens these hosts.
+    @State private var hostStore = MCPHost.shared.hostStore
     @State private var trustStore = TrustedHostStore()
     @State private var discovery = DeviceDiscovery()
     @State private var hostMenuModel = HostMenuModel()

@@ -116,10 +116,9 @@ struct HostsView: View {
         .frame(minWidth: 480, minHeight: 360)
         .navigationTitle("Hosts")
         // The MCP server's open_session opens windows the way a click here
-        // does, and lists these hosts. This is the first view up at launch.
+        // does. This is the first view up at launch.
         .onAppear {
             MCPHost.shared.openWindow = openWindow
-            MCPHost.shared.hostStore = store
         }
         // Mirror the selection into the shared model so the File menu can
         // enable/disable Connect (any host) and Edit/Delete (saved only).

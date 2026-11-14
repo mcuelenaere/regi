@@ -50,6 +50,7 @@ public enum KeyNames {
     }
 
     public static let shift: UInt16 = 0x38
+    public static let capsLock: UInt16 = 0x39
 
     /// Parses `"ctrl+alt+delete"`, `"Ctrl-Alt-Del"`, `"f2"`, `"shift+tab"`,
     /// `"cmd"`, `"ctrl+?"`. Any single printable character names its key; a

@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import CoreVideo
 import Foundation
 import JavaScriptCore
 import KVMKit
+import MCP
 import OSLog
 
 private let log = Logger(subsystem: "app.regi.mcp", category: "script")
@@ -52,6 +54,8 @@ final class ScriptRun: @unchecked Sendable {
     /// `waitStable({ afterChange })`: a fast UI has often changed by the time
     /// the wait starts.
     var beforeInput: [UInt8]?
+    /// The last OCR result, with the frame and region it read.
+    var lastOCR: (buffer: CVPixelBuffer, region: CGRect?, value: Value)?
 
     static let inputOps: Set<String> = ["press", "type", "move", "click", "drag", "scroll"]
     private let queue = DispatchQueue(label: "app.regi.mcp.script", qos: .userInitiated)
@@ -222,7 +226,9 @@ final class ScriptRun: @unchecked Sendable {
         }
         let fail: @convention(block) (String, Double) -> Void = { [weak self] message, line in
             guard let self, returned == nil else { return }
-            returned = .failure(Failure(message: message, line: line > 0 ? Int(line) : nil))
+            // The line can come from the script (error.scriptLine): Int(exactly:)
+            // rather than Int(), which traps on 1e300.
+            returned = .failure(Failure(message: message, line: Int(exactly: line).flatMap { $0 > 0 ? $0 : nil }))
         }
         for (name, block) in [("__call", call as Any), ("__sleep", sleep), ("__log", say), ("__trace", trace),
                               ("__done", done), ("__fail", fail)] {
@@ -533,10 +539,29 @@ final class ScriptRun: @unchecked Sendable {
           };
           const log = (...values) => native.log(values.map(show).join(" "));
 
+          // Timers over native.sleep, so they never leave the script's queue.
+          const timers = new Set();
+          let nextTimer = 1;
+          const later = (fn, ms, args, repeat) => {
+            const id = nextTimer++;
+            timers.add(id);
+            const tick = () => native.sleep(Number(ms) || 0).then(() => {
+              if (!timers.has(id)) return;
+              if (!repeat) timers.delete(id);
+              fn(...args);
+              if (repeat) tick();
+            });
+            tick();
+            return id;
+          };
+          const clear = (id) => { timers.delete(id); };
+
           Object.assign(globalThis, {
             screen, keys, pointer, sleep, log,
             console: { log, info: log, warn: log, error: log, debug: log },
-            setTimeout: (fn, ms = 0, ...args) => { native.sleep(Number(ms) || 0).then(() => fn(...args)); return 0; },
+            setTimeout: (fn, ms = 0, ...args) => later(fn, ms, args, false),
+            setInterval: (fn, ms = 0, ...args) => later(fn, ms, args, true),
+            clearTimeout: clear, clearInterval: clear,
           });
         })();
         """#

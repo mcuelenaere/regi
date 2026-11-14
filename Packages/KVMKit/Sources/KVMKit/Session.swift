@@ -169,7 +169,11 @@ public final class Session {
         backend?.handleFlagsChanged(virtualKeyCode: keyCode, rawFlags: rawFlags, source: source)
     }
 
+    /// Skipped while suspended: what is held then is the automation's, and it
+    /// lets go of it itself (the local window losing focus mid-script must
+    /// not release a modifier a script is holding).
     public func releaseAllHeldModifiers() {
+        guard acceptsInput else { return }
         backend?.releaseAllHeldModifiers()
     }
 

@@ -372,10 +372,11 @@ struct KVMWindowView: View {
                 }
             }
         }
-        // A script pauses local input; give the cursor back so the user can
-        // reach the banner's Stop.
+        // A script pauses local input; give the cursor and the system
+        // shortcuts back so the user can reach the banner's Stop.
         .onChange(of: runningScript != nil) { _, running in
             if running { pointerLock.disable() }
+            capturer.passThrough = running
         }
         .onDisappear {
             capturer.disable()

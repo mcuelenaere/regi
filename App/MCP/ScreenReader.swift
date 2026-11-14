@@ -21,17 +21,29 @@ enum ScreenReader {
         let confidence: Float
     }
 
-    private static let ciContext = CIContext()
+    /// Thread-safe; renders run detached.
+    nonisolated(unsafe) private static let ciContext = CIContext()
 
     static func size(of session: Session) -> (width: Int, height: Int)? {
-        guard let buffer = session.videoRenderer?.latestFrame() else { return nil }
+        guard let buffer = buffer(of: session) else { return nil }
         return (CVPixelBufferGetWidth(buffer), CVPixelBufferGetHeight(buffer))
     }
 
+    /// The decoder's latest frame. While held it stays that frame: the pool
+    /// can't hand it out again, so identity means "same frame".
+    static func buffer(of session: Session) -> CVPixelBuffer? {
+        session.videoRenderer?.latestFrame()
+    }
+
     /// The latest frame, copied out of the decoder's buffer, cropped to
-    /// `region` (framebuffer pixels, top-left origin) and then scaled.
-    static func frame(of session: Session, region: CGRect? = nil, scale: Double = 1) -> CGImage? {
-        guard let buffer = session.videoRenderer?.latestFrame() else { return nil }
+    /// `region` (framebuffer pixels, top-left origin) and then scaled. The
+    /// render runs off the main thread.
+    static func frame(of session: Session, region: CGRect? = nil, scale: Double = 1) async -> CGImage? {
+        guard let buffer = buffer(of: session) else { return nil }
+        return await Task.detached { render(buffer, region: region, scale: scale) }.value
+    }
+
+    nonisolated static func render(_ buffer: CVPixelBuffer, region: CGRect? = nil, scale: Double = 1) -> CGImage? {
         var image = CIImage(cvPixelBuffer: buffer)
         if let region {
             // Core Image counts y from the bottom.
@@ -50,8 +62,12 @@ enum ScreenReader {
 
     /// The frame shrunk to `width` pixels across, as RGBA bytes: enough to
     /// tell whether the screen changed, cheap enough to take ten times a second.
-    static func thumbnail(of session: Session, width: Int = 96) -> [UInt8]? {
-        guard let buffer = session.videoRenderer?.latestFrame() else { return nil }
+    static func thumbnail(of session: Session, width: Int = 96) async -> [UInt8]? {
+        guard let buffer = buffer(of: session) else { return nil }
+        return await Task.detached { thumbnail(buffer, width: width) }.value
+    }
+
+    nonisolated private static func thumbnail(_ buffer: CVPixelBuffer, width: Int) -> [UInt8]? {
         let source = CIImage(cvPixelBuffer: buffer)
         let filter = CIFilter.lanczosScaleTransform()
         filter.inputImage = source

@@ -87,6 +87,11 @@ final class KeyboardCapturer {
     /// so the host doesn't end up with stuck-down keys.
     var onSuspend: (() -> Void)?
 
+    /// While true the tap lets every key through untouched, e.g. while an
+    /// MCP script drives the host and local keys go nowhere anyway: the
+    /// user keeps ⌘Tab and the menu shortcuts.
+    var passThrough = false
+
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private var notificationObservers: [NSObjectProtocol] = []
@@ -367,7 +372,7 @@ final class KeyboardCapturer {
             // Only swallow while the capturing window is key. Otherwise
             // we'd grab Cmd+Tab system-wide, or eat typing aimed at
             // another of our windows (e.g. the Hosts window's sheets).
-            guard NSApp.isActive, boundWindow?.isKeyWindow == true else {
+            guard !passThrough, NSApp.isActive, boundWindow?.isKeyWindow == true else {
                 return Unmanaged.passUnretained(event)
             }
 

@@ -55,13 +55,14 @@ final class MCPHost {
 
     /// A session window registered by `KVMSessionWindow`.
     struct OpenSession {
+        /// host:port, with "#2" and up for further windows on the same
+        /// device (a saved and a discovered entry, say).
+        let id: String
         let windowID: KVMSessionWindowID
         let session: Session
         let close: () -> Void
-        /// Re-runs the window's bandwidth gate.
-        let gate: () -> Void
-        var id: String { Self.id(windowID.host, windowID.port) }
-        static func id(_ host: String, _ port: Int) -> String { "\(host):\(port)" }
+        /// Re-runs the window's bandwidth gate; true if that resumed paused video.
+        let gate: () -> Bool
     }
 
     struct Connection: Identifiable {
@@ -85,23 +86,28 @@ final class MCPHost {
     private(set) var status: Status = .stopped
     private(set) var sessions: [String: OpenSession] = [:]
     private(set) var connections: [UUID: Connection] = [:] {
-        // Clients count as someone watching: session windows keep video
-        // running while any is connected and may pause once none is.
         didSet {
-            if connections.isEmpty != oldValue.isEmpty {
-                for open in sessions.values { open.gate() }
-            }
+            guard connections.isEmpty, !watched.isEmpty else { return }
+            watched.removeAll()
+            for open in sessions.values { _ = open.gate() }
         }
     }
+    /// Sessions a client has read from or driven, by id: they count as
+    /// watched, so their video keeps running while the window is hidden,
+    /// until no client is connected. Others pause as usual.
+    // ponytail: not per client; one idle client keeps a session it once used
+    // unpaused until every client is gone.
+    private(set) var watched: Set<String> = []
     private(set) var activity: [Activity] = []
     /// The running `run_script` calls, by session id: one per session. The
     /// session windows show a banner with a Stop button for each.
     var scripts: [String: ScriptRun] = [:]
 
     /// Handed over by `HostsView`, the first view up: `open_session` needs a
-    /// SwiftUI `openWindow` and the saved hosts.
+    /// SwiftUI `openWindow`.
     var openWindow: OpenWindowAction?
-    var hostStore: HostStore?
+    /// The saved hosts; `RegiApp` hands this same store to its views.
+    let hostStore = HostStore()
 
     private var listener: NWListener?
 
@@ -268,15 +274,42 @@ final class MCPHost {
     // MARK: - Sessions
 
     func register(_ windowID: KVMSessionWindowID, session: Session,
-                  close: @escaping () -> Void, gate: @escaping () -> Void) {
-        let open = OpenSession(windowID: windowID, session: session, close: close, gate: gate)
-        sessions[open.id] = open
+                  close: @escaping () -> Void, gate: @escaping () -> Bool) {
+        guard !sessions.values.contains(where: { $0.session === session }) else { return }
+        let base = "\(windowID.host):\(windowID.port)"
+        var id = base, number = 1
+        while sessions[id] != nil {
+            number += 1
+            id = "\(base)#\(number)"
+        }
+        sessions[id] = OpenSession(id: id, windowID: windowID, session: session, close: close, gate: gate)
     }
 
-    func unregister(_ windowID: KVMSessionWindowID, session: Session) {
-        let id = OpenSession.id(windowID.host, windowID.port)
-        if sessions[id]?.session === session { sessions[id] = nil }
+    func unregister(_ session: Session) {
+        guard let id = sessions.first(where: { $0.value.session === session })?.key else { return }
+        sessions[id] = nil
+        watched.remove(id)
         if let run = scripts[id], run.open.session === session { run.stop("the session's window was closed") }
+    }
+
+    /// The open window for a saved host, if any.
+    func session(for windowID: KVMSessionWindowID) -> OpenSession? {
+        sessions.values.first { $0.windowID == windowID }
+    }
+
+    func isWatched(_ session: Session) -> Bool {
+        sessions.values.contains { $0.session === session && watched.contains($0.id) }
+    }
+
+    /// Marks a session a client uses as watched. If its video was paused,
+    /// resumes it and waits (up to 2 s) for a frame newer than the stale one.
+    func watch(_ open: OpenSession) async {
+        guard watched.insert(open.id).inserted else { return }
+        let stale = ScreenReader.buffer(of: open.session)
+        guard open.gate() else { return }
+        for _ in 0..<20 where ScreenReader.buffer(of: open.session) === stale {
+            try? await Task.sleep(for: .milliseconds(100))
+        }
     }
 
     // MARK: - Activity
@@ -284,8 +317,9 @@ final class MCPHost {
     func record(_ entry: Activity) {
         activity.append(entry)
         if activity.count > 1000 { activity.removeFirst(activity.count - 1000) }
-        // Details can carry typed text or screen text: private in unified logs.
-        activityLog.notice("\(entry.client, privacy: .public) \(entry.tool, privacy: .public) \(entry.session, privacy: .public) \(entry.details, privacy: .private) -> \(entry.result, privacy: .public)")
+        // Details and errors can carry typed text or screen text (a failed
+        // waitForText lists what was on screen): private in unified logs.
+        activityLog.notice("\(entry.client, privacy: .public) \(entry.tool, privacy: .public) \(entry.session, privacy: .public) \(entry.details, privacy: .private) -> \(entry.isError ? "failed" : "ok", privacy: .public) \(entry.isError ? entry.result : "", privacy: .private)")
     }
 
     func clearActivity() {

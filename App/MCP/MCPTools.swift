@@ -103,51 +103,56 @@ enum MCPTools {
     // MARK: - Hosts and sessions
 
     private static func listHosts() async throws -> Outcome {
-        let (store, _) = try await hostsWindow()
-        let hosts: [Value] = store.hosts.map { host in
-            let id = MCPHost.OpenSession.id(host.host, host.port)
-            return ["id": .string(id), "name": .string(host.displayName), "kind": .string(host.kind.displayName),
-                    "session_open": .bool(MCPHost.shared.sessions[id] != nil)]
+        let hosts: [Value] = MCPHost.shared.hostStore.hosts.map { host in
+            ["id": .string(hostID(host)), "name": .string(host.displayName), "kind": .string(host.kind.displayName),
+             "session_open": .bool(MCPHost.shared.session(for: KVMSessionWindowID(saved: host)) != nil)]
         }
         return Outcome(content: [json(.array(hosts))], summary: "\(hosts.count) hosts")
     }
 
-    /// The saved hosts and SwiftUI's `openWindow`, which `HostsView` hands
-    /// over when it appears. Regi can launch with no windows at all, so open
-    /// the Hosts window if it never has been.
-    private static func hostsWindow() async throws -> (HostStore, OpenWindowAction) {
-        if MCPHost.shared.hostStore == nil { openHostsViaMenu() }
+    private static func hostID(_ host: SavedHost) -> String { "\(host.host):\(host.port)" }
+
+    /// SwiftUI's `openWindow`, which `HostsView` hands over when it appears.
+    /// Regi can launch with no windows at all, so open the Hosts window if it
+    /// never has been.
+    private static func openWindowAction() async throws -> OpenWindowAction {
+        if MCPHost.shared.openWindow == nil { openHostsViaMenu() }
         for _ in 0..<20 {
-            if let store = MCPHost.shared.hostStore, let openWindow = MCPHost.shared.openWindow { return (store, openWindow) }
+            if let openWindow = MCPHost.shared.openWindow { return openWindow }
             try await Task.sleep(for: .milliseconds(100))
         }
-        throw Failure("Regi's host list isn't loaded and its Hosts window didn't open; ask the user to open it (Window ▸ Hosts)")
+        throw Failure("Regi's Hosts window didn't open; ask the user to open it (Window ▸ Hosts)")
     }
 
     private static func openSession(_ a: Args) async throws -> Outcome {
         let wanted = try a.required("host")
-        let (store, openWindow) = try await hostsWindow()
-        guard let host = store.hosts.first(where: { MCPHost.OpenSession.id($0.host, $0.port) == wanted })
+        let store = MCPHost.shared.hostStore
+        guard let host = store.hosts.first(where: { hostID($0) == wanted })
             ?? store.hosts.first(where: { $0.displayName.caseInsensitiveCompare(wanted) == .orderedSame })
         else { throw Failure("no saved host \"\(wanted)\"; see list_hosts") }
 
-        let id = MCPHost.OpenSession.id(host.host, host.port)
+        let windowID = KVMSessionWindowID(saved: host)
         // An already-open window is just brought forward.
-        openWindow(value: KVMSessionWindowID(saved: host))
+        let openWindow = try await openWindowAction()
+        openWindow(value: windowID)
         var state = "opening"
         let deadline = Date().addingTimeInterval(15)
         while Date() < deadline {
-            if let open = MCPHost.shared.sessions[id] {
+            if let open = MCPHost.shared.session(for: windowID) {
                 state = describe(open.session)
                 if settled(open.session) { break }
             }
             try await Task.sleep(for: .milliseconds(250))
         }
-        if let open = MCPHost.shared.sessions[id], open.session.state == .connected,
+        guard let open = MCPHost.shared.session(for: windowID) else {
+            return Outcome(content: [json(["state": .string(state)])], summary: state)
+        }
+        await MCPHost.shared.watch(open)
+        if open.session.state == .connected,
            open.session.videoRenderer?.latestFrame() == nil, (open.session.videoState?.error ?? "").isEmpty {
             state = "connected, no video frame yet"
         }
-        return Outcome(content: [json(["session": .string(id), "state": .string(state)])], summary: state)
+        return Outcome(content: [json(["session": .string(open.id), "state": .string(state)])], summary: state)
     }
 
     /// Connected with video (or a reported reason there is none), or stopped
@@ -227,6 +232,7 @@ enum MCPTools {
 
     private static func screenshot(_ a: Args) async throws -> Outcome {
         let open = try lookup(a)
+        await MCPHost.shared.watch(open)
         guard let size = ScreenReader.size(of: open.session) else { throw noVideo(open) }
         var scale = 1.0
         if let w = a.number("max_width"), w > 0 { scale = min(scale, w / Double(size.width)) }
@@ -234,12 +240,12 @@ enum MCPTools {
         let format = a.string("format") ?? "png"
         guard format == "png" || format == "jpeg" else { throw Failure("format is png or jpeg") }
 
-        guard let image = ScreenReader.frame(of: open.session, scale: scale) else { throw noVideo(open) }
+        guard let image = await ScreenReader.frame(of: open.session, scale: scale) else { throw noVideo(open) }
         var data = await Task.detached { ScreenReader.encode(image, png: format == "png") }.value
         var mime = "image/\(format)"
         var notes: [String] = []
-        // The Anthropic API refuses images over 5 MB.
-        if format == "png", (data?.count ?? 0) > 5_000_000 {
+        // The Anthropic API refuses images over 5 MB, measured base64-encoded.
+        if format == "png", (data?.count ?? 0) * 4 / 3 > 5_000_000 {
             data = await Task.detached { ScreenReader.encode(image, png: false) }.value
             mime = "image/jpeg"
             notes.append("The PNG was over 5 MB, so this is a JPEG.")
@@ -263,6 +269,7 @@ enum MCPTools {
         guard MCPHost.shared.scripts[open.id] == nil else {
             throw Failure("a script is already running on \(open.id); wait for it to finish")
         }
+        await MCPHost.shared.watch(open)
         let timeout = min(max(a.number("timeout_s") ?? 60, 1), 600)
         let run = ScriptRun(open: open, connection: connection, client: MCPHost.shared.clientName(connection))
         MCPHost.shared.scripts[open.id] = run
@@ -309,7 +316,7 @@ enum MCPTools {
     private static func failureShot(_ open: MCPHost.OpenSession) async -> Data? {
         guard MCPHost.shared.sessions[open.id]?.session === open.session,
               let size = ScreenReader.size(of: open.session),
-              let image = ScreenReader.frame(of: open.session, scale: min(1, 1280 / Double(size.width)))
+              let image = await ScreenReader.frame(of: open.session, scale: min(1, 1280 / Double(size.width)))
         else { return nil }
         return await Task.detached { ScreenReader.encode(image, png: false) }.value
     }
@@ -321,7 +328,7 @@ enum MCPTools {
     /// What is on screen now, as text lines, for a failed script's report.
     private static func screenText(_ open: MCPHost.OpenSession) async -> Value {
         guard MCPHost.shared.sessions[open.id]?.session === open.session,
-              let image = ScreenReader.frame(of: open.session),
+              let image = await ScreenReader.frame(of: open.session),
               let lines = try? await Task.detached(operation: { try ScreenReader.recognizeText(in: image) }).value
         else { return .null }
         return .array(lines.map { .string($0.text) })

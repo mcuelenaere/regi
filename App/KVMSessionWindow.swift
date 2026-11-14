@@ -34,6 +34,8 @@ struct KVMSessionWindow: View {
     /// window's visibility changes — gives the user a 5s grace period
     /// before we ask the device to pause encoder feed.
     @State private var pauseTask: Task<Void, Never>?
+    /// True once the debounced pause has gone out, until the next resume.
+    @State private var videoPaused = false
     /// Debounce window before pausing on hide. Quick alt-tab /
     /// occlusion blips don't trigger a pause / resume cycle (each of
     /// which costs an IDR on resume).
@@ -74,9 +76,10 @@ struct KVMSessionWindow: View {
         .navigationTitle(sessionID.displayName)
         .background(WindowAccessor(window: $ownWindow))
         // Expose this session to MCP clients while the window is open.
-        // MCPHost calls `gate` when clients come and go: they count as
-        // someone watching. A direct call rather than an .onChange, which
-        // SwiftUI doesn't deliver to a minimized window.
+        // MCPHost calls `gate` when a client starts using this session and
+        // when the last client leaves: a client using it counts as someone
+        // watching. A direct call rather than an .onChange, which SwiftUI
+        // doesn't deliver to a minimized window.
         .onAppear {
             MCPHost.shared.register(sessionID, session: session,
                                     close: { dismissWindow() }, gate: { updateBandwidthGate() })
@@ -111,7 +114,7 @@ struct KVMSessionWindow: View {
             vncClipboardSync?.sessionStateChanged()
         }
         .onDisappear {
-            MCPHost.shared.unregister(sessionID, session: session)
+            MCPHost.shared.unregister(session)
             // Session.disconnect is async; fire-and-forget so the
             // window-close path stays synchronous. The session reaches
             // .idle and gets deallocated when this view's @State drops.
@@ -254,18 +257,23 @@ struct KVMSessionWindow: View {
     /// Pause is debounced by `pauseDebounce` so a quick alt-tab
     /// doesn't trigger the cycle. Resume fires immediately so the
     /// user never waits for video on returning to the window.
-    private func updateBandwidthGate() {
-        guard let window = ownWindow else { return }
+    /// Returns true when this resumed video that was paused.
+    @discardableResult
+    private func updateBandwidthGate() -> Bool {
+        guard let window = ownWindow else { return false }
         let visible = !window.isMiniaturized
             && window.occlusionState.contains(.visible)
-        // An MCP client reads frames whether or not anyone is looking.
-        if visible || !MCPHost.shared.connections.isEmpty {
+        // An MCP client using this session reads frames whether or not
+        // anyone is looking.
+        if visible || MCPHost.shared.isWatched(session) {
             // Cancel any pending pause and resume now. The server's
             // resume is a no-op when not paused, so spurious calls
             // are harmless.
             pauseTask?.cancel()
             pauseTask = nil
             session.resumeVideo()
+            defer { videoPaused = false }
+            return videoPaused
         } else {
             // Schedule pause after the debounce window. Replace any
             // pending one so the timer restarts on each event.
@@ -275,11 +283,13 @@ struct KVMSessionWindow: View {
             gateLog.notice("video for \(name, privacy: .public) pauses in 5 s: window hidden")
             pauseTask = Task { @MainActor in
                 try? await Task.sleep(for: Self.pauseDebounce)
-                // An MCP client may have connected during the debounce.
-                if Task.isCancelled || !MCPHost.shared.connections.isEmpty { return }
+                // An MCP client may have started using it during the debounce.
+                if Task.isCancelled || MCPHost.shared.isWatched(session) { return }
                 gateLog.notice("pausing video for \(name, privacy: .public): window hidden")
                 session.pauseVideo()
+                videoPaused = true
             }
+            return false
         }
     }
 }
