@@ -48,8 +48,12 @@ final class ScriptRun: @unchecked Sendable {
     let open: MCPHost.OpenSession
     let connection: UUID
     let client: String
+    /// The screen just before the latest key press or pointer action, for
+    /// `waitStable({ afterChange })`: a fast UI has often changed by the time
+    /// the wait starts.
+    var beforeInput: [UInt8]?
 
-    private static let inputOps: Set<String> = ["press", "type", "move", "click", "drag", "scroll"]
+    static let inputOps: Set<String> = ["press", "type", "move", "click", "drag", "scroll"]
     private let queue = DispatchQueue(label: "app.regi.mcp.script", qos: .userInitiated)
     private let started = Date()
     private let inputOps: AsyncStream<Op>
@@ -391,7 +395,9 @@ final class ScriptRun: @unchecked Sendable {
           const describe = (what) => (what instanceof RegExp ? String(what) : JSON.stringify(String(what)));
           const visible = (lines) => (lines.length ? lines.slice(0, 80).map((l) => l.text).join(" | ") : "no text");
 
-          // Strings: case-insensitive substring, exact matches winning.
+          // Strings: case-insensitive substring, exact matches winning. Last,
+          // the same with spaces ignored: OCR merges and splits words
+          // ("In winkelwagen" read as "Inwinkelwagen").
           const select = (lines, what) => {
             if (what instanceof RegExp) {
               const test = (s) => { what.lastIndex = 0; return what.test(s); };
@@ -400,7 +406,11 @@ final class ScriptRun: @unchecked Sendable {
             const wanted = plain(what);
             if (!wanted) throw new Error("the text to look for is empty");
             const exact = lines.filter((l) => plain(l.text) === wanted);
-            return exact.length ? exact : lines.filter((l) => plain(l.text).includes(wanted));
+            if (exact.length) return exact;
+            const partial = lines.filter((l) => plain(l.text).includes(wanted));
+            if (partial.length) return partial;
+            const squash = (s) => s.replace(/ /g, "");
+            return lines.filter((l) => squash(plain(l.text)).includes(squash(wanted)));
           };
 
           const read = (region) => op("ocr", region ? { region } : {});
@@ -462,9 +472,10 @@ final class ScriptRun: @unchecked Sendable {
                 await native.sleep(200);
               }
             }),
-            waitStable: api(async ({ quietMs = 500, timeoutS = 10 } = {}) => {
-              const result = await op("stable", { quiet_ms: quietMs, timeout_s: timeoutS });
-              trace(`waitStable: ${result.stable ? "stable" : "still changing"} after ${result.elapsed_ms} ms`);
+            waitStable: api(async ({ quietMs = 500, timeoutS = 10, afterChange = false } = {}) => {
+              const result = await op("stable", { quiet_ms: quietMs, timeout_s: timeoutS, after_change: !!afterChange });
+              const state = result.stable ? "stable" : afterChange && !result.changed ? "no change" : "still changing";
+              trace(`waitStable${afterChange ? " afterChange" : ""}: ${state} after ${result.elapsed_ms} ms`);
               return result.stable;
             }),
             snapshot: api(async (...args) => {

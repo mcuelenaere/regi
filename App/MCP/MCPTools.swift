@@ -445,7 +445,7 @@ enum MCPTools {
         screen.find(what: string | RegExp, region?): Line[]
         screen.elements(region?): Element[]                          // buttons, icons, fields, rows, with the text inside each; region keeps those centred in it
         screen.waitForText(what, { timeoutS = 30, gone = false, region }?): Line | null
-        screen.waitStable({ quietMs = 500, timeoutS = 10 }?): boolean   // true once the picture stops changing
+        screen.waitStable({ quietMs = 500, timeoutS = 10, afterChange = false }?): boolean   // true once the picture stops changing
         screen.snapshot(label?, { region, maxWidth = 1280, marks }?)   // attach a JPEG to the reply for you to see
         keys.press(...chords, { intervalMs = 100 }?)
         keys.type(text, { delayMs = 15 }?)
@@ -456,22 +456,32 @@ enum MCPTools {
         sleep(ms)
         log(...values)
 
-        Text: a string matches case-insensitively as a substring, and exact matches win over partial ones; a \
-        RegExp is tested against each line. A string or RegExp target must match exactly one line: none or several \
+        Text: a string matches case-insensitively as a substring, and exact matches win over partial ones; if \
+        nothing matches, spaces are ignored (OCR merges and splits words). A RegExp is tested against each line. A string or RegExp target must match exactly one line: none or several \
         throws, listing the screen's text (with positions when several match), so pick one and pass it or {x, y}. \
         waitForText throws on timeout, with the visible text; gone: true waits for the text to disappear. Text \
         is matched anywhere on screen, address-bar suggestions and tab titles included: pass a region to wait for \
         the page's own text.
 
         Timing: keys typed while a page or window is still opening are lost. After anything that navigates or \
-        opens something, wait for text that only the new content shows (in a region), or waitStable, before typing.
+        opens something, wait for text that only the new content shows (in a region), or for \
+        waitStable({ afterChange: true }), before typing: it first waits for the screen to differ from how it \
+        looked before your last key press or pointer action, so a page that hasn't started loading isn't taken \
+        for a loaded one, and returns false if nothing changed. Prefer either \
+        over sleep(). A small change (a line of streaming text, a spinner) may not count as change: wait for the \
+        text you need instead.
+
+        Scrolling: pointer.scroll moves by wheel notches, whose distance varies; keys.press("pagedown") or \
+        "space" moves a page. Hovering: the pointer stays where it clicked, so tooltips and link previews can \
+        cover what you read next; pointer.move it out of the way first.
 
         Keys: \(KeyNames.accepted) keys.type sends printable ASCII, newline (Enter) and tab as US-layout keystrokes.
 
         Seeing: screen.snapshot shows you what OCR can't read (icons, layout, colours). Image tokens grow with \
         pixels, so pass a region when you know where to look; it is cropped at full resolution, then scaled to \
         maxWidth. At most \(ScriptRun.maxSnapshots) per run; each image comes with a caption that maps its \
-        pixels back to framebuffer pixels.
+        pixels back to framebuffer pixels. To click something you only see in an image, don't convert pixels by \
+        hand: click its text, or snapshot elements with marks (below) and click the one you pick by index.
 
         Controls without text: screen.elements() runs an on-device detector for interactive things (buttons, \
         icons, toggles, fields, list rows) and attaches the OCR text inside each. Icons mostly have text "", \

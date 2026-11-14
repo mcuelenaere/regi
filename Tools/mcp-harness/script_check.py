@@ -136,6 +136,13 @@ err, body, _ = a.script(qemu, "const e = await screen.elements({ x: 0, y: 40, wi
 inside = not err and body["result"] and all(0 <= x <= 400 and 40 <= y <= 160 for x, y in body["result"])
 check("elements in a region come back in framebuffer pixels", inside, short(body.get("result") if isinstance(body, dict) else body))
 
+err, body, _ = a.script(qemu, 'return (await screen.find("selectboot device")).map(l => l.text);')
+check("text matches with spaces ignored as a last resort", not err and len(body["result"]) == 1, short(body))
+
+err, body, secs = a.script(qemu, "return await screen.waitStable({ afterChange: true, timeoutS: 1 });")
+check("waitStable afterChange is false when nothing changes", not err and body["result"] is False and secs < 3,
+      f"{secs:.1f} s: {short(body)}")
+
 err, body, _ = a.script(qemu, "await screen.snapshot({ marks: [{ x: 1, y: 2 }] });")
 check("marks without a box are refused", err and "marks are" in str(body.get("error")), short(body.get("error") if isinstance(body, dict) else body))
 
@@ -212,6 +219,12 @@ time.sleep(1)
 _, after, _ = b.call("list_sessions")
 running = lambda sessions: next(s["script_running"] for s in sessions if s["id"] == qemu)
 check("a disconnecting client's script stops", running(before) and not running(after))
+
+# Last on the VM: booting the first entry changes the screen within milliseconds of the key,
+# before the wait starts; afterChange still counts it, comparing with the screen before the key.
+err, body, _ = a.script(qemu, 'await keys.press("1");\nreturn await screen.waitStable({ afterChange: true, timeoutS: 10 });', trace=True)
+check("waitStable afterChange sees a change that came right after a key", not err and body["result"] is True,
+      short(body))
 
 if fixture:
     err, body, _ = a.script(fixture, 'return (await screen.find("OK")).map(l => [l.text, l.x, l.y]);')

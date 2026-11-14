@@ -24,6 +24,7 @@ enum ScriptOps {
             throw Failure("the session's window was closed")
         }
         let started = Date()
+        if ScriptRun.inputOps.contains(name) { run.beforeInput = ScreenReader.thumbnail(of: open.session) }
         do {
             let (value, summary) = try await perform(name, args, open, run)
             if let summary { record(run, name, summary, error: nil, since: started) }
@@ -55,7 +56,7 @@ enum ScriptOps {
         case "ocr": return (try await ocr(a, open), nil)
         case "elements": return (try await elements(a, open), nil)
         case "snapshot": return try await snapshot(a, open, run)
-        case "stable": return try await stable(a, open)
+        case "stable": return try await stable(a, open, run)
         case "press": return try await press(a, session)
         case "type": return try await type(a, session)
         case "move": return try await move(a, open)
@@ -181,13 +182,31 @@ enum ScriptOps {
     // ponytail: a mean over a 96 px thumbnail, so a change of a few thumbnail
     // pixels (a blinking cursor, a ticking clock) never counts; compare tiles
     // if a screen needs finer.
-    private static func stable(_ a: MCPTools.Args, _ open: MCPHost.OpenSession) async throws -> (Value, String?) {
+    /// With `after_change`, it first waits for the screen to differ from how
+    /// it looked before the script's last key press or pointer action (or
+    /// when called, if there was none), so a page that hasn't started loading
+    /// isn't taken for a settled one; never changing is not stable.
+    private static func stable(_ a: MCPTools.Args, _ open: MCPHost.OpenSession, _ run: ScriptRun) async throws -> (Value, String?) {
         let quiet = min(max(a.number("quiet_ms") ?? 500, 100), 60_000) / 1000
         let timeout = min(max(a.number("timeout_s") ?? 10, 0.1), 600)
         let threshold = a.number("threshold") ?? stableThreshold
         let started = Date()
         guard var previous = ScreenReader.thumbnail(of: open.session) else { throw MCPTools.noVideo(open) }
-        var quietSince = started, changed = false, noise = 0.0, peak = 0.0
+        if a.raw["after_change"]?.boolValue == true {
+            let before = run.beforeInput ?? previous
+            while ScreenReader.difference(before, previous) <= threshold {
+                guard Date().timeIntervalSince(started) < timeout else {
+                    let ms = Int(Date().timeIntervalSince(started) * 1000)
+                    return (["stable": .bool(false), "elapsed_ms": .int(ms), "changed": .bool(false),
+                             "noise": .double(0), "peak": .double(0)],
+                            "no change after \(ms) ms")
+                }
+                try await Task.sleep(for: .milliseconds(100))
+                guard let next = ScreenReader.thumbnail(of: open.session) else { throw MCPTools.noVideo(open) }
+                previous = next
+            }
+        }
+        var quietSince = Date(), changed = a.raw["after_change"]?.boolValue == true, noise = 0.0, peak = 0.0
         while true {
             try await Task.sleep(for: .milliseconds(100))
             guard let next = ScreenReader.thumbnail(of: open.session) else { throw MCPTools.noVideo(open) }
