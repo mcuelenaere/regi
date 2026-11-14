@@ -75,6 +75,10 @@ struct KVMSessionWindowID: Hashable, Codable {
 /// `openWindow(id: "hosts")` under the hood whether or not an
 /// instance currently exists.
 private final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        MCPHost.shared.applySettings()
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
     }
@@ -110,26 +114,27 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func showHosts(_ sender: Any?) {
         openHostsViaMenu()
     }
+}
 
-    /// Look up the SwiftUI-auto-generated `Window > Hosts` item by its
-    /// localized title and trigger it. Works regardless of whether the
-    /// hosts window is currently open, closed, or never opened this
-    /// session — SwiftUI's underlying action calls
-    /// `openWindow(id: "hosts")`.
-    private func openHostsViaMenu() {
-        guard let windowsMenu = NSApp.windowsMenu else {
-            log.error("openHostsViaMenu: NSApp.windowsMenu is nil — cannot reopen Hosts")
+/// Look up the SwiftUI-auto-generated `Window > Hosts` item by its
+/// localized title and trigger it. Works regardless of whether the
+/// hosts window is currently open, closed, or never opened this
+/// session — SwiftUI's underlying action calls
+/// `openWindow(id: "hosts")`. Also how the MCP server gets the host list
+/// when Regi launched with no windows.
+func openHostsViaMenu() {
+    guard let windowsMenu = NSApp.windowsMenu else {
+        log.error("openHostsViaMenu: NSApp.windowsMenu is nil — cannot reopen Hosts")
+        return
+    }
+    let target = String(localized: "Hosts")
+    for item in windowsMenu.items where item.title == target {
+        if let action = item.action {
+            NSApp.sendAction(action, to: item.target, from: nil)
             return
         }
-        let target = String(localized: "Hosts")
-        for item in windowsMenu.items where item.title == target {
-            if let action = item.action {
-                NSApp.sendAction(action, to: item.target, from: self)
-                return
-            }
-        }
-        log.error("openHostsViaMenu: no 'Hosts' item in Window menu — SwiftUI menu structure may have changed")
     }
+    log.error("openHostsViaMenu: no 'Hosts' item in Window menu — SwiftUI menu structure may have changed")
 }
 
 /// Closures the active KVM session window publishes so the app-wide
@@ -326,6 +331,16 @@ struct RegiApp: App {
             }
         }
         .defaultSize(width: 1280, height: 800)
+
+        // Every MCP tool call. Single-instance, like Hosts.
+        Window("MCP Activity", id: "mcp-activity") {
+            MCPActivityView()
+        }
+        .defaultSize(width: 980, height: 420)
+
+        Settings {
+            MCPSettingsView()
+        }
     }
 }
 

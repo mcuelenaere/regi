@@ -33,6 +33,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          lfs: true   # the UI element detector's Core ML weights
 
       - name: Show toolchain
         run: |

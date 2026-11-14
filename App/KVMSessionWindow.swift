@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import AppKit
+import OSLog
 import SwiftUI
 import KVMKit
+
+private let gateLog = Logger(subsystem: "app.regi.mac", category: "bandwidth-gate")
 
 /// One window per connected host. Owns its own Session so multiple
 /// windows for different hosts can coexist. The connection flow runs
@@ -70,6 +73,14 @@ struct KVMSessionWindow: View {
         .environment(session)
         .navigationTitle(sessionID.displayName)
         .background(WindowAccessor(window: $ownWindow))
+        // Expose this session to MCP clients while the window is open.
+        // MCPHost calls `gate` when clients come and go: they count as
+        // someone watching. A direct call rather than an .onChange, which
+        // SwiftUI doesn't deliver to a minimized window.
+        .onAppear {
+            MCPHost.shared.register(sessionID, session: session,
+                                    close: { dismissWindow() }, gate: { updateBandwidthGate() })
+        }
         .task {
             // First connection attempt fires on appear. We use .task
             // (not .onAppear) so the connect coroutine is cancelled if
@@ -100,6 +111,7 @@ struct KVMSessionWindow: View {
             vncClipboardSync?.sessionStateChanged()
         }
         .onDisappear {
+            MCPHost.shared.unregister(sessionID, session: session)
             // Session.disconnect is async; fire-and-forget so the
             // window-close path stays synchronous. The session reaches
             // .idle and gets deallocated when this view's @State drops.
@@ -246,7 +258,8 @@ struct KVMSessionWindow: View {
         guard let window = ownWindow else { return }
         let visible = !window.isMiniaturized
             && window.occlusionState.contains(.visible)
-        if visible {
+        // An MCP client reads frames whether or not anyone is looking.
+        if visible || !MCPHost.shared.connections.isEmpty {
             // Cancel any pending pause and resume now. The server's
             // resume is a no-op when not paused, so spurious calls
             // are harmless.
@@ -258,9 +271,13 @@ struct KVMSessionWindow: View {
             // pending one so the timer restarts on each event.
             pauseTask?.cancel()
             let session = self.session
+            let name = sessionID.displayName
+            gateLog.notice("video for \(name, privacy: .public) pauses in 5 s: window hidden")
             pauseTask = Task { @MainActor in
                 try? await Task.sleep(for: Self.pauseDebounce)
-                if Task.isCancelled { return }
+                // An MCP client may have connected during the debounce.
+                if Task.isCancelled || !MCPHost.shared.connections.isEmpty { return }
+                gateLog.notice("pausing video for \(name, privacy: .public): window hidden")
                 session.pauseVideo()
             }
         }

@@ -19,6 +19,11 @@ packages:
     path: Packages/KVMKit
   ProbeKit:
     path: Packages/ProbeKit
+  # The MCP server's protocol layer (App/MCP). Pinned exactly: the Xcode
+  # workspace's Package.resolved is gitignored, so a range would float.
+  MCP:
+    url: https://github.com/modelcontextprotocol/swift-sdk
+    exactVersion: 0.12.1
 
 settingGroups:
   macApp:
@@ -59,6 +64,15 @@ targets:
     dependencies:
       - package: KVMKit
         product: KVMKit
+      - package: MCP
+        product: MCP
+      # The stdio relay MCP clients launch, shipped at Contents/MacOS/regi-mcp
+      # (TablePlus's tableplus-mcp layout) and signed with the app.
+      - target: regi-mcp
+        embed: true
+        codeSign: true
+        copy:
+          destination: executables
     settings:
       groups: [macApp]
       base:
@@ -69,6 +83,14 @@ targets:
         DEAD_CODE_STRIPPING: YES
         INFOPLIST_FILE: App/Info.plist
         PRODUCT_BUNDLE_IDENTIFIER: app.regi.mac
+
+  # stdio ↔ the app's MCP socket. No dependencies: the protocol is in the app.
+  regi-mcp:
+    type: tool
+    platform: macOS
+    sources: [MCPBridge]
+    settings:
+      groups: [macApp]
 
   RegiProbe:
     type: application

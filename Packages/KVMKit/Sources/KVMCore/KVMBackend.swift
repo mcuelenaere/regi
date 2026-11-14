@@ -35,6 +35,11 @@ public protocol KVMVideoRenderer: AnyObject {
     /// non-zero size doubles as "first frame rendered"; the host also uses the
     /// size for aspect-fit coordinate mapping.
     var onVideoSizeChanged: ((CGSize) -> Void)? { get set }
+    /// The most recently decoded frame at the source's full resolution, or
+    /// nil before the first one. For readers that need the pixels themselves
+    /// (screenshots, OCR); the pixel format is whatever the pipeline decodes
+    /// to, so convert through CoreImage rather than reading planes directly.
+    func latestFrame() -> CVPixelBuffer?
     /// Stop rendering and release the hookup to the video source.
     func detach()
 }

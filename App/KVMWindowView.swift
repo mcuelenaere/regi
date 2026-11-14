@@ -179,6 +179,9 @@ struct KVMWindowView: View {
             }
             // Stack of top-of-window banners. Most-severe first.
             VStack(spacing: 8) {
+                if let run = runningScript {
+                    MCPScriptBanner(run: run)
+                }
                 if case .kicked = session.state {
                     banner(
                         "Another peer connected to this device — your session was taken over.",
@@ -219,6 +222,13 @@ struct KVMWindowView: View {
             .padding()
         }
         .toolbar {
+            // In the toolbar rather than over the video: it stays up for as
+            // long as a client is connected.
+            if !MCPHost.shared.connections.isEmpty {
+                ToolbarItem(placement: .primaryAction) {
+                    MCPAgentMenu()
+                }
+            }
             ToolbarItem(placement: .primaryAction) {
                 Menu {
                     Toggle(isOn: keyboardCaptureBinding) {
@@ -362,6 +372,11 @@ struct KVMWindowView: View {
                 }
             }
         }
+        // A script pauses local input; give the cursor back so the user can
+        // reach the banner's Stop.
+        .onChange(of: runningScript != nil) { _, running in
+            if running { pointerLock.disable() }
+        }
         .onDisappear {
             capturer.disable()
             pointerLock.disable()
@@ -375,6 +390,11 @@ struct KVMWindowView: View {
                 resignObserver = nil
             }
         }
+    }
+
+    /// An MCP client's `run_script` on this session, if one is running.
+    private var runningScript: ScriptRun? {
+        MCPHost.shared.scripts.values.first { $0.open.session === session }
     }
 
     private func requestPointerLockEnable() {
