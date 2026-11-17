@@ -92,7 +92,9 @@ public final class JetKVMBackend: KVMBackend {
     /// `true` once the `rpc` data channel is open. Typed RPC methods
     /// should gate on this so calls don't hang waiting for a
     /// response that can't ride a closed channel.
-    public private(set) var rpcReady: Bool = false
+    public private(set) var rpcReady: Bool = false {
+        didSet { updateTextClipboard() }
+    }
     /// The JSON-RPC 2.0 client over the `rpc` data channel. Available
     /// once the connection is up; nil before connect / after disconnect.
     public private(set) var rpc: JSONRPCClient?
@@ -103,7 +105,9 @@ public final class JetKVMBackend: KVMBackend {
     // call. Server-pushed events (M3 commit 18) refresh the
     // time-varying ones (videoState, usbState, atxState).
 
-    public internal(set) var videoState: VideoState?
+    public internal(set) var videoState: VideoState? {
+        didSet { updateTextClipboard() }
+    }
     public internal(set) var usbState: String?
     public internal(set) var atxState: ATXState?
     /// Encoder quality the device reports, 0...1. Read-only — the device's own
@@ -117,12 +121,24 @@ public final class JetKVMBackend: KVMBackend {
     /// JetKVM. Driven by the `clipboardAgentStateChanged` push
     /// notification + a bootstrap `getClipboardAgentState` RPC at
     /// rpc-ready. `.absent` until proven otherwise.
-    public internal(set) var clipboardAgentState: ClipboardAgentState = .absent
+    public internal(set) var clipboardAgentState: ClipboardAgentState = .absent {
+        didSet { updateTextClipboard() }
+    }
     /// Wire-protocol bridge for the `host_bridge` data channel.
     /// Constructed on connect; nil between sessions. The App layer
     /// injects a `ClipboardSource` (NSPasteboard-backed) into
     /// `clipboardBridge?.source` so it can ship and receive offers.
     public private(set) var clipboardBridge: ClipboardBridge?
+    /// OS Services' text clipboard (see `JetKVMBackend+OSServices`).
+    /// Available while the host's sender offers one and no tinypipe agent
+    /// is connected.
+    public let textClipboard = TextClipboard()
+    /// The text we last saw on, or put on, the host's clipboard through OS
+    /// Services; a read only reaches this Mac when it differs.
+    @ObservationIgnored var lastGuestClipboardText: String?
+    /// The OS Services file drop in progress or just ended, nil otherwise.
+    public internal(set) var fileDrop: FileDropStatus?
+    @ObservationIgnored var fileDropTask: Task<Void, Never>?
 
     /// Most recent connection-quality sample. Updated ~1 Hz once the
     /// peer connection is up.
@@ -139,7 +155,7 @@ public final class JetKVMBackend: KVMBackend {
     private var endpoint: DeviceEndpoint?
     private var http: HTTPClient?
     private var signaling: SignalingClient?
-    private var webrtc: WebRTCFacade?
+    private(set) var webrtc: WebRTCFacade?
     private var pumpTasks: [Task<Void, Never>] = []
     /// Whether the App layer wants video paused, independent of
     /// whether we currently have an RPC channel to say so on. The
@@ -171,7 +187,11 @@ public final class JetKVMBackend: KVMBackend {
     private var reconnectTask: Task<Void, Never>?
     private var hasBeenConnectedThisSession: Bool = false
 
-    public init() {}
+    public init() {
+        textClipboard.supportsUTF8 = true
+        textClipboard.onLocalText = { [weak self] text in self?.setGuestClipboard(text) }
+        textClipboard.onFetchRemote = { [weak self] in self?.fetchGuestClipboard() }
+    }
 
     // MARK: - Public API
 
@@ -1002,6 +1022,9 @@ public final class JetKVMBackend: KVMBackend {
         failsafe = nil
         clipboardAgentState = .absent
         clipboardBridge = nil
+        fileDropTask?.cancel()
+        fileDropTask = nil
+        fileDrop = nil
         latestStats = nil
         statsHistory = []
         modifierTracker.reset()

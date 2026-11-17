@@ -69,9 +69,20 @@ public final class Session {
         await jetKVM?.wakeHostRPC()
     }
 
-    /// VNC's text-only clipboard surface (nil for other backends). The
-    /// App-layer `VNCClipboardSyncManager` binds to it.
-    public var textClipboard: VNCTextClipboard? { (backend as? VNCBackend)?.textClipboard }
+    /// The text-only clipboard: VNC's, or a JetKVM's OS Services one while
+    /// it is available (otherwise the JetKVM's is the agent bridge above).
+    /// The App-layer `TextClipboardSyncManager` binds to it.
+    public var textClipboard: TextClipboard? {
+        if let vnc = backend as? VNCBackend { return vnc.textClipboard }
+        return jetKVM?.textClipboard.isAvailable == true ? jetKVM?.textClipboard : nil
+    }
+
+    /// Whether files dropped on the video can go to the host (JetKVM OS
+    /// Services, into the host's Downloads folder).
+    public var canDropFiles: Bool { jetKVM?.canDropFiles ?? false }
+    public var fileDrop: FileDropStatus? { jetKVM?.fileDrop }
+    public func dropFiles(_ urls: [URL]) { jetKVM?.dropFiles(urls) }
+    public func cancelFileDrop() { jetKVM?.cancelFileDrop() }
 
     // MARK: - Power control (backend-agnostic)
 

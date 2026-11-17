@@ -454,33 +454,11 @@ public actor WebRTCFacade {
     /// the backpressure up into the bridge's serving loop, which is the
     /// behaviour the spec assumes.
     public func sendHostBridge(_ data: Data) async -> Bool {
-        guard hostBridgeChannel != nil else {
+        guard let channel = hostBridgeChannel else {
             log.debug("[WEBRTC] sendHostBridge: channel nil; dropping \(data.count, privacy: .public) bytes")
             return false
         }
-
-        var waitedMs = 0
-        while let channel = hostBridgeChannel,
-              channel.bufferedAmount > Self.hostBridgeHighWaterMark {
-            guard waitedMs < Self.hostBridgeMaxWaitMs else {
-                log.error("[WEBRTC] sendHostBridge: buffer still \(channel.bufferedAmount, privacy: .public)B after \(waitedMs, privacy: .public)ms; giving up on \(data.count, privacy: .public) bytes")
-                return false
-            }
-            try? await Task.sleep(for: .milliseconds(Self.hostBridgeDrainPollMs))
-            waitedMs += Self.hostBridgeDrainPollMs
-        }
-
-        // Re-read: the channel can go away across the awaits above.
-        guard let channel = hostBridgeChannel else {
-            log.debug("[WEBRTC] sendHostBridge: channel closed while draining; dropping \(data.count, privacy: .public) bytes")
-            return false
-        }
-        let buffer = RTCDataBuffer(data: data, isBinary: true)
-        let ok = channel.sendData(buffer)
-        if !ok {
-            log.error("[WEBRTC] sendHostBridge: rejected \(data.count, privacy: .public) bytes (buffered=\(channel.bufferedAmount, privacy: .public))")
-        }
-        return ok
+        return await pacedSend(data, isBinary: true, on: channel, highWaterMark: Self.hostBridgeHighWaterMark)
     }
 
     /// Start pacing once this much is already queued on `host_bridge`.
@@ -488,10 +466,19 @@ public actor WebRTCFacade {
     /// enough that a superseded transfer doesn't sit behind megabytes of
     /// stale frames.
     private static let hostBridgeHighWaterMark: UInt64 = 1 * 1024 * 1024
-    private static let hostBridgeDrainPollMs = 5
-    /// Cap the wait so a wedged channel fails the send instead of
-    /// hanging the bridge's serving loop forever.
-    private static let hostBridgeMaxWaitMs = 30_000
+
+    /// Open an ordered, reliable data channel on the live connection —
+    /// one the device only expects once asked for it, such as an OS
+    /// Services `guestfile_<drop>` channel. Nil when not connected.
+    public func openDataChannel(label: String) -> DataChannel? {
+        let config = RTCDataChannelConfiguration()
+        config.isOrdered = true
+        guard let channel = peerConnection?.dataChannel(forLabel: label, configuration: config) else {
+            log.error("[WEBRTC] openDataChannel(\(label, privacy: .public)) failed")
+            return nil
+        }
+        return DataChannel(channel)
+    }
 
     public func close() async {
         statsTask?.cancel()
@@ -839,6 +826,73 @@ private final class RPCDataChannelDelegate: NSObject, RTCDataChannelDelegate, @u
             return
         }
         framesContinuation.yield(buffer.data)
+    }
+}
+
+/// Queue one message on `channel` once it is open and has fewer than
+/// `highWaterMark` bytes buffered.
+///
+/// `RTCDataChannel.sendData` buffers instead of blocking, so a sender
+/// that pushes a burst would balloon the SCTP send buffer until
+/// libwebrtc starts rejecting sends (or drops the channel). Awaiting
+/// here propagates backpressure up to the producer. Gives up after
+/// 30 s so a wedged channel fails the send instead of hanging it.
+func pacedSend(_ data: Data, isBinary: Bool, on channel: RTCDataChannel, highWaterMark: UInt64) async -> Bool {
+    let pollMs = 5
+    var waitedMs = 0
+    while channel.readyState == .connecting || channel.bufferedAmount > highWaterMark {
+        guard waitedMs < 30_000 else {
+            log.error("[WEBRTC] \(channel.label, privacy: .public): buffer still \(channel.bufferedAmount, privacy: .public)B after \(waitedMs, privacy: .public)ms; giving up on \(data.count, privacy: .public) bytes")
+            return false
+        }
+        try? await Task.sleep(for: .milliseconds(pollMs))
+        waitedMs += pollMs
+    }
+    guard channel.readyState == .open else {
+        log.debug("[WEBRTC] \(channel.label, privacy: .public): closed; dropping \(data.count, privacy: .public) bytes")
+        return false
+    }
+    let ok = channel.sendData(RTCDataBuffer(data: data, isBinary: isBinary))
+    if !ok {
+        log.error("[WEBRTC] \(channel.label, privacy: .public): rejected \(data.count, privacy: .public) bytes (buffered=\(channel.bufferedAmount, privacy: .public))")
+    }
+    return ok
+}
+
+/// A data channel opened on a live connection by `openDataChannel`.
+/// Text messages from the device arrive on `textMessages`, which ends
+/// when the channel closes.
+public final class DataChannel: NSObject, RTCDataChannelDelegate, @unchecked Sendable {
+    public let textMessages: AsyncStream<String>
+    private let continuation: AsyncStream<String>.Continuation
+    private let channel: RTCDataChannel
+
+    fileprivate init(_ channel: RTCDataChannel) {
+        self.channel = channel
+        (textMessages, continuation) = AsyncStream.makeStream()
+        super.init()
+        channel.delegate = self
+    }
+
+    /// Send one message, waiting while more than `highWaterMark` bytes are
+    /// queued. False once the channel is closed.
+    public func send(_ data: Data, isBinary: Bool, highWaterMark: UInt64) async -> Bool {
+        await pacedSend(data, isBinary: isBinary, on: channel, highWaterMark: highWaterMark)
+    }
+
+    public func close() {
+        channel.close()
+        continuation.finish()
+    }
+
+    public func dataChannelDidChangeState(_ dataChannel: RTCDataChannel) {
+        log.info("\(dataChannel.label, privacy: .public) channel state=\(stateLabel(dataChannel.readyState), privacy: .public)")
+        if dataChannel.readyState == .closed { continuation.finish() }
+    }
+
+    public func dataChannel(_ dataChannel: RTCDataChannel, didReceiveMessageWith buffer: RTCDataBuffer) {
+        guard !buffer.isBinary, let text = String(data: buffer.data, encoding: .utf8) else { return }
+        continuation.yield(text)
     }
 }
 

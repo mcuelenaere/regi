@@ -49,10 +49,14 @@ public struct VoidValue: Decodable, Sendable {
 public struct JSONRPCErrorObject: Codable, Sendable, Equatable {
     public let code: Int
     public let message: String
+    /// JetKVM puts the method's own error here (`err.Error()`); `message`
+    /// is then just "Internal error".
+    public let data: String?
 
-    public init(code: Int, message: String) {
+    public init(code: Int, message: String, data: String? = nil) {
         self.code = code
         self.message = message
+        self.data = data
     }
 }
 
