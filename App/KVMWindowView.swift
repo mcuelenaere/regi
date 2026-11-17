@@ -210,6 +210,9 @@ struct KVMWindowView: View {
                         foreground: .black
                     )
                 }
+                if let drop = session.fileDrop {
+                    fileDropBanner(drop)
+                }
                 if case .blockedBySecureInput(let holder) = capturer.state {
                     banner(
                         "Keyboard lock is blocked: macOS Secure Input is active (held by \(holder)), which stops any app from capturing keys. If no password field is focused, it's stuck — log out and back in to clear it.",
@@ -442,6 +445,28 @@ struct KVMWindowView: View {
             .background(background)
             .foregroundStyle(foreground)
             .cornerRadius(6)
+    }
+
+    /// Progress of files dropped on the video for OS Services, then how it
+    /// ended (the backend clears that after a few seconds).
+    private func fileDropBanner(_ drop: FileDropStatus) -> some View {
+        HStack {
+            if let outcome = drop.outcome {
+                Text(outcome)
+            } else {
+                Text("Sending ^[\(drop.fileCount) file](inflect: true) to the host's Downloads folder…")
+                Spacer()
+                ProgressView(value: Double(drop.sentBytes), total: Double(max(drop.totalBytes, 1)))
+                    .frame(width: 120)
+                Button("Cancel") { session.cancelFileDrop() }
+            }
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        // Muted: progress, not a warning like the banners above.
+        .background(Color(white: 0.18).opacity(0.92))
+        .foregroundStyle(.white)
+        .cornerRadius(6)
     }
 
     /// Trimmed video error string suitable as a "we know there's no

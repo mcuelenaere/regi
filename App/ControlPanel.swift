@@ -144,10 +144,11 @@ struct ControlPanel: View {
 
     @ViewBuilder
     private var clipboardSection: some View {
-        // VNC exposes a text-only clipboard surface; JetKVM uses the agent
-        // bridge. Only one is non-nil at a time.
+        // VNC, and a JetKVM with OS Services but no agent, expose a
+        // text-only clipboard surface; otherwise JetKVM uses the agent
+        // bridge.
         if let textClipboard = session.textClipboard {
-            vncClipboardSection(textClipboard)
+            textClipboardSection(textClipboard)
         } else {
             jetKVMClipboardSection
         }
@@ -165,7 +166,7 @@ struct ControlPanel: View {
             Toggle("Sync local clipboard with host", isOn: $clipboardSyncEnabled)
                 .disabled(session.clipboardAgentState != .active)
             if session.clipboardAgentState != .active {
-                Text("Install the JetKVM Helper on the host to enable clipboard sync.")
+                Text("Install the JetKVM Helper or OS Services on the host to enable clipboard sync.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else if clipboardSyncEnabled {
@@ -176,12 +177,15 @@ struct ControlPanel: View {
         }
     }
 
-    private func vncClipboardSection(_ clipboard: VNCTextClipboard) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+    private func textClipboardSection(_ clipboard: TextClipboard) -> some View {
+        // Only a JetKVM reports a guest clipboard; its text clipboard is
+        // OS Services'.
+        let osServices = session.videoState?.guestClipboard != nil
+        return VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text("Clipboard sync").font(.headline)
                 Spacer()
-                Text(clipboard.supportsUTF8 ? "UTF-8 clipboard" : "Basic clipboard")
+                Text(osServices ? "OS Services" : clipboard.supportsUTF8 ? "UTF-8 clipboard" : "Basic clipboard")
                     .font(.caption)
                     .foregroundStyle(clipboard.isAvailable ? .green : .secondary)
             }
@@ -189,6 +193,10 @@ struct ControlPanel: View {
                 .disabled(!clipboard.isAvailable)
             if !clipboard.isAvailable {
                 Text("Connect to sync the clipboard.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if clipboardSyncEnabled && osServices {
+                Text("Text-only sync through OS Services, both directions. The host's clipboard is read when you switch away from this window. Password-manager copies are skipped.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else if clipboardSyncEnabled {

@@ -114,6 +114,45 @@ extension JetKVMBackend {
         return parsed
     }
 
+    // MARK: - OS Services
+    //
+    // Firmware with OS Services (jetkvm/kvm#1769) relays these to a sender
+    // program on the host over the KVM's USB cable. `videoState` says which
+    // services the sender offers. Statuses are "ok", "unsupported", "empty",
+    // "denied" (a password manager marked the text secret) or "failed".
+
+    struct GuestClipboardContent: Decodable, Sendable {
+        let status: String
+        let text: String
+        let truncated: Bool
+    }
+
+    func guestClipboardGet() async throws -> GuestClipboardContent {
+        try await rpcCall(method: "guestClipboardGet")
+    }
+
+    func guestClipboardSet(_ text: String) async throws -> String {
+        struct Params: Encodable, Sendable { let text: String }
+        struct Result: Decodable, Sendable { let status: String }
+        let result: Result = try await rpcCall(method: "guestClipboardSet", params: Params(text: text))
+        return result.status
+    }
+
+    struct GuestFileDropResult: Decodable, Sendable {
+        /// Label of the data channel to stream the files on.
+        let channel: String
+        /// One transfer ID per file, in order.
+        let transfers: [UInt32]
+    }
+
+    func guestFileDrop(_ files: [(name: String, size: UInt64)]) async throws -> GuestFileDropResult {
+        struct File: Encodable, Sendable { let name: String; let size: UInt64 }
+        struct Drop: Encodable, Sendable { let files: [File] }
+        struct Params: Encodable, Sendable { let drop: Drop }
+        let drop = Drop(files: files.map { File(name: $0.name, size: $0.size) })
+        return try await rpcCall(method: "guestFileDrop", params: Params(drop: drop))
+    }
+
     // MARK: - Convenience: initial state fetch + optimistic updates
 
     /// Fetch every cached control-plane field in parallel. Called

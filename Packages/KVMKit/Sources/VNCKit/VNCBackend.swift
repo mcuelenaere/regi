@@ -46,7 +46,7 @@ public final class VNCBackend: KVMBackend {
     private(set) var xvpAvailable = false
 
     /// Text clipboard surface bound by the App-layer sync manager.
-    public let textClipboard = VNCTextClipboard()
+    public let textClipboard = TextClipboard()
     private var serverSupportsExtendedClipboard = false
     private var sentExtendedClipboardCaps = false
     private var localClipboardText: String?
