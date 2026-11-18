@@ -53,7 +53,9 @@ struct KVMWindowView: View {
             // .disabled aren't.
             get: { capturer.state == .enabled || capturer.state == .suspended },
             set: { newValue in
-                if newValue { capturer.enable() } else { capturer.disable() }
+                Self.afterMenuCloses {
+                    if newValue { capturer.enable() } else { capturer.disable() }
+                }
             }
         )
     }
@@ -62,13 +64,34 @@ struct KVMWindowView: View {
         Binding(
             get: { pointerLock.userIntent },
             set: { newValue in
-                if newValue {
-                    requestPointerLockEnable()
-                } else {
-                    pointerLock.disable()
+                Self.afterMenuCloses {
+                    if newValue {
+                        requestPointerLockEnable()
+                    } else {
+                        pointerLock.disable()
+                    }
                 }
             }
         )
+    }
+
+    private var hideCursorBinding: Binding<Bool> {
+        Binding(
+            get: { hideCursorOverVideo },
+            set: { newValue in Self.afterMenuCloses { hideCursorOverVideo = newValue } }
+        )
+    }
+
+    /// Apply a Capture-menu toggle once the menu has closed. Flipping the
+    /// only checked item adds or drops the menu's checkmark column, which
+    /// changes its width; with the menu pinned against the screen edge,
+    /// AppKit's layout then never settles and it throws ("more Layout
+    /// Window passes than there are views"). Menu tracking runs the
+    /// event-tracking run loop mode, so a default-mode block waits it out.
+    private static func afterMenuCloses(_ action: @escaping () -> Void) {
+        RunLoop.main.perform(inModes: [.default]) {
+            MainActor.assumeIsolated(action)
+        }
     }
 
     /// True when keyboard capture is effectively engaged — either
@@ -243,7 +266,7 @@ struct KVMWindowView: View {
                     }
                     .accessibilityIdentifier(AXIdentifiers.sessionPointerLockToggle)
                     Divider()
-                    Toggle(isOn: $hideCursorOverVideo) {
+                    Toggle(isOn: hideCursorBinding) {
                         Label("Hide cursor over video", systemImage: "cursorarrow.slash")
                     }
                     .accessibilityIdentifier(AXIdentifiers.sessionHideCursorToggle)
