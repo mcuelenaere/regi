@@ -595,6 +595,12 @@ public final class JetKVMBackend: KVMBackend {
     /// on them. They are dev-channel builds, replaced by the 2026-11-19
     /// pre-release.
     ///
+    /// The JSON-RPC branch (< 0.5.11) bypasses `hidQueue` on purpose: it can't
+    /// be ordered (`JSONRPCClient.call` uses a Task per request, 0.5.10 runs
+    /// each message in its own goroutine, and it's another data channel).
+    /// Serializing costs a round trip per notch; reordered notches almost
+    /// always point the same way. 0.5.11+ goes through the queue.
+    ///
     /// Fire-and-forget; failures are logged but not propagated, matching
     /// sendKeypress / sendPointer semantics so call sites don't have to await.
     public func sendWheelReport(wheelY: Int8, wheelX: Int8) {
