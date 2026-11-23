@@ -173,6 +173,16 @@ public final class JetKVMBackend: KVMBackend {
     /// unpaused — if the window is still hidden we have to say it
     /// again. Kept across teardown for exactly that reason.
     private var desiredVideoPaused = false
+    /// Firmware runs every JSON-RPC message in its own goroutine, so two
+    /// `setVideoStreamPaused` calls in flight can land in either order.
+    /// Allow one at a time; `lastSentVideoPaused` is what that call
+    /// carried (attempted, not confirmed). Reset on teardown because a new
+    /// session starts unpaused.
+    private var videoPauseInFlight = false
+    private var lastSentVideoPaused = false
+    /// Bumped on teardown so a call finishing after it can't touch the
+    /// next session's bookkeeping.
+    private var videoPauseEpoch = 0
     private var modifierTracker = ModifierTracker()
     private var pointerThrottler = InputThrottler(interval: .milliseconds(8))
     /// Stamped before the `Task` hop so the wire trace can prove whether the
@@ -570,13 +580,25 @@ public final class JetKVMBackend: KVMBackend {
     /// without an RPC channel — the state is latched, and the rpcReady
     /// pump re-asserts it when one appears.
     private func sendDesiredVideoPausedState() {
-        guard rpcReady else { return }
+        guard rpcReady, !videoPauseInFlight else { return }
         let paused = desiredVideoPaused
+        let epoch = videoPauseEpoch
+        videoPauseInFlight = true
+        lastSentVideoPaused = paused
         Task { [weak self] in
             do {
                 try await self?.setVideoStreamPausedRPC(paused)
             } catch {
                 log.error("setVideoStreamPaused(\(paused, privacy: .public)) failed: \(describe(error), privacy: .public)")
+            }
+            guard let self, self.videoPauseEpoch == epoch else { return }
+            self.videoPauseInFlight = false
+            // Success or failure, resend only if the wanted state moved on
+            // meanwhile: a failure doesn't loop, the reconnect path re-asserts.
+            if VideoPauseSync.shouldResend(sent: self.lastSentVideoPaused,
+                                           desired: self.desiredVideoPaused,
+                                           inFlight: self.videoPauseInFlight) {
+                self.sendDesiredVideoPausedState()
             }
         }
     }
@@ -1054,6 +1076,9 @@ public final class JetKVMBackend: KVMBackend {
         hasReceivedFirstFrame = false
         hidReady = false
         rpcReady = false
+        videoPauseEpoch += 1
+        videoPauseInFlight = false
+        lastSentVideoPaused = false
         videoState = nil
         usbState = nil
         atxState = nil
@@ -1069,6 +1094,14 @@ public final class JetKVMBackend: KVMBackend {
         modifierTracker.reset()
         pointerThrottler.reset()
         heldNonModifierKeys.removeAll()
+    }
+}
+
+/// Decision for converging the device's video pause state on the latest
+/// wanted one with at most one RPC in flight.
+enum VideoPauseSync {
+    static func shouldResend(sent: Bool, desired: Bool, inFlight: Bool) -> Bool {
+        !inFlight && sent != desired
     }
 }
 
