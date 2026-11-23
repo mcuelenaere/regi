@@ -210,6 +210,9 @@ struct KVMWindowView: View {
                         foreground: .black
                     )
                 }
+                if let drop = session.fileDrop {
+                    fileDropBanner(drop)
+                }
                 if case .blockedBySecureInput(let holder) = capturer.state {
                     banner(
                         "Keyboard lock is blocked: macOS Secure Input is active (held by \(holder)), which stops any app from capturing keys. If no password field is focused, it's stuck — log out and back in to clear it.",
@@ -442,6 +445,79 @@ struct KVMWindowView: View {
             .background(background)
             .foregroundStyle(foreground)
             .cornerRadius(6)
+    }
+
+    /// Progress of files dropped on the video for OS Services, then how it
+    /// ended (the backend clears that after a few seconds).
+    private func fileDropBanner(_ drop: FileDropStatus) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let outcome = drop.outcome {
+                Text(outcome)
+            } else {
+                HStack {
+                    Text("Sending ^[\(drop.items.count) file](inflect: true) to the host's Downloads folder…")
+                    Spacer()
+                    Button("Cancel All") { session.cancelFileDrop() }
+                }
+                // A big drop scrolls instead of pushing the banner down the
+                // whole window.
+                if drop.items.count > 6 {
+                    ScrollView { fileDropRows(drop.items) }.frame(height: 150)
+                } else {
+                    fileDropRows(drop.items)
+                }
+            }
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        // Muted: progress, not a warning like the banners above.
+        .background(Color(white: 0.18).opacity(0.92))
+        .foregroundStyle(.white)
+        .cornerRadius(6)
+    }
+
+    private func fileDropRows(_ items: [FileDropStatus.Item]) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(items) { item in
+                HStack(spacing: 8) {
+                    Text(item.name)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .frame(width: 190, alignment: .leading)
+                    fileDropItemState(item)
+                        .frame(width: 140, alignment: .leading)
+                    Spacer()
+                    if item.state == .pending {
+                        Button {
+                            session.cancelFileDrop(item: item.id)
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.white.opacity(0.7))
+                        .help("Don't send this file")
+                        .accessibilityLabel("Cancel \(item.name)")
+                    }
+                }
+                .font(.callout)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func fileDropItemState(_ item: FileDropStatus.Item) -> some View {
+        switch item.state {
+        case .pending where item.sentBytes > 0:
+            ProgressView(value: Double(item.sentBytes), total: Double(max(item.size, 1)))
+        case .pending:
+            Text("Queued").foregroundStyle(.white.opacity(0.6))
+        case .sent:
+            Text("Sent").foregroundStyle(.white.opacity(0.6))
+        case .cancelled:
+            Text("Cancelled").foregroundStyle(.white.opacity(0.6))
+        case .failed(let why):
+            Text("Failed: \(why)").lineLimit(1)
+        }
     }
 
     /// Trimmed video error string suitable as a "we know there's no

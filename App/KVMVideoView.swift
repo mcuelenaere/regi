@@ -96,6 +96,9 @@ final class KVMVideoView: NSView {
     /// in flight; each checks this to tell whose drag it is holding, so
     /// the superseded one ends its own `drag_id` instead of leaking it.
     fileprivate var dragGeneration: UInt64 = 0
+    /// The drag over this view goes to OS Services, not the agent: the
+    /// files are sent on release, with no drag on the host.
+    fileprivate var osServicesDrag = false
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -680,6 +683,11 @@ extension KVMVideoView {
 extension KVMVideoView {
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
         let urls = Self.fileURLs(from: sender)
+        // Without an agent, a host with OS Services takes the files into
+        // its Downloads folder.
+        osServicesDrag = !urls.isEmpty && session?.clipboardAgentState != .active
+            && session?.canDropFiles == true
+        if osServicesDrag { return .copy }
         guard !urls.isEmpty, let bridge = session?.clipboardBridge else { return [] }
         // Leaving and re-entering the view is one gesture to the operator
         // but two entries to us. End whatever the previous entry announced
@@ -722,6 +730,7 @@ extension KVMVideoView {
     }
 
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        if osServicesDrag { return .copy }
         guard dragActive else { return [] }
         // The cursor rides the KVM's HID channel, out-of-band of the
         // transfer protocol — without this the host's proxy drag has
@@ -731,10 +740,16 @@ extension KVMVideoView {
     }
 
     override func draggingExited(_ sender: NSDraggingInfo?) {
+        osServicesDrag = false
         endActiveDrag(status: .dragStatusCancelled)
     }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        if osServicesDrag {
+            osServicesDrag = false
+            session?.dropFiles(Self.fileURLs(from: sender))
+            return true
+        }
         guard dragActive else { return false }
         forwardDragPointer(sender)
         endActiveDrag(status: .dragStatusDropped)
@@ -744,6 +759,7 @@ extension KVMVideoView {
     /// Safety net: AppKit always ends a session here, so a gesture that
     /// aborted without an exit or a drop still gets its `DragEnd`.
     override func draggingEnded(_ sender: NSDraggingInfo) {
+        osServicesDrag = false
         endActiveDrag(status: .dragStatusCancelled)
     }
 

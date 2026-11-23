@@ -5,18 +5,21 @@ import Foundation
 import KVMKit
 import OSLog
 
-private let log = Logger(subsystem: "app.regi.mac", category: "vnc-clipboard-sync")
+private let log = Logger(subsystem: "app.regi.mac", category: "text-clipboard-sync")
 
-/// Text-only NSPasteboard ↔ VNC cut-text synchronisation. One instance per KVM
-/// session window, alongside (and mutually exclusive at runtime with) the
-/// JetKVM agent-based `ClipboardSyncManager` — only one of the two ever finds
-/// its backend surface non-nil.
+/// Text-only NSPasteboard ↔ remote clipboard synchronisation: VNC cut text, or
+/// a JetKVM's OS Services clipboard. One instance per KVM session window,
+/// alongside (and mutually exclusive at runtime with) the JetKVM agent-based
+/// `ClipboardSyncManager` — the session only exposes a `TextClipboard` while
+/// no agent is connected.
 ///
 /// Active iff the user toggle is on and the session exposes a live
-/// `VNCTextClipboard`. Uses the shared `PasteboardMonitor` for local-change
-/// detection, echo suppression, and the concealed-write opt-out.
+/// `TextClipboard`. Uses the shared `PasteboardMonitor` for local-change
+/// detection, echo suppression, and the concealed-write opt-out. A remote
+/// that never pushes (OS Services) is read when Regi loses focus: that is
+/// when the operator is about to paste what they copied over there.
 @MainActor
-final class VNCClipboardSyncManager {
+final class TextClipboardSyncManager {
     private let session: Session
     private let monitor = PasteboardMonitor()
 
@@ -24,17 +27,28 @@ final class VNCClipboardSyncManager {
         didSet { reconcile() }
     }
 
-    /// Identity of the `VNCTextClipboard` we've bound `onRemoteText` to, so we
+    /// Identity of the `TextClipboard` we've bound `onRemoteText` to, so we
     /// rebind across reconnects (the backend keeps one instance, but guard
     /// anyway).
     private var boundClipboardID: ObjectIdentifier?
     private var wasActive = false
+    private var tokens: [NSObjectProtocol] = []
 
     init(session: Session, initialEnabled: Bool) {
         self.session = session
         self.enabled = initialEnabled
         monitor.onLocalChange = { [weak self] pb in self?.sendLocalText(pb) }
+        let nc = NotificationCenter.default
+        for name in [NSApplication.didResignActiveNotification, NSWindow.didResignKeyNotification] {
+            tokens.append(nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.fetchRemoteText() }
+            })
+        }
         reconcile()
+    }
+
+    deinit {
+        for token in tokens { NotificationCenter.default.removeObserver(token) }
     }
 
     /// Called by the view when the user flips the toggle.
@@ -59,14 +73,14 @@ final class VNCClipboardSyncManager {
         wasActive = nowActive
         if nowActive {
             monitor.start()
-            log.info("VNC clipboard sync active")
+            log.info("text clipboard sync active")
         } else {
             monitor.stop()
-            log.info("VNC clipboard sync inactive")
+            log.info("text clipboard sync inactive")
         }
     }
 
-    /// Bind `onRemoteText` to whichever `VNCTextClipboard` the session exposes,
+    /// Bind `onRemoteText` to whichever `TextClipboard` the session exposes,
     /// tracking identity so a reconnect (new surface) rebinds.
     private func bindRemoteHandler() {
         guard let clipboard = session.textClipboard else {
@@ -77,6 +91,11 @@ final class VNCClipboardSyncManager {
         guard id != boundClipboardID else { return }
         boundClipboardID = id
         clipboard.onRemoteText = { [weak self] text in self?.applyRemoteText(text) }
+    }
+
+    private func fetchRemoteText() {
+        guard isActive else { return }
+        session.textClipboard?.fetchRemoteText()
     }
 
     private func sendLocalText(_ pb: NSPasteboard) {

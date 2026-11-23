@@ -19,9 +19,10 @@ struct KVMSessionWindow: View {
     let sessionID: KVMSessionWindowID
     @State private var session = Session()
     @State private var clipboardSync: ClipboardSyncManager?
-    /// VNC's text-only clipboard sync. Inert unless the active backend is a
-    /// `VNCBackend` (only one of the two managers finds its surface non-nil).
-    @State private var vncClipboardSync: VNCClipboardSyncManager?
+    /// Text-only clipboard sync (VNC, JetKVM OS Services). Inert unless the
+    /// session exposes a `TextClipboard` (only one of the two managers finds
+    /// its surface non-nil).
+    @State private var textClipboardSync: TextClipboardSyncManager?
     /// Mirror of the ControlPanel toggle so we can drive the clipboard sync
     /// managers from this view's lifecycle.
     @AppStorage("RegiClipboardSyncEnabled") private var clipboardSyncEnabled: Bool = false
@@ -94,8 +95,8 @@ struct KVMSessionWindow: View {
                     initialEnabled: clipboardSyncEnabled
                 )
             }
-            if vncClipboardSync == nil {
-                vncClipboardSync = VNCClipboardSyncManager(
+            if textClipboardSync == nil {
+                textClipboardSync = TextClipboardSyncManager(
                     session: session,
                     initialEnabled: clipboardSyncEnabled
                 )
@@ -104,14 +105,15 @@ struct KVMSessionWindow: View {
         }
         .onChange(of: clipboardSyncEnabled) { _, newValue in
             clipboardSync?.setEnabled(newValue)
-            vncClipboardSync?.setEnabled(newValue)
+            textClipboardSync?.setEnabled(newValue)
         }
         .onChange(of: session.clipboardAgentState) { _, _ in
             clipboardSync?.sessionStateChanged()
         }
-        .onChange(of: session.state) { _, _ in
-            // VNC clipboard availability tracks connection state.
-            vncClipboardSync?.sessionStateChanged()
+        .onChange(of: session.textClipboard?.isAvailable) { _, _ in
+            // VNC's tracks the connection; OS Services' the host's sender
+            // and the agent.
+            textClipboardSync?.sessionStateChanged()
         }
         .onDisappear {
             MCPHost.shared.unregister(session)

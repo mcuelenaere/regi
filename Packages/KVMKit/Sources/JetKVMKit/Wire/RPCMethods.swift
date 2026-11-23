@@ -73,7 +73,9 @@ extension VideoStreamingStatus: Codable {
     }
 }
 
-/// Result of `getVideoState`. Mirrors `internal/native/video.go`.
+/// Result of `getVideoState`. Mirrors `internal/native/video.go`, plus the
+/// OS Services members firmware with OS Services adds (`os_services.go`'s
+/// `rpcVideoState`); each is absent while its service isn't offered.
 public struct VideoState: Codable, Sendable, Equatable {
     public let ready: Bool
     public let streaming: VideoStreamingStatus
@@ -81,6 +83,8 @@ public struct VideoState: Codable, Sendable, Equatable {
     public let width: Int
     public let height: Int
     public let fps: Double
+    public let guestClipboard: GuestClipboard?
+    public let guestFile: GuestFile?
 
     public init(
         ready: Bool,
@@ -88,7 +92,9 @@ public struct VideoState: Codable, Sendable, Equatable {
         error: String? = nil,
         width: Int,
         height: Int,
-        fps: Double
+        fps: Double,
+        guestClipboard: GuestClipboard? = nil,
+        guestFile: GuestFile? = nil
     ) {
         self.ready = ready
         self.streaming = streaming
@@ -96,7 +102,23 @@ public struct VideoState: Codable, Sendable, Equatable {
         self.width = width
         self.height = height
         self.fps = fps
+        self.guestClipboard = guestClipboard
+        self.guestFile = guestFile
     }
+}
+
+/// The OS Services clipboard a sender on the host offers: plain text, read
+/// and write each optional. `os` is "unknown", "windows", "macos" or "linux".
+public struct GuestClipboard: Codable, Sendable, Equatable {
+    public let read: Bool
+    public let write: Bool
+    public let os: String
+}
+
+/// The OS Services file service: files dropped on the KVM land in the
+/// host user's Downloads folder.
+public struct GuestFile: Codable, Sendable, Equatable {
+    public let receive: Bool
 }
 
 // MARK: - Failsafe
