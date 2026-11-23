@@ -177,6 +177,10 @@ public final class JetKVMBackend: KVMBackend {
     /// only the newest value kept (see `LatestValueSender`). Exists while
     /// the RPC channel is ready.
     private var videoPauseSender: LatestValueSender<Bool>?
+    /// Pushes local copies to the host's OS Services clipboard, one call at
+    /// a time with only the newest kept, so two quick copies can't land out
+    /// of order. Exists while the RPC channel is ready.
+    var guestClipboardSender: LatestValueSender<GuestClipboardPush>?
     private var modifierTracker = ModifierTracker()
     private var pointerThrottler = InputThrottler(interval: .milliseconds(8))
     /// Stamped before the `Task` hop so the wire trace can prove whether the
@@ -698,7 +702,12 @@ public final class JetKVMBackend: KVMBackend {
                 self.rpcReady = ready
                 self.videoPauseSender?.cancel()
                 self.videoPauseSender = nil
+                self.guestClipboardSender?.cancel()
+                self.guestClipboardSender = nil
                 if ready {
+                    self.guestClipboardSender = LatestValueSender<GuestClipboardPush> { [weak self] push in
+                        await self?.pushGuestClipboard(push)
+                    }
                     self.videoPauseSender = LatestValueSender<Bool> { [weak self] paused in
                         do {
                             try await self?.setVideoStreamPausedRPC(paused)
@@ -1062,6 +1071,8 @@ public final class JetKVMBackend: KVMBackend {
         rpcReady = false
         videoPauseSender?.cancel()
         videoPauseSender = nil
+        guestClipboardSender?.cancel()
+        guestClipboardSender = nil
         videoState = nil
         usbState = nil
         atxState = nil

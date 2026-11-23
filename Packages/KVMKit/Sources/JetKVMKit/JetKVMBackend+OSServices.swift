@@ -74,18 +74,21 @@ extension JetKVMBackend {
         // bring the host's previous text back over the one just copied.
         let previous = lastGuestClipboardText
         lastGuestClipboardText = text
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            var status = "failed"
-            do {
-                status = try await guestClipboardSet(text)
-            } catch {
-                log.error("guestClipboardSet failed: \(describeRPCError(error), privacy: .public)")
-            }
-            guard status != "ok" else { return }
-            log.notice("guestClipboardSet: \(status, privacy: .public)")
-            if lastGuestClipboardText == text { lastGuestClipboardText = previous }
+        guestClipboardSender?.send(GuestClipboardPush(text: text, previous: previous))
+    }
+
+    /// One push from `guestClipboardSender`. A failure puts the note back
+    /// to what it was before the copy, unless a later copy has replaced it.
+    func pushGuestClipboard(_ push: GuestClipboardPush) async {
+        var status = "failed"
+        do {
+            status = try await guestClipboardSet(push.text)
+        } catch {
+            log.error("guestClipboardSet failed: \(describeRPCError(error), privacy: .public)")
         }
+        guard status != "ok" else { return }
+        log.notice("guestClipboardSet: \(status, privacy: .public)")
+        if lastGuestClipboardText == push.text { lastGuestClipboardText = push.previous }
     }
 
     // MARK: - File drop
@@ -241,6 +244,12 @@ extension JetKVMBackend {
             }
         }
     }
+}
+
+/// A local copy on its way to the host, with the note to restore if it fails.
+struct GuestClipboardPush: Sendable {
+    let text: String
+    let previous: String?
 }
 
 /// A file waiting in the batch for its drop.
