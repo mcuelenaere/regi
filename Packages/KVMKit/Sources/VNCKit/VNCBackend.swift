@@ -91,8 +91,8 @@ public final class VNCBackend: KVMBackend {
 
     // MARK: - Input pump state
     //
-    // Discrete, order-sensitive events go through an AsyncStream FIFO drained
-    // by one consumer, so a key-up can never overtake its key-down. Pointer
+    // Discrete, order-sensitive events go through an `InputQueue` (one
+    // consumer, FIFO), so a key-up can never overtake its key-down. Pointer
     // *motion* is NOT queued — it's coalesced (latest position wins) and a
     // single `.motionTick` flushes it, so a motion flood can't back up the
     // queue and delay a key event.
@@ -100,8 +100,7 @@ public final class VNCBackend: KVMBackend {
         case raw(Data)      // pre-encoded key / pointer / wheel message(s)
         case motionTick     // flush the coalesced motion slot
     }
-    private var inputContinuation: AsyncStream<InputEvent>.Continuation?
-    private var inputTask: Task<Void, Never>?
+    private var inputQueue: InputQueue<InputEvent>?
     private var pendingMotion: (x: Int, y: Int, mask: UInt8)?
     private var motionTickQueued = false
     private var currentButtonMask: UInt8 = 0
@@ -266,10 +265,8 @@ public final class VNCBackend: KVMBackend {
         statsAnchor = nil
         streamTask?.cancel()
         streamTask = nil
-        inputContinuation?.finish()
-        inputContinuation = nil
-        inputTask?.cancel()
-        inputTask = nil
+        inputQueue?.cancel()
+        inputQueue = nil
         pendingMotion = nil
         motionTickQueued = false
         currentButtonMask = 0
@@ -430,12 +427,8 @@ public final class VNCBackend: KVMBackend {
     /// Drain the input FIFO in order, sending each event before the next so
     /// key/click ordering is preserved on the wire.
     private func startInputPump() {
-        let (stream, cont) = AsyncStream.makeStream(of: InputEvent.self)
-        inputContinuation = cont
-        inputTask = Task { [weak self] in
-            for await event in stream {
-                await self?.deliver(event)
-            }
+        inputQueue = InputQueue { [weak self] event in
+            await self?.deliver(event)
         }
     }
 
@@ -453,12 +446,12 @@ public final class VNCBackend: KVMBackend {
         }
     }
 
-    private func enqueue(_ data: Data) { inputContinuation?.yield(.raw(data)) }
+    private func enqueue(_ data: Data) { inputQueue?.enqueue(.raw(data)) }
 
     private func queueMotionTick() {
         guard !motionTickQueued else { return }
         motionTickQueued = true
-        inputContinuation?.yield(.motionTick)
+        inputQueue?.enqueue(.motionTick)
     }
 
     // `source` is unused here: this backend has no Cmd-shortcut
