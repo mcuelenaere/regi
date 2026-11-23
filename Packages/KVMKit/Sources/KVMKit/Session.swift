@@ -93,6 +93,8 @@ public final class Session {
     public var availablePowerActions: [KVMPowerAction] { backend?.availablePowerActions ?? [] }
     /// Front-panel power-LED state, or nil when the backend can't report it.
     public var powerIndicator: Bool? { backend?.powerIndicator }
+    /// False when the ATX board has stopped reporting (JetKVM only).
+    public var powerBoardResponding: Bool { backend?.powerBoardResponding ?? true }
 
     // MARK: - Device web interface
 

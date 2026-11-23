@@ -24,10 +24,21 @@ public enum ATXPowerAction: String, Codable, Sendable, CaseIterable {
 public struct ATXState: Codable, Sendable, Equatable {
     public let power: Bool
     public let hdd: Bool
+    /// False when the ATX extension board has sent no status recently, so the
+    /// LEDs above are stale. Older firmware omits the key — treated as true.
+    public let responding: Bool
 
-    public init(power: Bool, hdd: Bool) {
+    public init(power: Bool, hdd: Bool, responding: Bool = true) {
         self.power = power
         self.hdd = hdd
+        self.responding = responding
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        power = try c.decode(Bool.self, forKey: .power)
+        hdd = try c.decode(Bool.self, forKey: .hdd)
+        responding = try c.decodeIfPresent(Bool.self, forKey: .responding) ?? true
     }
 }
 

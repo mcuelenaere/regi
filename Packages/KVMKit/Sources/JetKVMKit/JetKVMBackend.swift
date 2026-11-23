@@ -56,7 +56,9 @@ public final class JetKVMBackend: KVMBackend {
         endpoint?.httpURL(path: "/settings")
     }
     /// Front-panel power-LED state, from the cached `getATXState`.
-    public var powerIndicator: Bool? { atxState?.power }
+    /// Nil when the board isn't responding: the LED is stale, don't present it.
+    public var powerIndicator: Bool? { atxState?.responding == false ? nil : atxState?.power }
+    public var powerBoardResponding: Bool { atxState?.responding ?? true }
 
     /// Map the semantic action to JetKVM's ATX RPC. Shutdown/reboot aren't
     /// distinct ATX actions (a short press does ACPI power-off), so they're
