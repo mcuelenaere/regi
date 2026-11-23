@@ -138,6 +138,10 @@ public final class JetKVMBackend: KVMBackend {
     /// The text we last saw on, or put on, the host's clipboard through OS
     /// Services; a read only reaches this Mac when it differs.
     @ObservationIgnored var lastGuestClipboardText: String?
+    /// The text known to be on the host: what a read last saw or a set
+    /// last confirmed. Unlike `lastGuestClipboardText` it never runs ahead
+    /// of the host, so it is what a failed push rolls back to.
+    @ObservationIgnored var confirmedGuestClipboardText: String?
     /// The OS Services file drop in progress or just ended, nil otherwise.
     public internal(set) var fileDrop: FileDropStatus?
     @ObservationIgnored var fileDropTask: Task<Void, Never>?
@@ -180,7 +184,7 @@ public final class JetKVMBackend: KVMBackend {
     /// Pushes local copies to the host's OS Services clipboard, one call at
     /// a time with only the newest kept, so two quick copies can't land out
     /// of order. Exists while the RPC channel is ready.
-    var guestClipboardSender: LatestValueSender<GuestClipboardPush>?
+    var guestClipboardSender: LatestValueSender<String>?
     private var modifierTracker = ModifierTracker()
     private var pointerThrottler = InputThrottler(interval: .milliseconds(8))
     /// Stamped before the `Task` hop so the wire trace can prove whether the
@@ -705,8 +709,8 @@ public final class JetKVMBackend: KVMBackend {
                 self.guestClipboardSender?.cancel()
                 self.guestClipboardSender = nil
                 if ready {
-                    self.guestClipboardSender = LatestValueSender<GuestClipboardPush> { [weak self] push in
-                        await self?.pushGuestClipboard(push)
+                    self.guestClipboardSender = LatestValueSender<String> { [weak self] text in
+                        await self?.pushGuestClipboard(text)
                     }
                     self.videoPauseSender = LatestValueSender<Bool> { [weak self] paused in
                         do {

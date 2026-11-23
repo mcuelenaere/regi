@@ -31,6 +31,7 @@ extension JetKVMBackend {
         guard available != textClipboard.isAvailable else { return }
         textClipboard.isAvailable = available
         lastGuestClipboardText = nil
+        confirmedGuestClipboardText = nil
         log.info("OS Services clipboard \(available ? "available" : "unavailable", privacy: .public)")
         // What is on the host's clipboard now was put there before sync
         // started: note it, so only a later copy reaches this Mac.
@@ -57,6 +58,7 @@ extension JetKVMBackend {
             }
             guard textClipboard.isAvailable, content.text != lastGuestClipboardText else { return }
             lastGuestClipboardText = content.text
+            confirmedGuestClipboardText = content.text
             guard apply else { return }
             if content.truncated { log.notice("guestClipboardGet: host truncated its text") }
             textClipboard.onRemoteText?(content.text)
@@ -72,23 +74,29 @@ extension JetKVMBackend {
         }
         // Noted before the answer, so a read that crosses this write can't
         // bring the host's previous text back over the one just copied.
-        let previous = lastGuestClipboardText
         lastGuestClipboardText = text
-        guestClipboardSender?.send(GuestClipboardPush(text: text, previous: previous))
+        guestClipboardSender?.send(text)
     }
 
     /// One push from `guestClipboardSender`. A failure puts the note back
-    /// to what it was before the copy, unless a later copy has replaced it.
-    func pushGuestClipboard(_ push: GuestClipboardPush) async {
+    /// to the text known to be on the host, unless a later copy has
+    /// replaced it. Not to what the note was when this copy was queued:
+    /// the sender drops copies it never got to, so that text may never
+    /// have reached the host, and restoring it would make the next read
+    /// see the host's real text as a change and overwrite the pasteboard.
+    func pushGuestClipboard(_ text: String) async {
         var status = "failed"
         do {
-            status = try await guestClipboardSet(push.text)
+            status = try await guestClipboardSet(text)
         } catch {
             log.error("guestClipboardSet failed: \(describeRPCError(error), privacy: .public)")
         }
-        guard status != "ok" else { return }
+        guard status != "ok" else {
+            confirmedGuestClipboardText = text
+            return
+        }
         log.notice("guestClipboardSet: \(status, privacy: .public)")
-        if lastGuestClipboardText == push.text { lastGuestClipboardText = push.previous }
+        if lastGuestClipboardText == text { lastGuestClipboardText = confirmedGuestClipboardText }
     }
 
     // MARK: - File drop
@@ -244,12 +252,6 @@ extension JetKVMBackend {
             }
         }
     }
-}
-
-/// A local copy on its way to the host, with the note to restore if it fails.
-struct GuestClipboardPush: Sendable {
-    let text: String
-    let previous: String?
 }
 
 /// A file waiting in the batch for its drop.
