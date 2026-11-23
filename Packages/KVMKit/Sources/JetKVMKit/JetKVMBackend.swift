@@ -375,10 +375,9 @@ public final class JetKVMBackend: KVMBackend {
         if pressed,
            source.needsSynthesizedCmdRelease,
            !ModifierBits.anyMeta.intersection(modifierTracker.currentState).isEmpty {
-            hidQueue?.enqueue(batch: [
-                HIDFrame(message: .keypressReport(key: usbHID, pressed: true)),
-                HIDFrame(message: .keypressReport(key: usbHID, pressed: false)),
-            ])
+            // Consecutive enqueues are contiguous: nothing can slip in between.
+            hidQueue?.enqueue(HIDFrame(message: .keypressReport(key: usbHID, pressed: true)))
+            hidQueue?.enqueue(HIDFrame(message: .keypressReport(key: usbHID, pressed: false)))
             return
         }
 
@@ -415,10 +414,16 @@ public final class JetKVMBackend: KVMBackend {
             // tested without being noticeably laggy. Linux/Windows hosts
             // toggle on the release regardless of duration, so this is
             // safe across hosts.
-            hidQueue?.enqueue(batch: [
-                HIDFrame(message: .keypressReport(key: usbHID, pressed: true)),
-                HIDFrame(message: .keypressReport(key: usbHID, pressed: false)),
-            ], delay: .milliseconds(200))
+            // The release is enqueued after the wait, not queued behind a
+            // sleeping consumer, so keys typed during the 200 ms go out
+            // first (as on a physical keyboard). `queue` is captured weakly
+            // so a release landing after teardown or reconnect is dropped
+            // instead of reaching a new session's queue.
+            hidQueue?.enqueue(HIDFrame(message: .keypressReport(key: usbHID, pressed: true)))
+            Task { [weak queue = hidQueue] in
+                try? await Task.sleep(for: .milliseconds(200))
+                queue?.enqueue(HIDFrame(message: .keypressReport(key: usbHID, pressed: false)))
+            }
             return
         }
 
@@ -447,9 +452,9 @@ public final class JetKVMBackend: KVMBackend {
            !heldNonModifierKeys.isEmpty {
             let stuck = heldNonModifierKeys
             heldNonModifierKeys.removeAll()
-            hidQueue?.enqueue(batch: stuck.map {
-                HIDFrame(message: .keypressReport(key: $0, pressed: false))
-            })
+            for key in stuck {   // consecutive enqueues stay contiguous
+                hidQueue?.enqueue(HIDFrame(message: .keypressReport(key: key, pressed: false)))
+            }
         }
     }
 
