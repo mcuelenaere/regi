@@ -4,6 +4,7 @@ import Foundation
 import KVMCore
 import KVMWebRTC
 import OSLog
+import os
 
 private let log = Logger(subsystem: "app.regi.mac", category: "os-services")
 
@@ -94,24 +95,61 @@ extension JetKVMBackend {
         rpcReady && videoState?.guestFile?.receive == true
     }
 
-    /// Send files to the host's Downloads folder. Folders are skipped; one
-    /// drop runs at a time. Progress and the outcome show in `fileDrop`.
+    /// Send files to the host's Downloads folder. Folders are skipped. The
+    /// host takes one drop at a time, so files dropped while one runs join
+    /// the batch and go as the next drop. Each file and the outcome of the
+    /// whole batch show in `fileDrop`.
     public func dropFiles(_ urls: [URL]) {
-        guard canDropFiles, fileDropTask == nil, let webrtc else { return }
-        let files: [(url: URL, size: UInt64)] = urls.compactMap { url in
+        guard canDropFiles, let webrtc else { return }
+        var added: [QueuedFile] = []
+        for url in urls {
             let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
-            guard values?.isRegularFile == true, let size = values?.fileSize else { return nil }
-            return (url, UInt64(size))
+            guard values?.isRegularFile == true, let size = values?.fileSize else {
+                fileDropSkipped += 1
+                continue
+            }
+            nextFileDropItemID += 1
+            added.append(QueuedFile(id: nextFileDropItemID, url: url, size: UInt64(size)))
         }
-        guard !files.isEmpty else {
-            fileDrop = FileDropStatus(fileCount: 0, totalBytes: 0, outcome: "Only files can be sent, not folders.")
+        let items = added.map { FileDropStatus.Item(id: $0.id, name: $0.name, size: $0.size) }
+        if fileDropTask != nil {
+            queuedFileDrop += added
+            fileDrop?.items += items
+            return
+        }
+        guard !added.isEmpty else {
+            fileDropSkipped = 0
+            fileDrop = FileDropStatus(outcome: "Only files can be sent, not folders.")
             clearFileDropOutcome()
             return
         }
-        fileDrop = FileDropStatus(fileCount: files.count, totalBytes: files.reduce(0) { $0 + $1.size })
+        fileDrop = FileDropStatus(items: items)
+        queuedFileDrop = added
         fileDropTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            let outcome = await sendFileDrop(files, skipped: urls.count - files.count, webrtc: webrtc)
+            while !queuedFileDrop.isEmpty, !Task.isCancelled {
+                let batch = queuedFileDrop
+                queuedFileDrop = []
+                await sendFileDrop(batch, webrtc: webrtc)
+            }
+            queuedFileDrop = []
+            let items = fileDrop?.items ?? []
+            let sent = items.filter { $0.state == .sent }.map(\.name)
+            let failed = items.compactMap { item -> String? in
+                guard case .failed(let why) = item.state else { return nil }
+                return "\(item.name) (\(why))"
+            }
+            let folders = fileDropSkipped > 0 ? " Folders were skipped." : ""
+            fileDropSkipped = 0
+            let outcome: String
+            if Task.isCancelled || (sent.isEmpty && failed.isEmpty) {
+                outcome = "Cancelled."
+            } else if failed.isEmpty {
+                let what = sent.count == 1 ? sent[0] : "\(sent.count) files"
+                outcome = "Sent \(what) to the host's Downloads folder.\(folders)"
+            } else {
+                outcome = "Couldn't send \(failed.joined(separator: ", ")).\(folders)"
+            }
             log.info("file drop: \(outcome, privacy: .public)")
             fileDrop?.outcome = outcome
             fileDropTask = nil
@@ -119,10 +157,30 @@ extension JetKVMBackend {
         }
     }
 
-    /// Stop the running drop. The KVM cancels whatever the host hasn't
-    /// written yet; written files stay.
+    /// Stop the running drop and everything queued behind it. The KVM
+    /// cancels whatever the host hasn't written yet; written files stay.
     public func cancelFileDrop() {
         fileDropTask?.cancel()
+    }
+
+    /// Stop one file of the batch: a queued one never goes out; one in the
+    /// running drop is cancelled on the host, and the rest carry on.
+    public func cancelFileDrop(item id: Int) {
+        if let index = queuedFileDrop.firstIndex(where: { $0.id == id }) {
+            queuedFileDrop.remove(at: index)
+        } else if let drop = activeFileDrop, let transfer = drop.transfers[id] {
+            drop.cancelled.withLock { _ = $0.insert(transfer) }
+            let cancel = Data(#"{"type":"cancel","transfer":\#(transfer)}"#.utf8)
+            Task { _ = await drop.channel.send(cancel, isBinary: false, highWaterMark: GuestFileSender.highWaterMark) }
+        } else {
+            return
+        }
+        updateFileDropItem(id) { $0.state = .cancelled }
+    }
+
+    private func updateFileDropItem(_ id: Int, _ change: (inout FileDropStatus.Item) -> Void) {
+        guard let index = fileDrop?.items.firstIndex(where: { $0.id == id }) else { return }
+        change(&fileDrop!.items[index])
     }
 
     private func clearFileDropOutcome() {
@@ -133,52 +191,96 @@ extension JetKVMBackend {
         }
     }
 
-    private func sendFileDrop(_ files: [(url: URL, size: UInt64)], skipped: Int,
-                              webrtc: WebRTCFacade) async -> String {
-        // The host compares names byte for byte; macOS hands out
-        // decomposed ones.
-        let names = files.map { $0.url.lastPathComponent.precomposedStringWithCanonicalMapping }
+    /// One OS Services drop; each file's progress and end land on its item.
+    private func sendFileDrop(_ batch: [QueuedFile], webrtc: WebRTCFacade) async {
+        let fail = { (why: String) in
+            for file in batch { self.updateFileDropItem(file.id) { $0.state = .failed(why) } }
+        }
         let drop: GuestFileDropResult
         do {
-            drop = try await guestFileDrop(zip(names, files).map { ($0, $1.size) })
+            drop = try await guestFileDrop(batch.map { ($0.name, $0.size) })
         } catch {
-            return "Couldn't send: \(describeRPCError(error))"
+            return fail(describeRPCError(error))
         }
-        guard drop.transfers.count == files.count,
+        guard drop.transfers.count == batch.count,
               let channel = await webrtc.openDataChannel(label: drop.channel) else {
-            return "Couldn't open the file channel."
+            return fail("no file channel")
         }
-        defer { channel.close() }
-        let transfers = zip(files, drop.transfers).map {
-            GuestFileSender.File(url: $0.url, size: $0.size, transfer: $1)
+        let cancelled = OSAllocatedUnfairLock(initialState: Set<UInt32>())
+        activeFileDrop = ActiveFileDrop(
+            channel: channel,
+            transfers: Dictionary(uniqueKeysWithValues: zip(batch.map(\.id), drop.transfers)),
+            cancelled: cancelled
+        )
+        defer {
+            channel.close()
+            activeFileDrop = nil
         }
+        let ids = Dictionary(uniqueKeysWithValues: zip(drop.transfers, batch.map(\.id)))
         let statuses = await GuestFileSender.run(
-            transfers,
+            zip(batch, drop.transfers).map { GuestFileSender.File(url: $0.url, size: $0.size, transfer: $1) },
             messages: channel.textMessages,
+            isCancelled: { transfer in cancelled.withLock { $0.contains(transfer) } },
             send: { await channel.send($0, isBinary: $1, highWaterMark: GuestFileSender.highWaterMark) },
-            progress: { [weak self] sent in
-                Task { @MainActor in self?.fileDrop?.sentBytes = sent }
+            progress: { [weak self] transfer, sent in
+                guard let id = ids[transfer] else { return }
+                Task { @MainActor in self?.updateFileDropItem(id) { $0.sentBytes = sent } }
             }
         )
-        let failed = zip(names, transfers).filter { statuses[$1.transfer] != "ok" }
-        let folders = skipped > 0 ? " Folders were skipped." : ""
-        if failed.isEmpty {
-            let what = names.count == 1 ? names[0] : "\(names.count) files"
-            return "Sent \(what) to the host's Downloads folder.\(folders)"
+        for (transfer, id) in ids {
+            let status = statuses[transfer] ?? "cancelled"
+            updateFileDropItem(id) { item in
+                if status == "ok" {
+                    item.state = .sent
+                    item.sentBytes = item.size
+                } else if item.state != .cancelled {
+                    // Cancelled by the operator stays that; by anything
+                    // else (a stall, the channel closing) it failed.
+                    item.state = .failed(status)
+                }
+            }
         }
-        if Task.isCancelled { return "Cancelled." }
-        let list = failed.map { "\($0.0) (\(statuses[$0.1.transfer] ?? "cancelled"))" }
-        return "Couldn't send \(list.joined(separator: ", ")).\(folders)"
     }
 }
 
-/// Progress of a file drop, for the App's banner.
+/// A file waiting in the batch for its drop.
+struct QueuedFile {
+    let id: Int
+    let url: URL
+    let size: UInt64
+    /// The host compares names byte for byte; macOS hands out decomposed
+    /// ones.
+    var name: String { url.lastPathComponent.precomposedStringWithCanonicalMapping }
+}
+
+/// The drop on the wire, so one of its files can be cancelled.
+struct ActiveFileDrop {
+    let channel: DataChannel
+    /// Item ID → transfer ID.
+    let transfers: [Int: UInt32]
+    let cancelled: OSAllocatedUnfairLock<Set<UInt32>>
+}
+
+/// A file drop batch, for the App's banner.
 public struct FileDropStatus: Sendable, Equatable {
-    public let fileCount: Int
-    public let totalBytes: UInt64
-    public var sentBytes: UInt64 = 0
+    public struct Item: Sendable, Equatable, Identifiable {
+        public enum State: Sendable, Equatable {
+            /// Queued, or sending once `sentBytes` > 0.
+            case pending
+            case sent
+            case cancelled
+            case failed(String)
+        }
+        public let id: Int
+        public let name: String
+        public let size: UInt64
+        public internal(set) var sentBytes: UInt64 = 0
+        public internal(set) var state: State = .pending
+    }
+    /// Grows while files dropped mid-transfer join the batch.
+    public internal(set) var items: [Item] = []
     /// Nil while sending; then one line saying how it ended.
-    public var outcome: String?
+    public internal(set) var outcome: String?
 }
 
 /// The JetKVM's own reason for a failed call (it puts `err.Error()` in the
@@ -219,25 +321,27 @@ enum GuestFileSender {
     }
 
     /// Returns each transfer's final status ("ok", "failed", "cancelled");
-    /// a transfer the channel closed on is missing. `progress` gets the
-    /// bytes sent so far, at most every 100 ms.
+    /// a transfer the channel closed on is missing. `progress` gets a
+    /// transfer's bytes sent so far, at most every 100 ms and when it
+    /// completes. No more bytes go out for a transfer once `isCancelled`
+    /// says so; whoever cancelled it tells the KVM.
     static func run(
         _ files: [File],
         messages: AsyncStream<String>,
+        isCancelled: (UInt32) -> Bool = { _ in false },
         send: (Data, _ isBinary: Bool) async -> Bool,
-        progress: (UInt64) -> Void
+        progress: (_ transfer: UInt32, _ sent: UInt64) -> Void
     ) async -> [UInt32: String] {
         var credit: [UInt32: UInt64] = [:]
         var handles: [UInt32: FileHandle] = [:]
         var sent: [UInt32: UInt64] = [:]
         var statuses: [UInt32: String] = [:]
-        var total: UInt64 = 0
         var reported = ContinuousClock.now
         defer { for handle in handles.values { try? handle.close() } }
 
         func pump(_ file: File) async {
             while credit[file.transfer, default: 0] > 0, sent[file.transfer, default: 0] < file.size,
-                  statuses[file.transfer] == nil, !Task.isCancelled {
+                  statuses[file.transfer] == nil, !isCancelled(file.transfer), !Task.isCancelled {
                 let n = min(chunkBytes, credit[file.transfer]!, file.size - sent[file.transfer, default: 0])
                 var message = withUnsafeBytes(of: file.transfer.littleEndian) { Data($0) }
                 do {
@@ -254,10 +358,9 @@ enum GuestFileSender {
                 guard await send(message, true) else { return }
                 sent[file.transfer, default: 0] += n
                 credit[file.transfer]! -= n
-                total += n
                 if reported.duration(to: .now) >= .milliseconds(100) || sent[file.transfer] == file.size {
                     reported = .now
-                    progress(total)
+                    progress(file.transfer, sent[file.transfer]!)
                 }
             }
         }

@@ -83,6 +83,7 @@ public final class Session {
     public var fileDrop: FileDropStatus? { jetKVM?.fileDrop }
     public func dropFiles(_ urls: [URL]) { jetKVM?.dropFiles(urls) }
     public func cancelFileDrop() { jetKVM?.cancelFileDrop() }
+    public func cancelFileDrop(item id: Int) { jetKVM?.cancelFileDrop(item: id) }
 
     // MARK: - Power control (backend-agnostic)
 

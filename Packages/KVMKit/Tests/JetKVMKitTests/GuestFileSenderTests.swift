@@ -31,7 +31,7 @@ final class GuestFileSenderTests: XCTestCase {
                 frames.append(data)
                 return true
             },
-            progress: { _ in }
+            progress: { _, _ in }
         )
 
         XCTAssertEqual(statuses, [7: "ok"])
@@ -54,10 +54,36 @@ final class GuestFileSenderTests: XCTestCase {
             [.init(url: first, size: 10, transfer: 2), .init(url: second, size: 10, transfer: 3)],
             messages: messages,
             send: { data, _ in frames.append(data); return true },
-            progress: { _ in }
+            progress: { _, _ in }
         )
 
         XCTAssertEqual(statuses, [2: "ok"])
         XCTAssertEqual(frames.map { Array($0.prefix(4)) }, [[2, 0, 0, 0]])
+    }
+
+    /// One file of a drop cancelled: credit for it moves nothing, the rest
+    /// of the drop still goes, and progress is per file.
+    func testCancelledTransferSendsNothing() async throws {
+        let (first, _) = try file(10)
+        let (second, _) = try file(20)
+        let (messages, input) = AsyncStream<String>.makeStream()
+        input.yield(#"{"type":"credit","transfer":2,"bytes":524288}"#)
+        input.yield(#"{"type":"credit","transfer":3,"bytes":524288}"#)
+        input.yield(#"{"type":"done","transfer":2,"status":"cancelled"}"#)
+        input.yield(#"{"type":"done","transfer":3,"status":"ok"}"#)
+
+        var frames: [Data] = []
+        var progress: [UInt32: UInt64] = [:]
+        let statuses = await GuestFileSender.run(
+            [.init(url: first, size: 10, transfer: 2), .init(url: second, size: 20, transfer: 3)],
+            messages: messages,
+            isCancelled: { $0 == 2 },
+            send: { data, _ in frames.append(data); return true },
+            progress: { progress[$0] = $1 }
+        )
+
+        XCTAssertEqual(statuses, [2: "cancelled", 3: "ok"])
+        XCTAssertEqual(frames.map { Array($0.prefix(4)) }, [[3, 0, 0, 0]])
+        XCTAssertEqual(progress, [3: 20])
     }
 }

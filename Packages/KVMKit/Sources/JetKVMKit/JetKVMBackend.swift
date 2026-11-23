@@ -139,6 +139,13 @@ public final class JetKVMBackend: KVMBackend {
     /// The OS Services file drop in progress or just ended, nil otherwise.
     public internal(set) var fileDrop: FileDropStatus?
     @ObservationIgnored var fileDropTask: Task<Void, Never>?
+    /// Files of the batch not yet handed to a drop.
+    @ObservationIgnored var queuedFileDrop: [QueuedFile] = []
+    /// The drop on the wire, while one is.
+    @ObservationIgnored var activeFileDrop: ActiveFileDrop?
+    /// Folders dropped in this batch, which aren't sent.
+    @ObservationIgnored var fileDropSkipped = 0
+    @ObservationIgnored var nextFileDropItemID = 0
 
     /// Most recent connection-quality sample. Updated ~1 Hz once the
     /// peer connection is up.
