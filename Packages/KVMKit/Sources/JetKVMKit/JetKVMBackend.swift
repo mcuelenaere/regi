@@ -171,6 +171,8 @@ public final class JetKVMBackend: KVMBackend {
     /// unpaused — if the window is still hidden we have to say it
     /// again. Kept across teardown for exactly that reason.
     private var desiredVideoPaused = false
+    /// Set once the device rejects JSON-RPC `wheelReport` (firmware ≥ 0.5.11).
+    private var wheelOverBinary = false
     private var modifierTracker = ModifierTracker()
     private var pointerThrottler = InputThrottler(interval: .milliseconds(8))
     /// Stamped before the `Task` hop so the wire trace can prove whether the
@@ -579,22 +581,50 @@ public final class JetKVMBackend: KVMBackend {
         }
     }
 
-    /// Forward a scroll-wheel event over the JSON-RPC `wheelReport`
-    /// method, the same path the official web UI uses. Upstream firmware
-    /// defines HID-RPC opcode 0x04 but never dispatches it (only a fork
-    /// does), so the binary channel would drop scroll silently.
+    /// Forward a scroll-wheel event. Firmware 0.5.9/0.5.10 only serves the
+    /// JSON-RPC `wheelReport` method (they never dispatch HID-RPC 0x04);
+    /// 0.5.11 (jetkvm/kvm#1462) removed that method and only accepts 0x04
+    /// on the reliable HID-RPC channel. So we start on JSON-RPC, and the
+    /// first time the device answers "method not found" we switch this
+    /// session to binary for good, resending that report so the notch isn't
+    /// lost. Matching the error rather than gating on the version also
+    /// covers dev builds reporting `0.5.11-dev…` that still have JSON-RPC.
     /// Fire-and-forget; failures are logged but not propagated, matching
     /// sendKeypress / sendPointer semantics so call sites don't have to await.
     public func sendWheelReport(wheelY: Int8, wheelX: Int8) {
         if wheelY == 0 && wheelX == 0 { return }
+        if wheelOverBinary {
+            sendWheelReportBinary(wheelY: wheelY, wheelX: wheelX)
+            return
+        }
         guard rpcReady else { return }
         Task { [weak self] in
             do {
                 try await self?.sendWheelReportRPC(wheelY: wheelY, wheelX: wheelX)
             } catch {
-                log.error("wheelReport(y=\(wheelY, privacy: .public), x=\(wheelX, privacy: .public)) failed: \(describe(error), privacy: .public)")
+                if Self.wheelRPCRemoved(by: error) {
+                    self?.wheelOverBinary = true
+                    log.info("wheelReport RPC not supported by firmware; scrolling over HID-RPC 0x04")
+                    self?.sendWheelReportBinary(wheelY: wheelY, wheelX: wheelX)
+                } else {
+                    log.error("wheelReport(y=\(wheelY, privacy: .public), x=\(wheelX, privacy: .public)) failed: \(describe(error), privacy: .public)")
+                }
             }
         }
+    }
+
+    private func sendWheelReportBinary(wheelY: Int8, wheelX: Int8) {
+        guard hidReady, let webrtc else { return }
+        // The wire payload is [deltaY, deltaX].
+        let message = HIDRPCMessage.wheelReport(deltaY: wheelY, deltaX: wheelX)
+        Task { await webrtc.sendHID(message, on: .reliable) }
+    }
+
+    /// JSON-RPC "Method not found" (-32601) for `wheelReport` means the
+    /// firmware dropped the method — the cue to use the binary opcode.
+    nonisolated static func wheelRPCRemoved(by error: Error) -> Bool {
+        guard case .server(let e)? = error as? JSONRPCClientError else { return false }
+        return e.code == -32601
     }
 
     // MARK: - Internal pumps
@@ -1021,6 +1051,7 @@ public final class JetKVMBackend: KVMBackend {
         videoRenderer = nil
         hasReceivedFirstFrame = false
         hidReady = false
+        wheelOverBinary = false
         rpcReady = false
         videoState = nil
         usbState = nil
