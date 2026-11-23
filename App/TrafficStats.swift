@@ -79,7 +79,7 @@ struct TrafficCard: View {
                     .font(.body.monospacedDigit())
             }
             chart
-                .frame(height: 72)
+                .frame(height: 32)
                 .padding(.top, 2)
             HStack(spacing: 10) {
                 ForEach(active, id: \.self) { category in
