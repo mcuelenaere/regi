@@ -184,10 +184,12 @@ public final class PiKVMBackend: KVMBackend {
             }
         })
 
-        // Connection-quality stats.
+        // Connection-quality stats. Input rides the WebSocket, not the
+        // peer connection, so fold its byte counts in.
         pumpTasks.append(Task { [weak self] in
             for await sample in await webrtc.stats {
-                self?.appendStatsSample(sample)
+                let input = await events.traffic
+                self?.appendStatsSample(sample.addingTraffic(input, to: .input))
             }
         })
 

@@ -7,7 +7,7 @@ import Foundation
 /// from the W3C `getStats()` report; `Session` keeps a ring buffer
 /// of recent samples for sparklines.
 ///
-/// Time-derivative fields (bitrate, decode time, playback delay) are
+/// Time-derivative fields (decode time, playback delay) are
 /// `nil` on the very first sample because they need a previous-value
 /// reference to compute deltas.
 public struct ConnectionStats: Sendable, Equatable {
@@ -31,11 +31,6 @@ public struct ConnectionStats: Sendable, Equatable {
     /// Inbound RTP packets reported lost. Loss percentage is
     /// `packetsLost / (packetsLost + packetsReceived) * 100`.
     public let packetsLost: Int64
-
-    /// Bandwidth on the receive path right now, in bits per second.
-    /// Computed as a delta from the previous sample's
-    /// `bytesReceivedTotal`. nil on the first sample.
-    public let bitrateBitsPerSecond: Double?
 
     /// "host" (LAN), "srflx" (NAT-traversed), "prflx" (peer
     /// reflexive), "relay" (TURN), or nil if no candidate pair is
@@ -82,9 +77,11 @@ public struct ConnectionStats: Sendable, Equatable {
 
     // MARK: - Session totals
 
-    /// Cumulative bytes received over this session, including RTP
-    /// header overhead. Drive a "MB used this session" counter.
-    public let bytesReceivedTotal: Int64
+    /// Cumulative bytes each way over this session, split by what they
+    /// carried. Sums to the whole connection: whatever a backend can't
+    /// attribute (transport overhead, unknown channels) lands in `.other`.
+    /// Rates come from two samples via `trafficRates(since:)`.
+    public private(set) var traffic: [TrafficCategory: ByteCounts]
 
     public init(
         timestamp: Date,
@@ -92,7 +89,6 @@ public struct ConnectionStats: Sendable, Equatable {
         jitterMs: Double?,
         packetsReceived: Int64,
         packetsLost: Int64,
-        bitrateBitsPerSecond: Double?,
         connectionType: ConnectionType?,
         framesPerSecond: Double,
         codec: String?,
@@ -101,14 +97,13 @@ public struct ConnectionStats: Sendable, Equatable {
         decodeTimePerFrameMs: Double?,
         playbackDelayMs: Double?,
         endToEndLatencyMs: Double?,
-        bytesReceivedTotal: Int64
+        traffic: [TrafficCategory: ByteCounts]
     ) {
         self.timestamp = timestamp
         self.roundTripTimeMs = roundTripTimeMs
         self.jitterMs = jitterMs
         self.packetsReceived = packetsReceived
         self.packetsLost = packetsLost
-        self.bitrateBitsPerSecond = bitrateBitsPerSecond
         self.connectionType = connectionType
         self.framesPerSecond = framesPerSecond
         self.codec = codec
@@ -117,7 +112,7 @@ public struct ConnectionStats: Sendable, Equatable {
         self.decodeTimePerFrameMs = decodeTimePerFrameMs
         self.playbackDelayMs = playbackDelayMs
         self.endToEndLatencyMs = endToEndLatencyMs
-        self.bytesReceivedTotal = bytesReceivedTotal
+        self.traffic = traffic
     }
 
     /// Loss percentage in 0..100 range, or nil if zero packets
@@ -126,6 +121,64 @@ public struct ConnectionStats: Sendable, Equatable {
         let total = packetsReceived + packetsLost
         guard total > 0 else { return nil }
         return Double(packetsLost) / Double(total) * 100
+    }
+
+    /// All traffic, every category summed.
+    public var trafficTotal: ByteCounts {
+        traffic.values.reduce(ByteCounts(), +)
+    }
+
+    /// A copy with `extra` added to `category`, for traffic that runs
+    /// beside the peer connection (PiKVM's input WebSocket).
+    public func addingTraffic(_ extra: ByteCounts, to category: TrafficCategory) -> ConnectionStats {
+        var copy = self
+        copy.traffic[category, default: ByteCounts()] = copy.traffic[category, default: ByteCounts()] + extra
+        return copy
+    }
+
+    /// Bits per second each way per category between `earlier` and this
+    /// sample. Counters that went backwards (a reconnect) read as 0.
+    public func trafficRates(since earlier: ConnectionStats) -> [TrafficCategory: (received: Double, sent: Double)] {
+        let dt = timestamp.timeIntervalSince(earlier.timestamp)
+        guard dt > 0 else { return [:] }
+        var rates: [TrafficCategory: (received: Double, sent: Double)] = [:]
+        for (category, now) in traffic {
+            let then = earlier.traffic[category] ?? ByteCounts()
+            rates[category] = (
+                received: Double(max(0, now.received - then.received)) * 8 / dt,
+                sent: Double(max(0, now.sent - then.sent)) * 8 / dt
+            )
+        }
+        return rates
+    }
+}
+
+/// What a slice of the connection's traffic carried.
+public enum TrafficCategory: String, CaseIterable, Sendable {
+    case video
+    /// Keyboard and mouse reports.
+    case input
+    /// Clipboard sync and file transfers (the host agent's bridge, OS
+    /// Services file drops).
+    case clipboardAndFiles
+    /// The JSON-RPC control plane.
+    case control
+    /// Protocol overhead and anything not attributed above.
+    case other
+}
+
+/// A pair of byte counters, one per direction.
+public struct ByteCounts: Sendable, Equatable {
+    public var received: Int64
+    public var sent: Int64
+
+    public init(received: Int64 = 0, sent: Int64 = 0) {
+        self.received = received
+        self.sent = sent
+    }
+
+    public static func + (a: ByteCounts, b: ByteCounts) -> ByteCounts {
+        ByteCounts(received: a.received + b.received, sent: a.sent + b.sent)
     }
 }
 

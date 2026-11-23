@@ -6,18 +6,21 @@ import WebRTC
 
 /// Walks an `RTCStatisticsReport` and produces a `ConnectionStats`.
 ///
-/// Holds the previous sample's bytesReceived / decode / jitter-buffer
-/// counters internally so it can compute deltas (bitrate, decode time
-/// per frame, playback delay per frame) between calls. Discard and
+/// Holds the previous sample's decode / jitter-buffer counters
+/// internally so it can compute deltas (decode time per frame, playback
+/// delay per frame) between calls, plus the last byte counts of every
+/// data channel it has seen. Discard and
 /// recreate on disconnect — those deltas are nonsense across a
 /// reconnect.
 struct WebRTCStatsParser {
-    private var previousBytesReceived: Int64?
-    private var previousTimestamp: Date?
     private var previousTotalDecodeTime: Double?
     private var previousFramesDecoded: Int64?
     private var previousJitterBufferDelay: Double?
     private var previousJitterBufferEmittedCount: Int64?
+    /// Last byte counts per data-channel stat id. libwebrtc drops a
+    /// channel's stats once it closes (an OS Services file drop's
+    /// `guestfile_*` channel, say), so its bytes are kept here.
+    private var dataChannels: [String: (category: TrafficCategory, bytes: ByteCounts)] = [:]
 
     init() {}
 
@@ -63,7 +66,6 @@ struct WebRTCStatsParser {
         let now = Date()
 
         // Counters from the inbound-rtp stat.
-        let bytesReceivedTotal: Int64 = (v["bytesReceived"] as? NSNumber)?.int64Value ?? 0
         let packetsReceived: Int64 = (v["packetsReceived"] as? NSNumber)?.int64Value ?? 0
         let packetsLost: Int64 = (v["packetsLost"] as? NSNumber)?.int64Value ?? 0
         let framesPerSecond: Double = (v["framesPerSecond"] as? NSNumber)?.doubleValue ?? 0
@@ -82,15 +84,6 @@ struct WebRTCStatsParser {
         }()
 
         // Deltas — only meaningful when we have a previous sample.
-        let bitrateBitsPerSecond: Double? = {
-            guard let prevBytes = previousBytesReceived,
-                  let prevTime = previousTimestamp
-            else { return nil }
-            let dt = now.timeIntervalSince(prevTime)
-            guard dt > 0 else { return nil }
-            let deltaBytes = max(0, bytesReceivedTotal - prevBytes)
-            return Double(deltaBytes) * 8 / dt
-        }()
         let decodeTimePerFrameMs: Double? = {
             guard let prevDecode = previousTotalDecodeTime,
                   let prevFrames = previousFramesDecoded
@@ -123,8 +116,6 @@ struct WebRTCStatsParser {
             return rtt + buf + dec
         }()
 
-        previousBytesReceived = bytesReceivedTotal
-        previousTimestamp = now
         previousTotalDecodeTime = totalDecodeTime
         previousFramesDecoded = framesDecoded
         previousJitterBufferDelay = jitterBufferDelay
@@ -136,7 +127,6 @@ struct WebRTCStatsParser {
             jitterMs: jitterSeconds.map { $0 * 1000 },
             packetsReceived: packetsReceived,
             packetsLost: packetsLost,
-            bitrateBitsPerSecond: bitrateBitsPerSecond,
             connectionType: connectionType,
             framesPerSecond: framesPerSecond,
             codec: codec,
@@ -145,7 +135,57 @@ struct WebRTCStatsParser {
             decodeTimePerFrameMs: decodeTimePerFrameMs,
             playbackDelayMs: playbackDelayMs,
             endToEndLatencyMs: endToEndLatencyMs,
-            bytesReceivedTotal: bytesReceivedTotal
+            traffic: traffic(allStats.values.map { ($0.id, $0.type, $0.values) })
         )
+    }
+
+    /// Splits the connection's bytes by what they carried. The transport
+    /// stats count everything on the wire (SRTP, SCTP, DTLS, RTCP); video
+    /// and each data channel count their own payload; the remainder is
+    /// `.other`. Data channels count a message when it's handed to SCTP,
+    /// so during a big upload they can run ahead of the transport by the
+    /// SCTP send queue and `.other` reads 0 until the wire catches up.
+    /// Takes the report's stats as plain tuples so tests can feed it.
+    mutating func traffic(
+        _ stats: [(id: String, type: String, values: [String: NSObject])]
+    ) -> [TrafficCategory: ByteCounts] {
+        func int(_ value: NSObject?) -> Int64 { (value as? NSNumber)?.int64Value ?? 0 }
+
+        let v = stats.first { $0.type == "inbound-rtp" && $0.values["kind"] as? String == "video" }?.values ?? [:]
+        for stat in stats where stat.type == "data-channel" {
+            let label = stat.values["label"] as? String ?? ""
+            dataChannels[stat.id] = (
+                Self.category(forDataChannel: label),
+                ByteCounts(received: int(stat.values["bytesReceived"]), sent: int(stat.values["bytesSent"]))
+            )
+        }
+        var traffic: [TrafficCategory: ByteCounts] = [
+            .video: ByteCounts(received: int(v["bytesReceived"]) + int(v["headerBytesReceived"])),
+        ]
+        for channel in dataChannels.values {
+            traffic[channel.category, default: ByteCounts()] = traffic[channel.category, default: ByteCounts()] + channel.bytes
+        }
+
+        let wire = stats.filter { $0.type == "transport" }.reduce(ByteCounts()) {
+            $0 + ByteCounts(received: int($1.values["bytesReceived"]), sent: int($1.values["bytesSent"]))
+        }
+        let attributed = traffic.values.reduce(ByteCounts(), +)
+        traffic[.other, default: ByteCounts()] = traffic[.other, default: ByteCounts()] + ByteCounts(
+            received: max(0, wire.received - attributed.received),
+            sent: max(0, wire.sent - attributed.sent)
+        )
+        return traffic
+    }
+
+    /// The traffic a data channel carries, by its label. The labels are
+    /// the JetKVM firmware's.
+    static func category(forDataChannel label: String) -> TrafficCategory {
+        switch label {
+        case "rpc": return .control
+        case "host_bridge": return .clipboardAndFiles
+        case _ where label.hasPrefix("hidrpc"): return .input
+        case _ where label.hasPrefix("guestfile_"): return .clipboardAndFiles
+        default: return .other
+        }
     }
 }

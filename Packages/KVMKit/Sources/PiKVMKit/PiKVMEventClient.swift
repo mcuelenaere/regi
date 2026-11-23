@@ -38,6 +38,10 @@ public actor PiKVMEventClient {
     /// Inbound `hid` state events (absolute/relative mode, online).
     public private(set) var hidStates: AsyncStream<PiKVMEvent.HIDState>!
 
+    /// Frame payload bytes each way, for the stats panel. Excludes
+    /// WebSocket framing and TLS overhead.
+    public private(set) var traffic = ByteCounts()
+
     /// Heartbeat cadence and tolerance, mirroring the web client.
     private static let pingInterval: Duration = .seconds(1)
 
@@ -81,6 +85,7 @@ public actor PiKVMEventClient {
         let text = String(decoding: json, as: UTF8.self)
         do {
             try await task.send(.string(text))
+            traffic.sent += Int64(text.utf8.count)
         } catch {
             log.error("WS send failed: \(String(describing: error), privacy: .public)")
         }
@@ -104,6 +109,7 @@ public actor PiKVMEventClient {
             if Task.isCancelled { return }
             do {
                 try await task.send(.data(PiKVMEvent.pingFrame))
+                traffic.sent += Int64(PiKVMEvent.pingFrame.count)
             } catch {
                 log.error("WS heartbeat failed: \(String(describing: error), privacy: .public)")
                 return
@@ -128,9 +134,11 @@ public actor PiKVMEventClient {
             }
             switch frame {
             case .data(let data):
+                traffic.received += Int64(data.count)
                 // Binary heartbeat pong (`255`); ignore otherwise.
                 if data.first == PiKVMEvent.pongByte { continue }
             case .string(let str):
+                traffic.received += Int64(str.utf8.count)
                 handleTextFrame(str)
             @unknown default:
                 continue

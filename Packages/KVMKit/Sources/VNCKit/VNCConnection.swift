@@ -31,6 +31,8 @@ protocol VNCByteChannel: Actor {
     /// Total bytes read since open (handshake + framing + payloads), for
     /// bandwidth stats. Monotonic.
     var bytesReceived: Int { get }
+    /// Total bytes handed to `send` since open. Monotonic.
+    var bytesSent: Int { get }
 }
 
 /// One RFB session's plain-TCP connection. Performs the RFB 3.8 handshake
@@ -55,6 +57,7 @@ actor VNCConnection: VNCByteChannel {
 
     private var connection: NWConnection?
     private(set) var bytesReceived: Int = 0
+    private(set) var bytesSent: Int = 0
 
     /// The protocol minor version the server agreed to (7 or 8); affects
     /// SecurityResult framing. Fixed at 8 on the TLS path (the framer replies 3.8).
@@ -374,6 +377,7 @@ actor VNCConnection: VNCByteChannel {
 
     func send(_ data: Data) async throws {
         guard let conn = connection else { throw VNCConnectionError.connectionClosed }
+        bytesSent += data.count
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             conn.send(content: data, completion: .contentProcessed { error in
                 if let error { cont.resume(throwing: VNCConnectionError.connectionFailed("\(error)")) }
