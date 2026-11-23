@@ -136,28 +136,37 @@ struct StatsPanel: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Session totals")
                 .font(.headline)
-            if let latest {
-                TrafficTotals(traffic: latest.traffic)
-                    .padding(.bottom, 4)
+            HStack(alignment: .top, spacing: 0) {
+                if let latest {
+                    TrafficTotals(traffic: latest.traffic)
+                }
+                Spacer(minLength: 24)
+                Divider()
+                VStack(alignment: .leading, spacing: 10) {
+                    FooterStat(
+                        label: "Packets received",
+                        value: latest.map { $0.packetsReceived.formatted(.number) } ?? "—"
+                    )
+                    FooterStat(
+                        label: "Packets lost",
+                        value: latest.map { $0.packetsLost.formatted(.number) } ?? "—"
+                    )
+                    FooterStat(
+                        label: "Freezes",
+                        value: latest.map {
+                            $0.freezeCount == 0
+                                ? "0"
+                                : "\($0.freezeCount) (\(String(format: "%.1fs", $0.totalFreezesDurationSec)))"
+                        } ?? "—"
+                    )
+                }
+                .padding(.leading, 16)
+                .padding(.top, 2)
+                // Matches the spacer before the divider, so the divider
+                // sits midway through the free space.
+                Spacer(minLength: 0)
             }
-            HStack(spacing: 24) {
-                FooterStat(
-                    label: "Packets received",
-                    value: latest.map { $0.packetsReceived.formatted(.number) } ?? "—"
-                )
-                FooterStat(
-                    label: "Packets lost",
-                    value: latest.map { $0.packetsLost.formatted(.number) } ?? "—"
-                )
-                FooterStat(
-                    label: "Freezes",
-                    value: latest.map {
-                        $0.freezeCount == 0
-                            ? "0"
-                            : "\($0.freezeCount) (\(String(format: "%.1fs", $0.totalFreezesDurationSec)))"
-                    } ?? "—"
-                )
-            }
+            .fixedSize(horizontal: false, vertical: true)
         }
     }
 
