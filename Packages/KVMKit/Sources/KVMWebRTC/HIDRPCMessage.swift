@@ -13,7 +13,7 @@ import Foundation
 /// Opcode 0x04 (`WheelReport`) is not dispatched by firmware 0.5.9/0.5.10
 /// (it logs "unknown HID RPC message type"), so scroll uses JSON-RPC
 /// `wheelReport` there. Firmware 0.5.11 (jetkvm/kvm#1462) removed that
-/// method and accepts only this opcode; JetKVMBackend falls back to it.
+/// method and accepts only this opcode; JetKVMBackend picks by firmware version.
 public enum HIDRPCMessage: Sendable, Equatable {
     /// HID-RPC protocol version. The server enforces a handshake on the
     /// `hidrpc` channel before it'll act on any input.

@@ -77,17 +77,3 @@ final class JSONRPCMessageTests: XCTestCase {
         XCTAssertThrowsError(try notif.decodeParams(AnyParams.self))
     }
 }
-
-final class WheelFallbackTests: XCTestCase {
-    func testOnlyMethodNotFoundSwitchesToBinaryWheel() {
-        let notFound = JSONRPCClientError.server(JSONRPCErrorObject(code: -32601, message: "Method not found"))
-        XCTAssertTrue(JetKVMBackend.wheelRPCRemoved(by: notFound))
-        // The code decides, not the text.
-        let reworded = JSONRPCClientError.server(JSONRPCErrorObject(code: -32601, message: "nope"))
-        XCTAssertTrue(JetKVMBackend.wheelRPCRemoved(by: reworded))
-        // Other server errors and transport failures must not flip the session.
-        let internalError = JSONRPCClientError.server(JSONRPCErrorObject(code: -32603, message: "Method not found"))
-        XCTAssertFalse(JetKVMBackend.wheelRPCRemoved(by: internalError))
-        XCTAssertFalse(JetKVMBackend.wheelRPCRemoved(by: JSONRPCClientError.sendFailed))
-    }
-}
