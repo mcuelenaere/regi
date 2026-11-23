@@ -194,7 +194,7 @@ struct KVMSessionWindow: View {
         // and .reconnecting render their own banner inside
         // KVMWindowView, so we suppress the overlay for those.
         switch session.state {
-        case .idle, .connecting, .awaitingPassword, .awaitingTrustOverride, .failed:
+        case .idle, .connecting, .awaitingPassword, .sessionExpired, .awaitingTrustOverride, .failed:
             return true
         case .connected:
             // ICE is up and the track is attached, but actual frames

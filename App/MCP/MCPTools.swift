@@ -161,7 +161,7 @@ enum MCPTools {
         switch session.state {
         case .connected:
             return session.videoRenderer?.latestFrame() != nil || !(session.videoState?.error ?? "").isEmpty
-        case .awaitingPassword, .awaitingTrustOverride, .failed, .kicked:
+        case .awaitingPassword, .sessionExpired, .awaitingTrustOverride, .failed, .kicked:
             return true
         default:
             return false
@@ -207,6 +207,7 @@ enum MCPTools {
         case .idle: return "idle"
         case .connecting: return "connecting"
         case .awaitingPassword: return "waiting for a password: the user must enter it in Regi's window"
+        case .sessionExpired: return "signed out after inactivity: the user must sign in again in Regi's window"
         case .awaitingTrustOverride(let host, _): return "waiting for the user to trust \(host)'s certificate in Regi's window"
         case .connected:
             if let error = session.videoState?.error, !error.isEmpty { return "connected, no video signal: \(error)" }

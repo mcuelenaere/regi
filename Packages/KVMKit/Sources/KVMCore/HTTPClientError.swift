@@ -9,6 +9,9 @@ import Foundation
 /// `PiKVMKit`'s `PiKVMHTTPClient` throw and pattern-match on it.
 public enum HTTPClientError: Error, Sendable, Equatable {
     case unauthorized(message: String?)
+    /// 401 whose body says `code: "session_expired"` (JetKVM's idle
+    /// timeout): the login was valid, it just lapsed.
+    case sessionExpired
     case badRequest(message: String?)
     case rateLimited(retryAfter: Int)
     case notFound
@@ -21,4 +24,12 @@ public enum HTTPClientError: Error, Sendable, Equatable {
     /// trusting it. The reason carries the system-localized message
     /// (e.g. "certificate is not trusted") for display.
     case untrustedServerCertificate(reason: String)
+
+    /// A 401, bad or lapsed login alike: the caller should (re)authenticate.
+    public var isAuthFailure: Bool {
+        switch self {
+        case .unauthorized, .sessionExpired: return true
+        default: return false
+        }
+    }
 }

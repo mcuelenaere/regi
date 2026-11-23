@@ -24,6 +24,15 @@ public enum SignalingError: Error, Sendable {
     case decoding(payload: String, error: String)
     /// URLSession reported an error during the WS lifecycle.
     case transport(String)
+    /// The device closed the socket with code 4003: its idle timeout signed
+    /// us out (`local_auth_timeout.go`).
+    case sessionExpired
+
+    /// Classify a failed receive by the socket's close code (0 = none).
+    static func closed(code: Int, error: Error) -> SignalingError {
+        // 4003 is JetKVM's close code for an expired login session.
+        code == 4003 ? .sessionExpired : .disconnected(String(describing: error))
+    }
 }
 
 /// WebSocket signaling client for the JetKVM device.
@@ -188,7 +197,7 @@ public actor SignalingClient {
                 frame = try await task.receive()
             } catch {
                 log.error("WS receive failed: \(String(describing: error), privacy: .public)")
-                streamContinuation?.finish(throwing: SignalingError.disconnected(String(describing: error)))
+                streamContinuation?.finish(throwing: SignalingError.closed(code: task.closeCode.rawValue, error: error))
                 return
             }
             do {
