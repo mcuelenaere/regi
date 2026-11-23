@@ -12,6 +12,7 @@ actor ScriptedByteChannel: VNCByteChannel {
     private var offset = 0
     private(set) var sent = Data()
     private(set) var bytesReceived = 0
+    var bytesSent: Int { sent.count }
     /// Set when inbound is exhausted, so a blocked `readExactly` reports EOF
     /// instead of hanging.
     private var closed = false

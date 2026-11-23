@@ -65,7 +65,7 @@ public final class VNCBackend: KVMBackend {
     // time. RTT/jitter/loss don't apply to a plain TCP RFB stream (they stay
     // nil; the panel shows "—").
     private var statsTask: Task<Void, Never>?
-    private var statsAnchor: (time: Date, bytes: Int, snapshot: VNCStatsCollector.Snapshot)?
+    private var statsAnchor: (time: Date, snapshot: VNCStatsCollector.Snapshot)?
     private static let maxStatsHistory = 60
 
     // Reconnect: exponential backoff, mirroring JetKVMBackend. Only auto-
@@ -607,15 +607,15 @@ public final class VNCBackend: KVMBackend {
         guard let statsCollector, let connection else { return }
         let snap = statsCollector.snapshot()
         let bytes = await connection.bytesReceived
+        let sent = await connection.bytesSent
         let now = Date()
         guard let anchor = statsAnchor else {
-            statsAnchor = (now, bytes, snap)
+            statsAnchor = (now, snap)
             return
         }
         let dt = now.timeIntervalSince(anchor.time)
         guard dt > 0 else { return }
 
-        let deltaBytes = bytes - anchor.bytes
         let deltaFrames = snap.framesPresented - anchor.snapshot.framesPresented
         let deltaDecode = snap.decodeTimeSec - anchor.snapshot.decodeTimeSec
         let fps = Double(deltaFrames) / dt
@@ -647,7 +647,6 @@ public final class VNCBackend: KVMBackend {
             jitterMs: nil,
             packetsReceived: 0,
             packetsLost: 0,
-            bitrateBitsPerSecond: Double(deltaBytes) * 8 / dt,
             connectionType: nil,
             framesPerSecond: fps,
             codec: codecLabel,
@@ -656,13 +655,15 @@ public final class VNCBackend: KVMBackend {
             decodeTimePerFrameMs: deltaFrames > 0 ? (deltaDecode / Double(deltaFrames)) * 1000 : nil,
             playbackDelayMs: nil,
             endToEndLatencyMs: frameIntervalMs,
-            bytesReceivedTotal: Int64(bytes)
+            // One TCP stream carries framebuffer, input and clipboard alike;
+            // nothing splits it, so it's all `.other`.
+            traffic: [.other: ByteCounts(received: Int64(bytes), sent: Int64(sent))]
         )
         latestStats = sample
         statsHistory.append(sample)
         let overshoot = statsHistory.count - Self.maxStatsHistory
         if overshoot > 0 { statsHistory.removeFirst(overshoot) }
-        statsAnchor = (now, bytes, snap)
+        statsAnchor = (now, snap)
     }
 
     // MARK: - Config

@@ -7,7 +7,7 @@ import KVMKit
 /// Popover content showing live WebRTC connection metrics.
 /// Mirrors the diagnostic overlay the JetKVM web UI ships, plus a
 /// few extras (composite end-to-end latency, connection type badge,
-/// negotiated codec, total session bandwidth, freezes).
+/// negotiated codec, traffic split by what it carried, freezes).
 ///
 /// Each card pulls its current value from `session.latestStats` and
 /// its sparkline from `session.statsHistory` — both update at ~1 Hz
@@ -20,13 +20,8 @@ struct StatsPanel: View {
             VStack(alignment: .leading, spacing: 16) {
                 badgesRow
                 section("Network") {
-                    grid {
-                        MetricCard(
-                            title: "Bitrate",
-                            value: latest?.bitrateBitsPerSecond.map(formatBitrate) ?? "—",
-                            samples: history,
-                            sample: { $0.bitrateBitsPerSecond }
-                        )
+                    TrafficCard(samples: history)
+                    grid(columns: 3) {
                         MetricCard(
                             title: "Round-trip",
                             value: latest?.roundTripTimeMs.map { "\(Int($0.rounded())) ms" } ?? "—",
@@ -84,7 +79,7 @@ struct StatsPanel: View {
             }
             .padding(20)
         }
-        .frame(width: 460, height: 580)
+        .frame(width: 460, height: 640)
     }
 
     // MARK: - Helpers
@@ -105,9 +100,9 @@ struct StatsPanel: View {
     }
 
     @ViewBuilder
-    private func grid<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+    private func grid<Content: View>(columns: Int = 2, @ViewBuilder content: () -> Content) -> some View {
         LazyVGrid(
-            columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)],
+            columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: columns),
             spacing: 12
         ) {
             content()
@@ -141,11 +136,11 @@ struct StatsPanel: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Session totals")
                 .font(.headline)
+            if let latest {
+                TrafficTotals(traffic: latest.traffic)
+                    .padding(.bottom, 4)
+            }
             HStack(spacing: 24) {
-                FooterStat(
-                    label: "Bandwidth used",
-                    value: latest.map { $0.bytesReceivedTotal.formatted(.byteCount(style: .binary)) } ?? "—"
-                )
                 FooterStat(
                     label: "Packets received",
                     value: latest.map { $0.packetsReceived.formatted(.number) } ?? "—"
@@ -167,16 +162,6 @@ struct StatsPanel: View {
     }
 
     // MARK: - Formatting
-
-    private func formatBitrate(_ bps: Double) -> String {
-        if bps >= 1_000_000 {
-            return String(format: "%.1f Mbps", bps / 1_000_000)
-        } else if bps >= 1_000 {
-            return String(format: "%.0f kbps", bps / 1_000)
-        } else {
-            return String(format: "%.0f bps", bps)
-        }
-    }
 
     private func connectionTypeLabel(_ type: ConnectionType) -> String {
         switch type {
