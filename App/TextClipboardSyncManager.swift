@@ -73,10 +73,10 @@ final class TextClipboardSyncManager {
         wasActive = nowActive
         if nowActive {
             monitor.start()
-            log.info("VNC clipboard sync active")
+            log.info("text clipboard sync active")
         } else {
             monitor.stop()
-            log.info("VNC clipboard sync inactive")
+            log.info("text clipboard sync inactive")
         }
     }
 
