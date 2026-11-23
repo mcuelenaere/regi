@@ -75,7 +75,11 @@ struct ControlPanel: View {
             HStack {
                 Text("Power").font(.headline)
                 Spacer()
-                if let on = session.powerIndicator {
+                if !session.powerBoardResponding {
+                    Label("ATX board not responding", systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else if let on = session.powerIndicator {
                     Label(on ? "On" : "Off", systemImage: on ? "circle.fill" : "circle")
                         .font(.caption)
                         .foregroundStyle(on ? .green : .secondary)

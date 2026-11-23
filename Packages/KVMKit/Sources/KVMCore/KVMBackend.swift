@@ -175,6 +175,9 @@ public protocol KVMBackend: AnyObject {
     // report it (VNC).
     var availablePowerActions: [KVMPowerAction] { get }
     var powerIndicator: Bool? { get }
+    /// False when the power hardware (JetKVM ATX board) has gone quiet, so
+    /// `powerIndicator` can't be trusted. True everywhere else.
+    var powerBoardResponding: Bool { get }
     func sendPowerAction(_ action: KVMPowerAction) async throws
 
     /// Deep link into the device's own browser-based admin UI, or nil when the
@@ -213,6 +216,7 @@ public extension KVMBackend {
     /// Backends without power control (PiKVM) inherit these no-op defaults.
     var availablePowerActions: [KVMPowerAction] { [] }
     var powerIndicator: Bool? { nil }
+    var powerBoardResponding: Bool { true }
     func sendPowerAction(_ action: KVMPowerAction) async throws {}
 
     /// Backends fronting a device with no web UI of its own (VNC) inherit this.
