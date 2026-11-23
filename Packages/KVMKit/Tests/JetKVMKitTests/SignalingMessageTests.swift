@@ -106,6 +106,13 @@ final class SignalingMessageTests: XCTestCase {
         XCTAssertTrue(DeviceMetadata(deviceVersion: "1.0.0-rc1").firmwareIsAtLeast("0.5.9"))
     }
 
+    func testFirmwareIsAtLeastPicksBinaryWheelPath() {
+        // 0.5.11+ takes scroll over HID-RPC 0x04; older firmware over JSON-RPC.
+        XCTAssertTrue(DeviceMetadata(deviceVersion: "0.5.11").firmwareIsAtLeast("0.5.11"))
+        XCTAssertTrue(DeviceMetadata(deviceVersion: "0.5.11-dev202611191401").firmwareIsAtLeast("0.5.11"))
+        XCTAssertFalse(DeviceMetadata(deviceVersion: "0.5.10").firmwareIsAtLeast("0.5.11"))
+    }
+
     func testFirmwareIsAtLeastIgnoresBuildMetadataSuffix() {
         XCTAssertTrue(DeviceMetadata(deviceVersion: "0.5.9+build7").firmwareIsAtLeast("0.5.9"))
         // `ota.go`'s compiled-in default when the Makefile didn't stamp

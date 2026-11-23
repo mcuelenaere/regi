@@ -579,14 +579,28 @@ public final class JetKVMBackend: KVMBackend {
         }
     }
 
-    /// Forward a scroll-wheel event over the JSON-RPC `wheelReport`
-    /// method, the same path the official web UI uses. Upstream firmware
-    /// defines HID-RPC opcode 0x04 but never dispatches it (only a fork
-    /// does), so the binary channel would drop scroll silently.
+    /// Forward a scroll-wheel event. Firmware 0.5.9/0.5.10 only serves the
+    /// JSON-RPC `wheelReport` method (they never dispatch HID-RPC 0x04);
+    /// 0.5.11 (jetkvm/kvm#1462) removed that method and only accepts 0x04 on
+    /// the reliable HID-RPC channel. The path is picked from the version the
+    /// device reported in its metadata; unknown version means JSON-RPC.
+    ///
+    /// Known gap: `0.5.11-dev…` builds made between 2026-11-03 and
+    /// 2026-11-17 report 0.5.11 but still have JSON-RPC only, so scroll fails
+    /// on them. They are dev-channel builds, replaced by the 2026-11-19
+    /// pre-release.
+    ///
     /// Fire-and-forget; failures are logged but not propagated, matching
     /// sendKeypress / sendPointer semantics so call sites don't have to await.
     public func sendWheelReport(wheelY: Int8, wheelX: Int8) {
         if wheelY == 0 && wheelX == 0 { return }
+        if deviceMetadata?.firmwareIsAtLeast("0.5.11") == true {
+            guard hidReady, let webrtc else { return }
+            // The wire payload is [deltaY, deltaX].
+            let message = HIDRPCMessage.wheelReport(deltaY: wheelY, deltaX: wheelX)
+            Task { await webrtc.sendHID(message, on: .reliable) }
+            return
+        }
         guard rpcReady else { return }
         Task { [weak self] in
             do {

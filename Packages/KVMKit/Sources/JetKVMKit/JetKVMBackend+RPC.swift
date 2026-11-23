@@ -77,11 +77,10 @@ extension JetKVMBackend {
 
     // MARK: - Scroll wheel
     //
-    // Scroll lives on the JSON-RPC channel rather than the binary
-    // HID-RPC channel: the server's `wheelReport` method funnels
-    // wheelY/wheelX into the same `gadget.{Abs,Rel}MouseWheelReport`
-    // HID gadget call the keyboard / mouse paths use. Notify (no
-    // response) so we don't pay a round-trip per scroll event.
+    // Legacy scroll path for firmware 0.5.9/0.5.10: the `wheelReport`
+    // method funnels wheelY/wheelX into the HID gadget's wheel report.
+    // 0.5.11 removed it (jetkvm/kvm#1462) in favour of HID-RPC 0x04; see
+    // `sendWheelReport`, which picks the path from the firmware version.
 
     public func sendWheelReportRPC(wheelY: Int8, wheelX: Int8) async throws {
         struct Params: Encodable, Sendable {
