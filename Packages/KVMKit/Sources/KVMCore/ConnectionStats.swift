@@ -81,7 +81,7 @@ public struct ConnectionStats: Sendable, Equatable {
     /// carried. Sums to the whole connection: whatever a backend can't
     /// attribute (transport overhead, unknown channels) lands in `.other`.
     /// Rates come from two samples via `trafficRates(since:)`.
-    public let traffic: [TrafficCategory: ByteCounts]
+    public private(set) var traffic: [TrafficCategory: ByteCounts]
 
     public init(
         timestamp: Date,
@@ -126,6 +126,14 @@ public struct ConnectionStats: Sendable, Equatable {
     /// All traffic, every category summed.
     public var trafficTotal: ByteCounts {
         traffic.values.reduce(ByteCounts(), +)
+    }
+
+    /// A copy with `extra` added to `category`, for traffic that runs
+    /// beside the peer connection (PiKVM's input WebSocket).
+    public func addingTraffic(_ extra: ByteCounts, to category: TrafficCategory) -> ConnectionStats {
+        var copy = self
+        copy.traffic[category, default: ByteCounts()] = copy.traffic[category, default: ByteCounts()] + extra
+        return copy
     }
 
     /// Bits per second each way per category between `earlier` and this
