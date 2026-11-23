@@ -77,6 +77,10 @@ public enum KVMState: Equatable, Sendable {
     /// Password (and, for PiKVM, username) required. The UI collects the
     /// credential and re-runs `connect(...)`.
     case awaitingPassword
+    /// The device signed us out after its idle timeout and we have no
+    /// saved password to sign back in with. Same recovery as
+    /// `.awaitingPassword`; the UI just says why.
+    case sessionExpired
     /// First request to the device failed system trust evaluation and
     /// the user hasn't opted into trusting self-signed certs for this
     /// host. UI prompts; on accept the caller re-runs `connect(...)`

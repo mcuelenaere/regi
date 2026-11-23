@@ -37,7 +37,10 @@ struct ConnectionStatusView: View {
     }
 
     private var isAwaitingPassword: Bool {
-        if case .awaitingPassword = session.state { return true } else { return false }
+        switch session.state {
+        case .awaitingPassword, .sessionExpired: return true
+        default: return false
+        }
     }
 
     /// Reason string from the underlying URLError when the cert chain
@@ -168,7 +171,9 @@ struct ConnectionStatusView: View {
 
     private var passwordSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Device requires a password.")
+            Text(session.state == .sessionExpired
+                 ? "Signed out after inactivity. Sign in again to reconnect."
+                 : "Device requires a password.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
             SecureField("Password", text: $password)

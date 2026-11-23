@@ -96,7 +96,7 @@ public final class HTTPClient: @unchecked Sendable {
         let message = parseErrorMessage(body)
         switch statusCode {
         case 400: return .badRequest(message: message)
-        case 401: return .unauthorized(message: message)
+        case 401: return Self.isSessionExpired(body) ? .sessionExpired : .unauthorized(message: message)
         case 404: return .notFound
         case 429:
             let retryAfter = (headers["Retry-After"] as? String).flatMap(Int.init) ?? 0
@@ -104,6 +104,13 @@ public final class HTTPClient: @unchecked Sendable {
         default:
             return .server(statusCode: statusCode, message: message)
         }
+    }
+
+    /// `{"error":"Session expired","code":"session_expired"}` (JetKVM idle
+    /// timeout, `local_auth_timeout.go`).
+    static func isSessionExpired(_ body: Data) -> Bool {
+        struct Envelope: Decodable { let code: String? }
+        return (try? JSONDecoder().decode(Envelope.self, from: body))?.code == "session_expired"
     }
 
     private func parseErrorMessage(_ body: Data) -> String? {

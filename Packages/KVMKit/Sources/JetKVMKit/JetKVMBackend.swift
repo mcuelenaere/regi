@@ -243,7 +243,7 @@ public final class JetKVMBackend: KVMBackend {
             let device: LocalDevice
             do {
                 device = try await http.getDevice()
-            } catch HTTPClientError.unauthorized {
+            } catch let error as HTTPClientError where error.isAuthFailure {
                 if let password {
                     do {
                         try await http.login(password: password)
@@ -255,7 +255,7 @@ public final class JetKVMBackend: KVMBackend {
                     device = try await http.getDevice()
                 } else {
                     log.info("/device 401 with no password supplied → awaiting password from UI")
-                    state = .awaitingPassword
+                    state = error == .sessionExpired ? .sessionExpired : .awaitingPassword
                     return
                 }
             }
@@ -929,7 +929,7 @@ public final class JetKVMBackend: KVMBackend {
             let device: LocalDevice
             do {
                 device = try await http.getDevice()
-            } catch HTTPClientError.unauthorized {
+            } catch let error as HTTPClientError where error.isAuthFailure {
                 if let password {
                     do {
                         try await http.login(password: password)
@@ -942,7 +942,7 @@ public final class JetKVMBackend: KVMBackend {
                     }
                     device = try await http.getDevice()
                 } else {
-                    state = .awaitingPassword
+                    state = error == .sessionExpired ? .sessionExpired : .awaitingPassword
                     return
                 }
             }
@@ -986,6 +986,22 @@ public final class JetKVMBackend: KVMBackend {
     /// still load-bearing, so the same rule as `connect()` applies.
     private func signalingEnded(_ error: Error) async {
         log.error("signaling pump terminated: \(describe(error), privacy: .public)")
+        if case SignalingError.sessionExpired = error {
+            // The device's idle timeout signed us out and is closing the peer
+            // connection. Don't wait for ICE to fail. With a saved password,
+            // the reconnect cycle logs back in (performReconnect); without
+            // one, stop and say why rather than loop against a 401.
+            log.notice("signed out after inactivity (WS close 4003)")
+            await teardown()
+            if lastPassword != nil {
+                scheduleReconnect()
+            } else {
+                reconnectTask?.cancel()
+                reconnectTask = nil
+                state = .sessionExpired
+            }
+            return
+        }
         if case .connected = state { return }
         if reconnectAttempt > 0 {
             await teardown()
