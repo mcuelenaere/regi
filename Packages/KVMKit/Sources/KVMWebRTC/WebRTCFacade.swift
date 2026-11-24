@@ -45,9 +45,9 @@ public actor WebRTCFacade {
     private var hidrpcUnreliableOrdered: RTCDataChannel?
     private var hidDataChannelDelegate: HIDDataChannelDelegate?
     private var rpcChannel: RTCDataChannel?
-    private var rpcDelegate: RPCDataChannelDelegate?
+    private var rpcDelegate: FrameChannelDelegate?
     private var hostBridgeChannel: RTCDataChannel?
-    private var hostBridgeDelegate: HostBridgeDataChannelDelegate?
+    private var hostBridgeDelegate: FrameChannelDelegate?
 
     public let localIceCandidates: AsyncStream<IceCandidate>
     public let videoTracks: AsyncStream<RTCVideoTrack>
@@ -206,7 +206,8 @@ public actor WebRTCFacade {
         // a separate subscribe.
         let rpcConfig = RTCDataChannelConfiguration()
         rpcConfig.isOrdered = true
-        let rpcDelegate = RPCDataChannelDelegate(
+        let rpcDelegate = FrameChannelDelegate(
+            binary: false,
             framesContinuation: incomingRPCFramesContinuation,
             readyStateContinuation: rpcReadyStateContinuation
         )
@@ -224,7 +225,8 @@ public actor WebRTCFacade {
         // firmware's internal/clipboard/ package.
         let hostBridgeConfig = RTCDataChannelConfiguration()
         hostBridgeConfig.isOrdered = true
-        let hostBridgeDelegate = HostBridgeDataChannelDelegate(
+        let hostBridgeDelegate = FrameChannelDelegate(
+            binary: true,
             framesContinuation: incomingHostBridgeFramesContinuation,
             readyStateContinuation: hostBridgeReadyStateContinuation
         )
@@ -644,22 +646,27 @@ private func stateLabel(_ state: RTCDataChannelState) -> String {
     }
 }
 
-/// Delegate for the `rpc` text channel. Forwards raw frames to the
-/// owning facade's stream; the JSONRPCClient does the parsing.
-private final class RPCDataChannelDelegate: NSObject, RTCDataChannelDelegate, @unchecked Sendable {
+/// Delegate for a channel that carries raw frames of one kind: `rpc`
+/// (text; the JSONRPCClient parses it) or `host_bridge` (binary; the
+/// ClipboardBridge parses it as agent-protocol `Envelope`s). Forwards
+/// frames to the owning facade's stream and drops any of the other kind.
+private final class FrameChannelDelegate: NSObject, RTCDataChannelDelegate, @unchecked Sendable {
+    let binary: Bool
     let framesContinuation: AsyncStream<Data>.Continuation
     let readyStateContinuation: AsyncStream<Bool>.Continuation
 
     init(
+        binary: Bool,
         framesContinuation: AsyncStream<Data>.Continuation,
         readyStateContinuation: AsyncStream<Bool>.Continuation
     ) {
+        self.binary = binary
         self.framesContinuation = framesContinuation
         self.readyStateContinuation = readyStateContinuation
     }
 
     func dataChannelDidChangeState(_ dataChannel: RTCDataChannel) {
-        log.info("rpc channel state=\(stateLabel(dataChannel.readyState), privacy: .public)")
+        log.info("\(dataChannel.label, privacy: .public) channel state=\(stateLabel(dataChannel.readyState), privacy: .public)")
         switch dataChannel.readyState {
         case .open: readyStateContinuation.yield(true)
         case .closing, .closed: readyStateContinuation.yield(false)
@@ -669,10 +676,8 @@ private final class RPCDataChannelDelegate: NSObject, RTCDataChannelDelegate, @u
     }
 
     func dataChannel(_ dataChannel: RTCDataChannel, didReceiveMessageWith buffer: RTCDataBuffer) {
-        // The rpc channel is text-mode; ignore any binary frames the
-        // server might accidentally send.
-        guard !buffer.isBinary else {
-            log.error("rpc channel got binary frame; dropping")
+        guard buffer.isBinary == binary else {
+            log.error("\(dataChannel.label, privacy: .public) channel got \(buffer.isBinary ? "binary" : "text", privacy: .public) frame; dropping")
             return
         }
         framesContinuation.yield(buffer.data)
@@ -743,41 +748,5 @@ public final class DataChannel: NSObject, RTCDataChannelDelegate, @unchecked Sen
     public func dataChannel(_ dataChannel: RTCDataChannel, didReceiveMessageWith buffer: RTCDataBuffer) {
         guard !buffer.isBinary, let text = String(data: buffer.data, encoding: .utf8) else { return }
         continuation.yield(text)
-    }
-}
-
-/// Delegate for the `host_bridge` data channel. Forwards raw binary
-/// frames to the owning facade's stream; the consumer
-/// (`ClipboardBridge`) parses them as agent-protocol `Envelope`s.
-private final class HostBridgeDataChannelDelegate: NSObject, RTCDataChannelDelegate, @unchecked Sendable {
-    let framesContinuation: AsyncStream<Data>.Continuation
-    let readyStateContinuation: AsyncStream<Bool>.Continuation
-
-    init(
-        framesContinuation: AsyncStream<Data>.Continuation,
-        readyStateContinuation: AsyncStream<Bool>.Continuation
-    ) {
-        self.framesContinuation = framesContinuation
-        self.readyStateContinuation = readyStateContinuation
-    }
-
-    func dataChannelDidChangeState(_ dataChannel: RTCDataChannel) {
-        log.info("host_bridge channel state=\(stateLabel(dataChannel.readyState), privacy: .public)")
-        switch dataChannel.readyState {
-        case .open: readyStateContinuation.yield(true)
-        case .closing, .closed: readyStateContinuation.yield(false)
-        case .connecting: break
-        @unknown default: break
-        }
-    }
-
-    func dataChannel(_ dataChannel: RTCDataChannel, didReceiveMessageWith buffer: RTCDataBuffer) {
-        // The host_bridge channel is binary; ignore any text frames.
-        guard buffer.isBinary else {
-            log.error("host_bridge channel got text frame; dropping")
-            return
-        }
-        log.debug("[WEBRTC] host_bridge inbound: \(buffer.data.count, privacy: .public) bytes")
-        framesContinuation.yield(buffer.data)
     }
 }
