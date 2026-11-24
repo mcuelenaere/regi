@@ -51,6 +51,12 @@ final class ClipboardSyncManager {
     private var inboundTask: Task<Void, Never>?
     private var inboundTaskBridgeID: ObjectIdentifier?
 
+    /// "Offer what's on the pasteboard now", at most one in flight: a burst
+    /// of copies collapses into one more offer, so an older snapshot can't
+    /// get the higher `clipboardId`. Exists while sync is active, for one
+    /// bridge.
+    private var offerSender: LatestValueSender<Void>?
+
     init(session: Session, initialEnabled: Bool) {
         self.session = session
         self.enabled = initialEnabled
@@ -99,6 +105,9 @@ final class ClipboardSyncManager {
         inboundTask?.cancel()
         inboundTask = nil
         inboundTaskBridgeID = nil
+        // An offer sender is bound to its bridge.
+        offerSender?.cancel()
+        offerSender = nil
         guard let bridge = currentBridge else { return }
         inboundTaskBridgeID = ObjectIdentifier(bridge)
         inboundTask = Task { @MainActor [weak self, weak bridge] in
@@ -156,6 +165,7 @@ final class ClipboardSyncManager {
         // immediately ship whatever is currently on the pasteboard.
         monitor.start()
         log.debug("[MANAGER] start: pasteboard monitor started")
+        offerSender = LatestValueSender<Void> { [weak bridge] in await bridge?.sendOffer() }
 
         // The inbound-offers consumer task is owned by
         // `ensureInboundConsumer()` (per-bridge lifetime). Don't
@@ -178,6 +188,8 @@ final class ClipboardSyncManager {
     private func stop() {
         log.debug("[MANAGER] stop: stopping pasteboard monitor")
         monitor.stop()
+        offerSender?.cancel()
+        offerSender = nil
         // Don't cancel inboundTask — see ensureInboundConsumer().
         // applyInboundOffer's isActive guard drops anything that
         // arrives while we're inactive.
@@ -194,9 +206,7 @@ final class ClipboardSyncManager {
     private func checkLocalClipboard() {
         guard isActive else { return }
         log.debug("[MANAGER] checkLocalClipboard: dispatching sendOffer")
-        Task { @MainActor [weak self] in
-            await self?.session.clipboardBridge?.sendOffer()
-        }
+        offerSender?.send(())
     }
 
     // MARK: - Inbound (host → local)
