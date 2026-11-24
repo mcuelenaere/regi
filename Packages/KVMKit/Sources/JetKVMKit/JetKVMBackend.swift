@@ -173,6 +173,10 @@ public final class JetKVMBackend: KVMBackend {
     /// unpaused — if the window is still hidden we have to say it
     /// again. Kept across teardown for exactly that reason.
     private var desiredVideoPaused = false
+    /// Pushes `desiredVideoPaused` to the device, one call at a time with
+    /// only the newest value kept (see `LatestValueSender`). Exists while
+    /// the RPC channel is ready.
+    private var videoPauseSender: LatestValueSender<Bool>?
     private var modifierTracker = ModifierTracker()
     private var pointerThrottler = InputThrottler(interval: .milliseconds(8))
     /// Stamped before the `Task` hop so the wire trace can prove whether the
@@ -570,15 +574,7 @@ public final class JetKVMBackend: KVMBackend {
     /// without an RPC channel — the state is latched, and the rpcReady
     /// pump re-asserts it when one appears.
     private func sendDesiredVideoPausedState() {
-        guard rpcReady else { return }
-        let paused = desiredVideoPaused
-        Task { [weak self] in
-            do {
-                try await self?.setVideoStreamPausedRPC(paused)
-            } catch {
-                log.error("setVideoStreamPaused(\(paused, privacy: .public)) failed: \(describe(error), privacy: .public)")
-            }
-        }
+        videoPauseSender?.send(desiredVideoPaused)
     }
 
     /// Forward a scroll-wheel event. Firmware 0.5.9/0.5.10 only serves the
@@ -698,17 +694,27 @@ public final class JetKVMBackend: KVMBackend {
         //    has something to bind to before any server events arrive.
         pumpTasks.append(Task { @MainActor [weak self] in
             for await ready in await webrtc.rpcReadyState {
-                self?.rpcReady = ready
+                guard let self else { return }
+                self.rpcReady = ready
+                self.videoPauseSender?.cancel()
+                self.videoPauseSender = nil
                 if ready {
-                    // Only a held pause needs restating: a fresh session
-                    // starts unpaused, so sending `paused: false` here
-                    // would just make the device restart an encoder it
-                    // already started.
-                    if self?.desiredVideoPaused == true {
-                        log.info("rpc ready while window still hidden — re-asserting video pause")
-                        self?.sendDesiredVideoPausedState()
+                    self.videoPauseSender = LatestValueSender<Bool> { [weak self] paused in
+                        do {
+                            try await self?.setVideoStreamPausedRPC(paused)
+                        } catch {
+                            log.error("setVideoStreamPaused(\(paused, privacy: .public)) failed: \(describe(error), privacy: .public)")
+                        }
                     }
-                    await self?.refreshControlState()
+                    // A fresh session starts unpaused, so only a held pause
+                    // needs restating: sending `paused: false` here would
+                    // just make the device restart an encoder it already
+                    // started.
+                    if self.desiredVideoPaused {
+                        log.info("rpc ready while window still hidden — re-asserting video pause")
+                        self.sendDesiredVideoPausedState()
+                    }
+                    await self.refreshControlState()
                 }
             }
         })
@@ -1054,6 +1060,8 @@ public final class JetKVMBackend: KVMBackend {
         hasReceivedFirstFrame = false
         hidReady = false
         rpcReady = false
+        videoPauseSender?.cancel()
+        videoPauseSender = nil
         videoState = nil
         usbState = nil
         atxState = nil
