@@ -105,12 +105,10 @@ public actor WebRTCFacade {
         (stats, statsContinuation) = AsyncStream.makeStream()
     }
 
-    /// Create the peer connection, add a single recvonly video transceiver,
-    /// and produce an offer. Returns the offer in the wire form expected by
-    /// the JetKVM signaling protocol: `base64(JSON({type:"offer", sdp:...}))`.
-    public func start(iceServers: [String] = []) async throws -> String {
-        guard peerConnection == nil else { throw WebRTCFacadeError.alreadyStarted }
-
+    /// Create the peer connection with its delegate and keep both on the
+    /// facade. Shared by the offerer (`start`) and the answerer
+    /// (`startAnswerer`), which differ only in what they do next.
+    private func makePeerConnection(iceServers: [String]) throws -> RTCPeerConnection {
         let config = RTCConfiguration()
         config.iceServers = iceServers.isEmpty ? [] : [RTCIceServer(urlStrings: iceServers)]
         config.sdpSemantics = .unifiedPlan
@@ -138,6 +136,16 @@ public actor WebRTCFacade {
             throw WebRTCFacadeError.peerConnectionCreationFailed
         }
         self.peerConnection = pc
+        return pc
+    }
+
+    /// Create the peer connection, add a single recvonly video transceiver,
+    /// and produce an offer. Returns the offer in the wire form expected by
+    /// the JetKVM signaling protocol: `base64(JSON({type:"offer", sdp:...}))`.
+    public func start(iceServers: [String] = []) async throws -> String {
+        guard peerConnection == nil else { throw WebRTCFacadeError.alreadyStarted }
+
+        let pc = try makePeerConnection(iceServers: iceServers)
 
         // Single recvonly video transceiver — server adds its track to it.
         let transceiverInit = RTCRtpTransceiverInit()
@@ -252,30 +260,7 @@ public actor WebRTCFacade {
     public func startAnswerer(offerSDP: String, iceServers: [String] = []) async throws -> String {
         guard peerConnection == nil else { throw WebRTCFacadeError.alreadyStarted }
 
-        let config = RTCConfiguration()
-        config.iceServers = iceServers.isEmpty ? [] : [RTCIceServer(urlStrings: iceServers)]
-        config.sdpSemantics = .unifiedPlan
-        config.bundlePolicy = .maxBundle
-        config.rtcpMuxPolicy = .require
-        config.continualGatheringPolicy = .gatherContinually
-
-        let constraints = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
-
-        let delegate = PeerDelegate(
-            iceContinuation: localIceCandidatesContinuation,
-            trackContinuation: videoTracksContinuation,
-            stateContinuation: connectionStateContinuation
-        )
-        self.delegate = delegate
-
-        guard let pc = factory.peerConnection(
-            with: config,
-            constraints: constraints,
-            delegate: delegate
-        ) else {
-            throw WebRTCFacadeError.peerConnectionCreationFailed
-        }
-        self.peerConnection = pc
+        let pc = try makePeerConnection(iceServers: iceServers)
 
         // Apply the remote offer first. In unified-plan this creates the
         // recvonly video transceiver from the offer's m-line, so unlike
