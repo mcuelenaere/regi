@@ -10,12 +10,7 @@ private let log = Logger(subsystem: "app.regi.mac", category: "webrtc")
 public enum WebRTCFacadeError: Error, Sendable {
     case peerConnectionCreationFailed
     case dataChannelCreationFailed(label: String)
-    case offerCreationFailed(String)
-    case answerCreationFailed(String)
     case sessionDescriptionCodecFailure(String)
-    case setLocalDescriptionFailed(String)
-    case setRemoteDescriptionFailed(String)
-    case addIceCandidateFailed(String)
     case alreadyStarted
     case notStarted
 }
@@ -257,10 +252,10 @@ public actor WebRTCFacade {
             mandatoryConstraints: ["OfferToReceiveVideo": "true"],
             optionalConstraints: nil
         )
-        let offer = try await Self.createOffer(pc: pc, constraints: offerConstraints)
+        let offer = try await pc.offer(for: offerConstraints)
 
         // Set local description to commit the offer.
-        try await Self.setLocalDescription(pc: pc, sdp: offer)
+        try await pc.setLocalDescription(offer)
 
         // Encode for the wire.
         return try Self.encodeSessionDescription(offer)
@@ -311,7 +306,7 @@ public actor WebRTCFacade {
         // the offerer path we don't add a transceiver or any data
         // channels.
         let offer = RTCSessionDescription(type: .offer, sdp: offerSDP)
-        try await Self.setRemoteDescription(pc: pc, sdp: offer)
+        try await pc.setRemoteDescription(offer)
 
         // Same connection-quality poller as the offerer path.
         statsTask = Task { [weak self] in
@@ -325,8 +320,8 @@ public actor WebRTCFacade {
             mandatoryConstraints: ["OfferToReceiveVideo": "true"],
             optionalConstraints: nil
         )
-        let answer = try await Self.createAnswer(pc: pc, constraints: answerConstraints)
-        try await Self.setLocalDescription(pc: pc, sdp: answer)
+        let answer = try await pc.answer(for: answerConstraints)
+        try await pc.setLocalDescription(answer)
         return answer.sdp
     }
 
@@ -335,7 +330,7 @@ public actor WebRTCFacade {
     public func setRemoteAnswer(sdpBase64: String) async throws {
         guard let pc = peerConnection else { throw WebRTCFacadeError.notStarted }
         let answer = try Self.decodeSessionDescription(sdpBase64)
-        try await Self.setRemoteDescription(pc: pc, sdp: answer)
+        try await pc.setRemoteDescription(answer)
     }
 
     /// Pass an ICE candidate received from the server into the peer
@@ -347,15 +342,7 @@ public actor WebRTCFacade {
             sdpMLineIndex: Int32(candidate.sdpMLineIndex ?? 0),
             sdpMid: candidate.sdpMid
         )
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-            pc.add(rtcCandidate) { error in
-                if let error {
-                    cont.resume(throwing: WebRTCFacadeError.addIceCandidateFailed(String(describing: error)))
-                } else {
-                    cont.resume()
-                }
-            }
-        }
+        try await pc.add(rtcCandidate)
     }
 
     /// Input frames libwebrtc refused to queue, per connection. A refusal is a
@@ -496,72 +483,6 @@ public actor WebRTCFacade {
         return RTCSessionDescription(type: type, sdp: json.sdp)
     }
 
-    // MARK: - Async wrappers around RTCPeerConnection callbacks
-
-    private static func createOffer(
-        pc: RTCPeerConnection,
-        constraints: RTCMediaConstraints
-    ) async throws -> RTCSessionDescription {
-        try await withCheckedThrowingContinuation { cont in
-            pc.offer(for: constraints) { sdp, error in
-                if let error {
-                    cont.resume(throwing: WebRTCFacadeError.offerCreationFailed(String(describing: error)))
-                } else if let sdp {
-                    cont.resume(returning: sdp)
-                } else {
-                    cont.resume(throwing: WebRTCFacadeError.offerCreationFailed("no sdp and no error"))
-                }
-            }
-        }
-    }
-
-    private static func createAnswer(
-        pc: RTCPeerConnection,
-        constraints: RTCMediaConstraints
-    ) async throws -> RTCSessionDescription {
-        try await withCheckedThrowingContinuation { cont in
-            pc.answer(for: constraints) { sdp, error in
-                if let error {
-                    cont.resume(throwing: WebRTCFacadeError.answerCreationFailed(String(describing: error)))
-                } else if let sdp {
-                    cont.resume(returning: sdp)
-                } else {
-                    cont.resume(throwing: WebRTCFacadeError.answerCreationFailed("no sdp and no error"))
-                }
-            }
-        }
-    }
-
-    private static func setLocalDescription(
-        pc: RTCPeerConnection,
-        sdp: RTCSessionDescription
-    ) async throws {
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-            pc.setLocalDescription(sdp) { error in
-                if let error {
-                    cont.resume(throwing: WebRTCFacadeError.setLocalDescriptionFailed(String(describing: error)))
-                } else {
-                    cont.resume()
-                }
-            }
-        }
-    }
-
-    private static func setRemoteDescription(
-        pc: RTCPeerConnection,
-        sdp: RTCSessionDescription
-    ) async throws {
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-            pc.setRemoteDescription(sdp) { error in
-                if let error {
-                    cont.resume(throwing: WebRTCFacadeError.setRemoteDescriptionFailed(String(describing: error)))
-                } else {
-                    cont.resume()
-                }
-            }
-        }
-    }
-
     /// Background loop that walks `RTCPeerConnection.statistics`
     /// every second and yields a `ConnectionStats` on the stream.
     /// Cancellation (via Task.cancel) ends the loop and finishes
@@ -573,11 +494,7 @@ public actor WebRTCFacade {
         guard let continuation else { return }
         var parser = WebRTCStatsParser()
         while !Task.isCancelled {
-            let report: RTCStatisticsReport = await withCheckedContinuation { cont in
-                peerConnection.statistics { report in
-                    cont.resume(returning: report)
-                }
-            }
+            let report = await peerConnection.statistics()
             let sample = parser.parse(report)
             continuation.yield(sample)
             try? await Task.sleep(for: .seconds(1))
