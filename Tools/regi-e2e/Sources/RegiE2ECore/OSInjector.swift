@@ -187,19 +187,4 @@ public final class OSInjector {
         e.flags = flags
         e.post(tap: .cghidEventTap)
     }
-
-    // MARK: - Modifier keycodes and their device-side flag bits
-    //
-    // The device-side bits are what distinguish left from right; CGEventFlags'
-    // documented masks collapse the sides.
-    public enum Modifier {
-        public static let leftShift: (CGKeyCode, UInt64)    = (0x38, 0x2)
-        public static let rightShift: (CGKeyCode, UInt64)   = (0x3C, 0x4)
-        public static let leftControl: (CGKeyCode, UInt64)  = (0x3B, 0x1)
-        public static let rightControl: (CGKeyCode, UInt64) = (0x3E, 0x2000)
-        public static let leftOption: (CGKeyCode, UInt64)   = (0x3A, 0x20)
-        public static let rightOption: (CGKeyCode, UInt64)  = (0x3D, 0x40)
-        public static let leftCommand: (CGKeyCode, UInt64)  = (0x37, 0x8)
-        public static let rightCommand: (CGKeyCode, UInt64) = (0x36, 0x10)
-    }
 }

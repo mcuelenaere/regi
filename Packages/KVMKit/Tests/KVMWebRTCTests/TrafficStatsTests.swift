@@ -54,7 +54,6 @@ final class TrafficStatsTests: XCTestCase {
         let rates = b.trafficRates(since: a)
         XCTAssertEqual(rates[.video]?.received, 8000)
         XCTAssertEqual(rates[.input]?.sent, 1000)
-        XCTAssertEqual(b.trafficTotal, ByteCounts(received: 3000, sent: 250))
 
         // Side-channel bytes (PiKVM's WebSocket) add to a category,
         // existing or not, without touching the others.

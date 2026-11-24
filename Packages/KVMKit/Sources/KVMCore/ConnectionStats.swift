@@ -123,11 +123,6 @@ public struct ConnectionStats: Sendable, Equatable {
         return Double(packetsLost) / Double(total) * 100
     }
 
-    /// All traffic, every category summed.
-    public var trafficTotal: ByteCounts {
-        traffic.values.reduce(ByteCounts(), +)
-    }
-
     /// A copy with `extra` added to `category`, for traffic that runs
     /// beside the peer connection (PiKVM's input WebSocket).
     public func addingTraffic(_ extra: ByteCounts, to category: TrafficCategory) -> ConnectionStats {
