@@ -53,8 +53,11 @@ public enum HIDRPCMessage: Sendable, Equatable {
         case .handshake(let version):
             return Data([0x01, version])
         case .pointerReport(let x, let y, let buttons):
-            return Data([0x03]) + withUnsafeBytes(of: x.bigEndian, Data.init)
-                + withUnsafeBytes(of: y.bigEndian, Data.init) + [buttons]
+            var out = Data([0x03])
+            withUnsafeBytes(of: x.bigEndian) { out.append(contentsOf: $0) }
+            withUnsafeBytes(of: y.bigEndian) { out.append(contentsOf: $0) }
+            out.append(buttons)
+            return out
         case .wheelReport(let deltaY, let deltaX):
             return Data([0x04, UInt8(bitPattern: deltaY), UInt8(bitPattern: deltaX)])
         case .keypressReport(let key, let pressed):
