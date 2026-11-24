@@ -94,41 +94,15 @@ public actor WebRTCFacade {
             decoderFactory: videoDecoderFactory
         )
 
-        var iceCont: AsyncStream<IceCandidate>.Continuation!
-        self.localIceCandidates = AsyncStream<IceCandidate> { iceCont = $0 }
-        self.localIceCandidatesContinuation = iceCont
-
-        var trackCont: AsyncStream<RTCVideoTrack>.Continuation!
-        self.videoTracks = AsyncStream<RTCVideoTrack> { trackCont = $0 }
-        self.videoTracksContinuation = trackCont
-
-        var stateCont: AsyncStream<WebRTCConnectionState>.Continuation!
-        self.connectionState = AsyncStream<WebRTCConnectionState> { stateCont = $0 }
-        self.connectionStateContinuation = stateCont
-
-        var readyCont: AsyncStream<Bool>.Continuation!
-        self.hidReadyState = AsyncStream<Bool> { readyCont = $0 }
-        self.hidReadyStateContinuation = readyCont
-
-        var rpcFramesCont: AsyncStream<Data>.Continuation!
-        self.incomingRPCFrames = AsyncStream<Data> { rpcFramesCont = $0 }
-        self.incomingRPCFramesContinuation = rpcFramesCont
-
-        var rpcReadyCont: AsyncStream<Bool>.Continuation!
-        self.rpcReadyState = AsyncStream<Bool> { rpcReadyCont = $0 }
-        self.rpcReadyStateContinuation = rpcReadyCont
-
-        var hostBridgeFramesCont: AsyncStream<Data>.Continuation!
-        self.incomingHostBridgeFrames = AsyncStream<Data> { hostBridgeFramesCont = $0 }
-        self.incomingHostBridgeFramesContinuation = hostBridgeFramesCont
-
-        var hostBridgeReadyCont: AsyncStream<Bool>.Continuation!
-        self.hostBridgeReadyState = AsyncStream<Bool> { hostBridgeReadyCont = $0 }
-        self.hostBridgeReadyStateContinuation = hostBridgeReadyCont
-
-        var statsCont: AsyncStream<ConnectionStats>.Continuation!
-        self.stats = AsyncStream<ConnectionStats> { statsCont = $0 }
-        self.statsContinuation = statsCont
+        (localIceCandidates, localIceCandidatesContinuation) = AsyncStream.makeStream()
+        (videoTracks, videoTracksContinuation) = AsyncStream.makeStream()
+        (connectionState, connectionStateContinuation) = AsyncStream.makeStream()
+        (hidReadyState, hidReadyStateContinuation) = AsyncStream.makeStream()
+        (incomingRPCFrames, incomingRPCFramesContinuation) = AsyncStream.makeStream()
+        (rpcReadyState, rpcReadyStateContinuation) = AsyncStream.makeStream()
+        (incomingHostBridgeFrames, incomingHostBridgeFramesContinuation) = AsyncStream.makeStream()
+        (hostBridgeReadyState, hostBridgeReadyStateContinuation) = AsyncStream.makeStream()
+        (stats, statsContinuation) = AsyncStream.makeStream()
     }
 
     /// Create the peer connection, add a single recvonly video transceiver,

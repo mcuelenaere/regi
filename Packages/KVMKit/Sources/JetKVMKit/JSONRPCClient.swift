@@ -65,9 +65,7 @@ public actor JSONRPCClient {
 
     public init(send: @escaping TextFrameSender) {
         self.send = send
-        var cont: AsyncStream<JSONRPCNotification>.Continuation!
-        self.notifications = AsyncStream<JSONRPCNotification> { cont = $0 }
-        self.notificationsContinuation = cont
+        (notifications, notificationsContinuation) = AsyncStream.makeStream()
     }
 
     /// Send a request and decode the typed result.
