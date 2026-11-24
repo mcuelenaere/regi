@@ -6,7 +6,7 @@ import Foundation
 ///
 /// Intended for the absolute pointer (`PointerReport`) path: at the
 /// device's native NSEvent rate we'd send hundreds of frames per
-/// second over the unreliable channel; capping to ~120 Hz keeps the
+/// second over the HID channel; capping to ~120 Hz keeps the
 /// channel from queueing stale-by-the-time-they-arrive coordinates.
 /// Per the plan: under congestion, dropping is better than queuing.
 ///
