@@ -39,6 +39,9 @@ public final class PiKVMBackend: KVMBackend {
     private var http: PiKVMHTTPClient?
     private var janus: JanusSignalingClient?
     private var events: PiKVMEventClient?
+    /// Every keyboard/mouse event goes through this, so the WebSocket sees
+    /// them in the order AppKit delivered them.
+    private var inputQueue: InputQueue<Data>?
     private var webrtc: WebRTCFacade?
     private var pumpTasks: [Task<Void, Never>] = []
 
@@ -102,6 +105,7 @@ public final class PiKVMBackend: KVMBackend {
             state = .connecting(.signaling)
             let events = PiKVMEventClient(endpoint: endpoint, cookieStorage: http.cookieStorage)
             self.events = events
+            inputQueue = InputQueue { await events.send($0) }
             try await events.connect()
 
             // 3. Janus: session + plugin, then watch for the video offer.
@@ -315,8 +319,8 @@ public final class PiKVMBackend: KVMBackend {
     }
 
     private func emit(_ data: Data?) {
-        guard let data, let events else { return }
-        Task { await events.send(data) }
+        guard let data else { return }
+        inputQueue?.enqueue(data)
     }
 
     private var isConnected: Bool {
@@ -334,6 +338,8 @@ public final class PiKVMBackend: KVMBackend {
         pumpTasks = []
         if let webrtc { await webrtc.close() }
         if let janus { await janus.disconnect() }
+        inputQueue?.cancel()
+        inputQueue = nil
         if let events { await events.disconnect() }
         webrtc = nil
         janus = nil

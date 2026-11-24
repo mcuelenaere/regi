@@ -182,6 +182,18 @@ public final class JetKVMBackend: KVMBackend {
     /// Stamped before the `Task` hop so the wire trace can prove whether the
     /// hop preserves order. Diagnostic only.
     private var outboundSeq: UInt64 = 0
+
+    /// One frame for the reliable HID-RPC channel. `seq` is stamped when the
+    /// frame is enqueued (0 = untraced), so the `wire seq` trace at the
+    /// moment of sending shows whether the queue kept the order.
+    private struct HIDFrame: Sendable {
+        let message: HIDRPCMessage
+        var seq: UInt64 = 0
+    }
+    /// Every frame on the reliable HID-RPC channel (keys, modifiers, pointer,
+    /// relative mouse, wheel, keep-alive) goes through this one queue: they
+    /// share a channel, so they must share an order.
+    private var hidQueue: InputQueue<HIDFrame>?
     /// USB-HID Usage IDs of non-modifier keys we believe are held on
     /// the host. Combined with `modifierTracker.currentState` it tells
     /// the keep-alive loop whether to fire a heartbeat.
@@ -345,7 +357,7 @@ public final class JetKVMBackend: KVMBackend {
     /// Drops if the HID channel isn't ready yet, or if the keyCode
     /// isn't in the keymap.
     public func sendKeypress(virtualKeyCode keyCode: UInt16, pressed: Bool, source: KeyEventSource) {
-        guard hidReady, let webrtc else { return }
+        guard hidReady else { return }
         guard let usbHID = KeyMap.virtualKeyToHIDUsageID[keyCode] else { return }
 
         // Cmd-shortcut path, AppKit only: AppKit doesn't deliver
@@ -367,12 +379,9 @@ public final class JetKVMBackend: KVMBackend {
         if pressed,
            source.needsSynthesizedCmdRelease,
            !ModifierBits.anyMeta.intersection(modifierTracker.currentState).isEmpty {
-            let down = HIDRPCMessage.keypressReport(key: usbHID, pressed: true)
-            let up = HIDRPCMessage.keypressReport(key: usbHID, pressed: false)
-            Task {
-                await webrtc.sendHID(down, on: .reliable)
-                await webrtc.sendHID(up, on: .reliable)
-            }
+            // Consecutive enqueues are contiguous: nothing can slip in between.
+            hidQueue?.enqueue(HIDFrame(message: .keypressReport(key: usbHID, pressed: true)))
+            hidQueue?.enqueue(HIDFrame(message: .keypressReport(key: usbHID, pressed: false)))
             return
         }
 
@@ -381,8 +390,7 @@ public final class JetKVMBackend: KVMBackend {
         } else {
             heldNonModifierKeys.remove(usbHID)
         }
-        let message = HIDRPCMessage.keypressReport(key: usbHID, pressed: pressed)
-        Task { await webrtc.sendHID(message, on: .reliable) }
+        hidQueue?.enqueue(HIDFrame(message: .keypressReport(key: usbHID, pressed: pressed)))
     }
 
     /// Forward a `flagsChanged` event from the KVM view. Two distinct
@@ -400,7 +408,7 @@ public final class JetKVMBackend: KVMBackend {
     ///   press + release back-to-back. Looking up via `KeyMap`
     ///   (kVK_CapsLock 0x39 → USB HID 0x39).
     public func handleFlagsChanged(virtualKeyCode keyCode: UInt16, rawFlags: UInt64, source: KeyEventSource) {
-        guard hidReady, let webrtc else { return }
+        guard hidReady else { return }
 
         if keyCode == 0x39, let usbHID = KeyMap.virtualKeyToHIDUsageID[keyCode] {
             // Caps Lock toggle. macOS hosts apply a debounce/minimum-hold
@@ -410,20 +418,22 @@ public final class JetKVMBackend: KVMBackend {
             // tested without being noticeably laggy. Linux/Windows hosts
             // toggle on the release regardless of duration, so this is
             // safe across hosts.
-            let down = HIDRPCMessage.keypressReport(key: usbHID, pressed: true)
-            let up = HIDRPCMessage.keypressReport(key: usbHID, pressed: false)
-            Task {
-                await webrtc.sendHID(down, on: .reliable)
+            // The release is enqueued after the wait, not queued behind a
+            // sleeping consumer, so keys typed during the 200 ms go out
+            // first (as on a physical keyboard). `queue` is captured weakly
+            // so a release landing after teardown or reconnect is dropped
+            // instead of reaching a new session's queue.
+            hidQueue?.enqueue(HIDFrame(message: .keypressReport(key: usbHID, pressed: true)))
+            Task { [weak queue = hidQueue] in
                 try? await Task.sleep(for: .milliseconds(200))
-                await webrtc.sendHID(up, on: .reliable)
+                queue?.enqueue(HIDFrame(message: .keypressReport(key: usbHID, pressed: false)))
             }
             return
         }
 
         guard let transition = modifierTracker.handle(modifierKeyCode: keyCode, rawFlags: rawFlags) else { return }
         guard let usbHID = transition.modifier.usbHIDUsageID else { return }
-        let message = HIDRPCMessage.keypressReport(key: usbHID, pressed: transition.pressed)
-        Task { await webrtc.sendHID(message, on: .reliable) }
+        hidQueue?.enqueue(HIDFrame(message: .keypressReport(key: usbHID, pressed: transition.pressed)))
 
         // Same AppKit-only caveat as the Cmd path in `sendKeypress`:
         // AppKit swallows the keyUp for Cmd+<letter> shortcuts that
@@ -446,11 +456,8 @@ public final class JetKVMBackend: KVMBackend {
            !heldNonModifierKeys.isEmpty {
             let stuck = heldNonModifierKeys
             heldNonModifierKeys.removeAll()
-            Task {
-                for key in stuck {
-                    let release = HIDRPCMessage.keypressReport(key: key, pressed: false)
-                    await webrtc.sendHID(release, on: .reliable)
-                }
+            for key in stuck {   // consecutive enqueues stay contiguous
+                hidQueue?.enqueue(HIDFrame(message: .keypressReport(key: key, pressed: false)))
             }
         }
     }
@@ -460,7 +467,7 @@ public final class JetKVMBackend: KVMBackend {
     /// our app lost focus mid-keystroke) so the host doesn't end up
     /// with stuck modifiers we'll never explicitly release.
     public func releaseAllHeldModifiers() {
-        guard let webrtc else {
+        guard webrtc != nil else {
             modifierTracker.reset()
             heldNonModifierKeys.removeAll()
             return
@@ -472,9 +479,8 @@ public final class JetKVMBackend: KVMBackend {
         let held = modifierTracker.currentState
         for bit in allBits where held.contains(bit) {
             guard let usbHID = bit.usbHIDUsageID else { continue }
-            let message = HIDRPCMessage.keypressReport(key: usbHID, pressed: false)
             if hidReady {
-                Task { await webrtc.sendHID(message, on: .reliable) }
+                hidQueue?.enqueue(HIDFrame(message: .keypressReport(key: usbHID, pressed: false)))
             }
         }
         modifierTracker.reset()
@@ -531,11 +537,9 @@ public final class JetKVMBackend: KVMBackend {
     /// 120 Hz throttle above — roughly 1 KB/s — and a lost frame now costs a
     /// brief cursor stutter while SCTP retransmits instead of a wrong click.
     private func sendPointerReport(x: Int32, y: Int32, buttons: MouseButtons) {
-        guard let webrtc else { return }
         let message = HIDRPCMessage.pointerReport(x: x, y: y, buttons: buttons.rawValue)
         outboundSeq &+= 1
-        let seq = outboundSeq
-        Task { await webrtc.sendHID(message, on: .reliable, seq: seq) }
+        hidQueue?.enqueue(HIDFrame(message: message, seq: outboundSeq))
     }
 
     /// Forward a relative-mouse event when pointer-lock is engaged.
@@ -544,9 +548,8 @@ public final class JetKVMBackend: KVMBackend {
     /// current pressed-buttons bitmask (0 for pure motion, the
     /// active button bit for drag, 0 again for release).
     public func sendMouseRelative(dx: Int8, dy: Int8, buttons: MouseButtons) {
-        guard hidReady, let webrtc else { return }
-        let message = HIDRPCMessage.mouseReport(dx: dx, dy: dy, buttons: buttons.rawValue)
-        Task { await webrtc.sendHID(message, on: .reliable) }
+        guard hidReady else { return }
+        hidQueue?.enqueue(HIDFrame(message: .mouseReport(dx: dx, dy: dy, buttons: buttons.rawValue)))
     }
 
     /// Tell the device to stop its video encoder. RTP drops to
@@ -588,15 +591,20 @@ public final class JetKVMBackend: KVMBackend {
     /// on them. They are dev-channel builds, replaced by the 2026-11-19
     /// pre-release.
     ///
+    /// The JSON-RPC branch (< 0.5.11) bypasses `hidQueue` on purpose: it can't
+    /// be ordered (`JSONRPCClient.call` uses a Task per request, 0.5.10 runs
+    /// each message in its own goroutine, and it's another data channel).
+    /// Serializing costs a round trip per notch; reordered notches almost
+    /// always point the same way. 0.5.11+ goes through the queue.
+    ///
     /// Fire-and-forget; failures are logged but not propagated, matching
     /// sendKeypress / sendPointer semantics so call sites don't have to await.
     public func sendWheelReport(wheelY: Int8, wheelX: Int8) {
         if wheelY == 0 && wheelX == 0 { return }
         if deviceMetadata?.firmwareIsAtLeast("0.5.11") == true {
-            guard hidReady, let webrtc else { return }
+            guard hidReady else { return }
             // The wire payload is [deltaY, deltaX].
-            let message = HIDRPCMessage.wheelReport(deltaY: wheelY, deltaX: wheelX)
-            Task { await webrtc.sendHID(message, on: .reliable) }
+            hidQueue?.enqueue(HIDFrame(message: .wheelReport(deltaY: wheelY, deltaX: wheelX)))
             return
         }
         guard rpcReady else { return }
@@ -617,6 +625,10 @@ public final class JetKVMBackend: KVMBackend {
         incoming: AsyncThrowingStream<SignalingMessage, Error>,
         rpc: JSONRPCClient
     ) {
+        hidQueue?.cancel()
+        hidQueue = InputQueue { [weak webrtc] frame in
+            await webrtc?.sendHID(frame.message, on: .reliable, seq: frame.seq)
+        }
         // 0. Stand up the clipboard bridge. Lives for the session
         //    lifetime; the App layer wires a NSPasteboard-backed
         //    `ClipboardSource` into `bridge.source` and consumes
@@ -762,8 +774,8 @@ public final class JetKVMBackend: KVMBackend {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(50))
                 guard let self else { return }
-                if self.anyKeyHeld, self.hidReady, let webrtc = self.webrtc {
-                    await webrtc.sendHID(.keypressKeepAliveReport, on: .reliable)
+                if self.anyKeyHeld, self.hidReady {
+                    self.hidQueue?.enqueue(HIDFrame(message: .keypressKeepAliveReport))
                 }
             }
         })
@@ -1041,6 +1053,8 @@ public final class JetKVMBackend: KVMBackend {
     private func teardown() async {
         for task in pumpTasks { task.cancel() }
         pumpTasks = []
+        hidQueue?.cancel()
+        hidQueue = nil
         if let rpc = self.rpc {
             await rpc.close()
         }
