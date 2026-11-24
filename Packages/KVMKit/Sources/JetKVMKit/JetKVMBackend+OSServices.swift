@@ -75,7 +75,7 @@ extension JetKVMBackend {
         // Noted before the answer, so a read that crosses this write can't
         // bring the host's previous text back over the one just copied.
         lastGuestClipboardText = text
-        guestClipboardSender?.send(text)
+        guestClipboardSender?.enqueue(text)
     }
 
     /// One push from `guestClipboardSender`. A failure puts the note back

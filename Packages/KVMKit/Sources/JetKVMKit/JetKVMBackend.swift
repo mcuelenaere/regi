@@ -178,13 +178,13 @@ public final class JetKVMBackend: KVMBackend {
     /// again. Kept across teardown for exactly that reason.
     private var desiredVideoPaused = false
     /// Pushes `desiredVideoPaused` to the device, one call at a time with
-    /// only the newest value kept (see `LatestValueSender`). Exists while
+    /// only the newest value kept (`InputQueue(latestOnly:)`). Exists while
     /// the RPC channel is ready.
-    private var videoPauseSender: LatestValueSender<Bool>?
+    private var videoPauseSender: InputQueue<Bool>?
     /// Pushes local copies to the host's OS Services clipboard, one call at
     /// a time with only the newest kept, so two quick copies can't land out
     /// of order. Exists while the RPC channel is ready.
-    var guestClipboardSender: LatestValueSender<String>?
+    var guestClipboardSender: InputQueue<String>?
     private var modifierTracker = ModifierTracker()
     private var pointerThrottler = InputThrottler(interval: .milliseconds(8))
     /// Stamped before the `Task` hop so the wire trace can prove whether the
@@ -585,7 +585,7 @@ public final class JetKVMBackend: KVMBackend {
     /// without an RPC channel — the state is latched, and the rpcReady
     /// pump re-asserts it when one appears.
     private func sendDesiredVideoPausedState() {
-        videoPauseSender?.send(desiredVideoPaused)
+        videoPauseSender?.enqueue(desiredVideoPaused)
     }
 
     /// Forward a scroll-wheel event. Firmware 0.5.9/0.5.10 only serves the
@@ -721,10 +721,10 @@ public final class JetKVMBackend: KVMBackend {
                 self.guestClipboardSender?.cancel()
                 self.guestClipboardSender = nil
                 if ready {
-                    self.guestClipboardSender = LatestValueSender<String> { [weak self] text in
+                    self.guestClipboardSender = InputQueue<String>(latestOnly: true) { [weak self] text in
                         await self?.pushGuestClipboard(text)
                     }
-                    self.videoPauseSender = LatestValueSender<Bool> { [weak self] paused in
+                    self.videoPauseSender = InputQueue<Bool>(latestOnly: true) { [weak self] paused in
                         do {
                             try await self?.setVideoStreamPausedRPC(paused)
                         } catch {

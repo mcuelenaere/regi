@@ -55,7 +55,7 @@ final class ClipboardSyncManager {
     /// of copies collapses into one more offer, so an older snapshot can't
     /// get the higher `clipboardId`. Exists while sync is active, for one
     /// bridge.
-    private var offerSender: LatestValueSender<Void>?
+    private var offerSender: InputQueue<Void>?
 
     init(session: Session, initialEnabled: Bool) {
         self.session = session
@@ -165,7 +165,7 @@ final class ClipboardSyncManager {
         // immediately ship whatever is currently on the pasteboard.
         monitor.start()
         log.debug("[MANAGER] start: pasteboard monitor started")
-        offerSender = LatestValueSender<Void> { [weak bridge] in await bridge?.sendOffer() }
+        offerSender = InputQueue<Void>(latestOnly: true) { [weak bridge] in await bridge?.sendOffer() }
 
         // The inbound-offers consumer task is owned by
         // `ensureInboundConsumer()` (per-bridge lifetime). Don't
@@ -206,7 +206,7 @@ final class ClipboardSyncManager {
     private func checkLocalClipboard() {
         guard isActive else { return }
         log.debug("[MANAGER] checkLocalClipboard: dispatching sendOffer")
-        offerSender?.send(())
+        offerSender?.enqueue(())
     }
 
     // MARK: - Inbound (host → local)
