@@ -20,15 +20,6 @@ public enum WebRTCFacadeError: Error, Sendable {
     case notStarted
 }
 
-/// Which transport channel an outgoing HID-RPC message should ride on.
-/// Per `BRIEFING.md`: keyboard reports + handshake go reliable, pointer
-/// and mouse reports go unreliable-ordered (under congestion, dropping
-/// stale absolute coords is better than queueing).
-public enum HIDChannel: Sendable {
-    case reliable          // "hidrpc"
-    case unreliableOrdered // "hidrpc-unreliable-ordered"
-}
-
 /// High-level connection state surfaced to the UI / Session actor. Wraps the
 /// raw WebRTC states into a smaller vocabulary the rest of the app can
 /// reason about.
@@ -66,11 +57,6 @@ public actor WebRTCFacade {
     public let localIceCandidates: AsyncStream<IceCandidate>
     public let videoTracks: AsyncStream<RTCVideoTrack>
     public let connectionState: AsyncStream<WebRTCConnectionState>
-    /// Stream of incoming HID-RPC messages from the device (LED state,
-    /// keydown state, macro state, …). Only the reliable channel
-    /// realistically receives — server-pushed updates are all on
-    /// `hidrpc`.
-    public let incomingHID: AsyncStream<HIDRPCMessage>
     /// Reflects the open/closed state of the reliable `hidrpc` channel.
     /// `true` means we've sent the handshake and the channel is ready to
     /// carry input.
@@ -94,7 +80,6 @@ public actor WebRTCFacade {
     private let localIceCandidatesContinuation: AsyncStream<IceCandidate>.Continuation
     private let videoTracksContinuation: AsyncStream<RTCVideoTrack>.Continuation
     private let connectionStateContinuation: AsyncStream<WebRTCConnectionState>.Continuation
-    private let incomingHIDContinuation: AsyncStream<HIDRPCMessage>.Continuation
     private let hidReadyStateContinuation: AsyncStream<Bool>.Continuation
     private let incomingRPCFramesContinuation: AsyncStream<Data>.Continuation
     private let rpcReadyStateContinuation: AsyncStream<Bool>.Continuation
@@ -125,10 +110,6 @@ public actor WebRTCFacade {
         var stateCont: AsyncStream<WebRTCConnectionState>.Continuation!
         self.connectionState = AsyncStream<WebRTCConnectionState> { stateCont = $0 }
         self.connectionStateContinuation = stateCont
-
-        var hidCont: AsyncStream<HIDRPCMessage>.Continuation!
-        self.incomingHID = AsyncStream<HIDRPCMessage> { hidCont = $0 }
-        self.incomingHIDContinuation = hidCont
 
         var readyCont: AsyncStream<Bool>.Continuation!
         self.hidReadyState = AsyncStream<Bool> { readyCont = $0 }
@@ -199,7 +180,6 @@ public actor WebRTCFacade {
         // channel label (`webrtc.go:382-414`); reliability options
         // matter only for client-side transport behaviour.
         let hidDelegate = HIDDataChannelDelegate(
-            incomingContinuation: incomingHIDContinuation,
             readyStateContinuation: hidReadyStateContinuation
         )
         self.hidDataChannelDelegate = hidDelegate
@@ -378,10 +358,6 @@ public actor WebRTCFacade {
         }
     }
 
-    /// Send a HID-RPC message on the chosen channel. Best-effort — for
-    /// the unreliable channel a dropped frame is the intended behaviour;
-    /// for the reliable channel SCTP retransmits until the channel
-    /// closes.
     /// Input frames libwebrtc refused to queue, per connection. A refusal is a
     /// silently lost keypress or button transition -- "reliable" only means
     /// SCTP retransmits what it *accepted* -- so it must never pass unnoticed
@@ -389,35 +365,10 @@ public actor WebRTCFacade {
     /// always checked; the input path never did.
     public private(set) var hidSendRejections = 0
 
-    /// Order in which frames actually reached the channel.
-    ///
-    /// Deliberately separate from the trace at the call site: that one records
-    /// the order input arrived from AppKit, which is upstream of the
-    /// `Task { await ... }` hop and therefore cannot show a reordering
-    /// introduced by it. `seq` is stamped by the caller before the hop, so a
-    /// descending seq here is proof the hop resequenced the stream.
-    static let wireTrace = Logger(subsystem: "app.regi.input", category: "wire")
-
-    public func sendHID(_ message: HIDRPCMessage, on channel: HIDChannel, seq: UInt64 = 0) {
-        if seq != 0 {
-            // Carry the button bitmask too. The seq is contiguous, so this
-            // stream can be checked for completeness before it is counted —
-            // unlike the call-site trace, which os_log may drop under load
-            // with nothing to show that it did.
-            var buttons: UInt8 = 0
-            if case .pointerReport(_, _, let b) = message { buttons = b }
-            Self.wireTrace.debug("wire seq=\(seq, privacy: .public) b=\(buttons, privacy: .public)")
-        }
-        return sendHIDInner(message, on: channel)
-    }
-
-    private func sendHIDInner(_ message: HIDRPCMessage, on channel: HIDChannel) {
-        let target: RTCDataChannel?
-        switch channel {
-        case .reliable:          target = hidrpcReliable
-        case .unreliableOrdered: target = hidrpcUnreliableOrdered
-        }
-        guard let target else { return }
+    /// Send a HID-RPC message on the reliable `hidrpc` channel. Best-effort:
+    /// SCTP retransmits what it accepted until the channel closes.
+    public func sendHID(_ message: HIDRPCMessage) {
+        guard let target = hidrpcReliable else { return }
         let buffer = RTCDataBuffer(data: message.wireFormat, isBinary: true)
         if !target.sendData(buffer) {
             hidSendRejections += 1
@@ -496,7 +447,6 @@ public actor WebRTCFacade {
         localIceCandidatesContinuation.finish()
         videoTracksContinuation.finish()
         connectionStateContinuation.finish()
-        incomingHIDContinuation.finish()
         hidReadyStateContinuation.finish()
         incomingRPCFramesContinuation.finish()
         rpcReadyStateContinuation.finish()
@@ -720,9 +670,8 @@ private final class PeerDelegate: NSObject, RTCPeerConnectionDelegate, @unchecke
     }
 }
 
-/// Delegate handling state and incoming messages for the HID data
-/// channels. Both `hidrpc` and `hidrpc-unreliable-ordered` share this
-/// instance.
+/// Delegate handling state for the HID data channels. Both `hidrpc` and
+/// `hidrpc-unreliable-ordered` share this instance.
 ///
 /// Critical: when `hidrpc` opens, this delegate sends the HID-RPC
 /// handshake (`[0x01, 0x01]`) **synchronously** inside the
@@ -731,14 +680,9 @@ private final class PeerDelegate: NSObject, RTCPeerConnectionDelegate, @unchecke
 /// handshake (`hidrpc.go:28`); any HID input sent before it lands is
 /// silently dropped.
 private final class HIDDataChannelDelegate: NSObject, RTCDataChannelDelegate, @unchecked Sendable {
-    let incomingContinuation: AsyncStream<HIDRPCMessage>.Continuation
     let readyStateContinuation: AsyncStream<Bool>.Continuation
 
-    init(
-        incomingContinuation: AsyncStream<HIDRPCMessage>.Continuation,
-        readyStateContinuation: AsyncStream<Bool>.Continuation
-    ) {
-        self.incomingContinuation = incomingContinuation
+    init(readyStateContinuation: AsyncStream<Bool>.Continuation) {
         self.readyStateContinuation = readyStateContinuation
     }
 
@@ -769,18 +713,7 @@ private final class HIDDataChannelDelegate: NSObject, RTCDataChannelDelegate, @u
     }
 
     func dataChannel(_ dataChannel: RTCDataChannel, didReceiveMessageWith buffer: RTCDataBuffer) {
-        guard buffer.isBinary else {
-            log.error("HID channel \(dataChannel.label, privacy: .public) got non-binary frame; dropping")
-            return
-        }
-        do {
-            let message = try HIDRPCMessage(wireFormat: buffer.data)
-            incomingContinuation.yield(message)
-        } catch {
-            // Drop unparseable frames — surfacing them as errors would
-            // tear down the stream and there's nothing the caller can do.
-            log.error("HID frame parse failed (\(buffer.data.count, privacy: .public) bytes): \(String(describing: error), privacy: .public)")
-        }
+        // Required by the protocol; nothing reads what the device pushes here.
     }
 }
 
