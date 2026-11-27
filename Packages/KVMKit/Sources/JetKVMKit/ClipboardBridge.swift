@@ -369,9 +369,7 @@ public final class ClipboardBridge {
 
     public init(send: @escaping @Sendable (Data) async -> Bool) {
         self.sendFrame = send
-        var cont: AsyncStream<ResolvedOffer>.Continuation!
-        self.inboundOffers = AsyncStream<ResolvedOffer> { cont = $0 }
-        self.inboundOffersContinuation = cont
+        (inboundOffers, inboundOffersContinuation) = AsyncStream.makeStream()
     }
 
     deinit {

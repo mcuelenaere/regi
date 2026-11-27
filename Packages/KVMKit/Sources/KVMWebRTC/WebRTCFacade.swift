@@ -10,12 +10,7 @@ private let log = Logger(subsystem: "app.regi.mac", category: "webrtc")
 public enum WebRTCFacadeError: Error, Sendable {
     case peerConnectionCreationFailed
     case dataChannelCreationFailed(label: String)
-    case offerCreationFailed(String)
-    case answerCreationFailed(String)
     case sessionDescriptionCodecFailure(String)
-    case setLocalDescriptionFailed(String)
-    case setRemoteDescriptionFailed(String)
-    case addIceCandidateFailed(String)
     case alreadyStarted
     case notStarted
 }
@@ -50,9 +45,9 @@ public actor WebRTCFacade {
     private var hidrpcUnreliableOrdered: RTCDataChannel?
     private var hidDataChannelDelegate: HIDDataChannelDelegate?
     private var rpcChannel: RTCDataChannel?
-    private var rpcDelegate: RPCDataChannelDelegate?
+    private var rpcDelegate: FrameChannelDelegate?
     private var hostBridgeChannel: RTCDataChannel?
-    private var hostBridgeDelegate: HostBridgeDataChannelDelegate?
+    private var hostBridgeDelegate: FrameChannelDelegate?
 
     public let localIceCandidates: AsyncStream<IceCandidate>
     public let videoTracks: AsyncStream<RTCVideoTrack>
@@ -99,49 +94,21 @@ public actor WebRTCFacade {
             decoderFactory: videoDecoderFactory
         )
 
-        var iceCont: AsyncStream<IceCandidate>.Continuation!
-        self.localIceCandidates = AsyncStream<IceCandidate> { iceCont = $0 }
-        self.localIceCandidatesContinuation = iceCont
-
-        var trackCont: AsyncStream<RTCVideoTrack>.Continuation!
-        self.videoTracks = AsyncStream<RTCVideoTrack> { trackCont = $0 }
-        self.videoTracksContinuation = trackCont
-
-        var stateCont: AsyncStream<WebRTCConnectionState>.Continuation!
-        self.connectionState = AsyncStream<WebRTCConnectionState> { stateCont = $0 }
-        self.connectionStateContinuation = stateCont
-
-        var readyCont: AsyncStream<Bool>.Continuation!
-        self.hidReadyState = AsyncStream<Bool> { readyCont = $0 }
-        self.hidReadyStateContinuation = readyCont
-
-        var rpcFramesCont: AsyncStream<Data>.Continuation!
-        self.incomingRPCFrames = AsyncStream<Data> { rpcFramesCont = $0 }
-        self.incomingRPCFramesContinuation = rpcFramesCont
-
-        var rpcReadyCont: AsyncStream<Bool>.Continuation!
-        self.rpcReadyState = AsyncStream<Bool> { rpcReadyCont = $0 }
-        self.rpcReadyStateContinuation = rpcReadyCont
-
-        var hostBridgeFramesCont: AsyncStream<Data>.Continuation!
-        self.incomingHostBridgeFrames = AsyncStream<Data> { hostBridgeFramesCont = $0 }
-        self.incomingHostBridgeFramesContinuation = hostBridgeFramesCont
-
-        var hostBridgeReadyCont: AsyncStream<Bool>.Continuation!
-        self.hostBridgeReadyState = AsyncStream<Bool> { hostBridgeReadyCont = $0 }
-        self.hostBridgeReadyStateContinuation = hostBridgeReadyCont
-
-        var statsCont: AsyncStream<ConnectionStats>.Continuation!
-        self.stats = AsyncStream<ConnectionStats> { statsCont = $0 }
-        self.statsContinuation = statsCont
+        (localIceCandidates, localIceCandidatesContinuation) = AsyncStream.makeStream()
+        (videoTracks, videoTracksContinuation) = AsyncStream.makeStream()
+        (connectionState, connectionStateContinuation) = AsyncStream.makeStream()
+        (hidReadyState, hidReadyStateContinuation) = AsyncStream.makeStream()
+        (incomingRPCFrames, incomingRPCFramesContinuation) = AsyncStream.makeStream()
+        (rpcReadyState, rpcReadyStateContinuation) = AsyncStream.makeStream()
+        (incomingHostBridgeFrames, incomingHostBridgeFramesContinuation) = AsyncStream.makeStream()
+        (hostBridgeReadyState, hostBridgeReadyStateContinuation) = AsyncStream.makeStream()
+        (stats, statsContinuation) = AsyncStream.makeStream()
     }
 
-    /// Create the peer connection, add a single recvonly video transceiver,
-    /// and produce an offer. Returns the offer in the wire form expected by
-    /// the JetKVM signaling protocol: `base64(JSON({type:"offer", sdp:...}))`.
-    public func start(iceServers: [String] = []) async throws -> String {
-        guard peerConnection == nil else { throw WebRTCFacadeError.alreadyStarted }
-
+    /// Create the peer connection with its delegate and keep both on the
+    /// facade. Shared by the offerer (`start`) and the answerer
+    /// (`startAnswerer`), which differ only in what they do next.
+    private func makePeerConnection(iceServers: [String]) throws -> RTCPeerConnection {
         let config = RTCConfiguration()
         config.iceServers = iceServers.isEmpty ? [] : [RTCIceServer(urlStrings: iceServers)]
         config.sdpSemantics = .unifiedPlan
@@ -169,6 +136,16 @@ public actor WebRTCFacade {
             throw WebRTCFacadeError.peerConnectionCreationFailed
         }
         self.peerConnection = pc
+        return pc
+    }
+
+    /// Create the peer connection, add a single recvonly video transceiver,
+    /// and produce an offer. Returns the offer in the wire form expected by
+    /// the JetKVM signaling protocol: `base64(JSON({type:"offer", sdp:...}))`.
+    public func start(iceServers: [String] = []) async throws -> String {
+        guard peerConnection == nil else { throw WebRTCFacadeError.alreadyStarted }
+
+        let pc = try makePeerConnection(iceServers: iceServers)
 
         // Single recvonly video transceiver — server adds its track to it.
         let transceiverInit = RTCRtpTransceiverInit()
@@ -211,7 +188,8 @@ public actor WebRTCFacade {
         // a separate subscribe.
         let rpcConfig = RTCDataChannelConfiguration()
         rpcConfig.isOrdered = true
-        let rpcDelegate = RPCDataChannelDelegate(
+        let rpcDelegate = FrameChannelDelegate(
+            binary: false,
             framesContinuation: incomingRPCFramesContinuation,
             readyStateContinuation: rpcReadyStateContinuation
         )
@@ -229,7 +207,8 @@ public actor WebRTCFacade {
         // firmware's internal/clipboard/ package.
         let hostBridgeConfig = RTCDataChannelConfiguration()
         hostBridgeConfig.isOrdered = true
-        let hostBridgeDelegate = HostBridgeDataChannelDelegate(
+        let hostBridgeDelegate = FrameChannelDelegate(
+            binary: true,
             framesContinuation: incomingHostBridgeFramesContinuation,
             readyStateContinuation: hostBridgeReadyStateContinuation
         )
@@ -257,10 +236,10 @@ public actor WebRTCFacade {
             mandatoryConstraints: ["OfferToReceiveVideo": "true"],
             optionalConstraints: nil
         )
-        let offer = try await Self.createOffer(pc: pc, constraints: offerConstraints)
+        let offer = try await pc.offer(for: offerConstraints)
 
         // Set local description to commit the offer.
-        try await Self.setLocalDescription(pc: pc, sdp: offer)
+        try await pc.setLocalDescription(offer)
 
         // Encode for the wire.
         return try Self.encodeSessionDescription(offer)
@@ -281,37 +260,14 @@ public actor WebRTCFacade {
     public func startAnswerer(offerSDP: String, iceServers: [String] = []) async throws -> String {
         guard peerConnection == nil else { throw WebRTCFacadeError.alreadyStarted }
 
-        let config = RTCConfiguration()
-        config.iceServers = iceServers.isEmpty ? [] : [RTCIceServer(urlStrings: iceServers)]
-        config.sdpSemantics = .unifiedPlan
-        config.bundlePolicy = .maxBundle
-        config.rtcpMuxPolicy = .require
-        config.continualGatheringPolicy = .gatherContinually
-
-        let constraints = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
-
-        let delegate = PeerDelegate(
-            iceContinuation: localIceCandidatesContinuation,
-            trackContinuation: videoTracksContinuation,
-            stateContinuation: connectionStateContinuation
-        )
-        self.delegate = delegate
-
-        guard let pc = factory.peerConnection(
-            with: config,
-            constraints: constraints,
-            delegate: delegate
-        ) else {
-            throw WebRTCFacadeError.peerConnectionCreationFailed
-        }
-        self.peerConnection = pc
+        let pc = try makePeerConnection(iceServers: iceServers)
 
         // Apply the remote offer first. In unified-plan this creates the
         // recvonly video transceiver from the offer's m-line, so unlike
         // the offerer path we don't add a transceiver or any data
         // channels.
         let offer = RTCSessionDescription(type: .offer, sdp: offerSDP)
-        try await Self.setRemoteDescription(pc: pc, sdp: offer)
+        try await pc.setRemoteDescription(offer)
 
         // Same connection-quality poller as the offerer path.
         statsTask = Task { [weak self] in
@@ -325,8 +281,8 @@ public actor WebRTCFacade {
             mandatoryConstraints: ["OfferToReceiveVideo": "true"],
             optionalConstraints: nil
         )
-        let answer = try await Self.createAnswer(pc: pc, constraints: answerConstraints)
-        try await Self.setLocalDescription(pc: pc, sdp: answer)
+        let answer = try await pc.answer(for: answerConstraints)
+        try await pc.setLocalDescription(answer)
         return answer.sdp
     }
 
@@ -335,7 +291,7 @@ public actor WebRTCFacade {
     public func setRemoteAnswer(sdpBase64: String) async throws {
         guard let pc = peerConnection else { throw WebRTCFacadeError.notStarted }
         let answer = try Self.decodeSessionDescription(sdpBase64)
-        try await Self.setRemoteDescription(pc: pc, sdp: answer)
+        try await pc.setRemoteDescription(answer)
     }
 
     /// Pass an ICE candidate received from the server into the peer
@@ -347,15 +303,7 @@ public actor WebRTCFacade {
             sdpMLineIndex: Int32(candidate.sdpMLineIndex ?? 0),
             sdpMid: candidate.sdpMid
         )
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-            pc.add(rtcCandidate) { error in
-                if let error {
-                    cont.resume(throwing: WebRTCFacadeError.addIceCandidateFailed(String(describing: error)))
-                } else {
-                    cont.resume()
-                }
-            }
-        }
+        try await pc.add(rtcCandidate)
     }
 
     /// Input frames libwebrtc refused to queue, per connection. A refusal is a
@@ -496,72 +444,6 @@ public actor WebRTCFacade {
         return RTCSessionDescription(type: type, sdp: json.sdp)
     }
 
-    // MARK: - Async wrappers around RTCPeerConnection callbacks
-
-    private static func createOffer(
-        pc: RTCPeerConnection,
-        constraints: RTCMediaConstraints
-    ) async throws -> RTCSessionDescription {
-        try await withCheckedThrowingContinuation { cont in
-            pc.offer(for: constraints) { sdp, error in
-                if let error {
-                    cont.resume(throwing: WebRTCFacadeError.offerCreationFailed(String(describing: error)))
-                } else if let sdp {
-                    cont.resume(returning: sdp)
-                } else {
-                    cont.resume(throwing: WebRTCFacadeError.offerCreationFailed("no sdp and no error"))
-                }
-            }
-        }
-    }
-
-    private static func createAnswer(
-        pc: RTCPeerConnection,
-        constraints: RTCMediaConstraints
-    ) async throws -> RTCSessionDescription {
-        try await withCheckedThrowingContinuation { cont in
-            pc.answer(for: constraints) { sdp, error in
-                if let error {
-                    cont.resume(throwing: WebRTCFacadeError.answerCreationFailed(String(describing: error)))
-                } else if let sdp {
-                    cont.resume(returning: sdp)
-                } else {
-                    cont.resume(throwing: WebRTCFacadeError.answerCreationFailed("no sdp and no error"))
-                }
-            }
-        }
-    }
-
-    private static func setLocalDescription(
-        pc: RTCPeerConnection,
-        sdp: RTCSessionDescription
-    ) async throws {
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-            pc.setLocalDescription(sdp) { error in
-                if let error {
-                    cont.resume(throwing: WebRTCFacadeError.setLocalDescriptionFailed(String(describing: error)))
-                } else {
-                    cont.resume()
-                }
-            }
-        }
-    }
-
-    private static func setRemoteDescription(
-        pc: RTCPeerConnection,
-        sdp: RTCSessionDescription
-    ) async throws {
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-            pc.setRemoteDescription(sdp) { error in
-                if let error {
-                    cont.resume(throwing: WebRTCFacadeError.setRemoteDescriptionFailed(String(describing: error)))
-                } else {
-                    cont.resume()
-                }
-            }
-        }
-    }
-
     /// Background loop that walks `RTCPeerConnection.statistics`
     /// every second and yields a `ConnectionStats` on the stream.
     /// Cancellation (via Task.cancel) ends the loop and finishes
@@ -573,11 +455,7 @@ public actor WebRTCFacade {
         guard let continuation else { return }
         var parser = WebRTCStatsParser()
         while !Task.isCancelled {
-            let report: RTCStatisticsReport = await withCheckedContinuation { cont in
-                peerConnection.statistics { report in
-                    cont.resume(returning: report)
-                }
-            }
+            let report = await peerConnection.statistics()
             let sample = parser.parse(report)
             continuation.yield(sample)
             try? await Task.sleep(for: .seconds(1))
@@ -727,22 +605,27 @@ private func stateLabel(_ state: RTCDataChannelState) -> String {
     }
 }
 
-/// Delegate for the `rpc` text channel. Forwards raw frames to the
-/// owning facade's stream; the JSONRPCClient does the parsing.
-private final class RPCDataChannelDelegate: NSObject, RTCDataChannelDelegate, @unchecked Sendable {
+/// Delegate for a channel that carries raw frames of one kind: `rpc`
+/// (text; the JSONRPCClient parses it) or `host_bridge` (binary; the
+/// ClipboardBridge parses it as agent-protocol `Envelope`s). Forwards
+/// frames to the owning facade's stream and drops any of the other kind.
+private final class FrameChannelDelegate: NSObject, RTCDataChannelDelegate, @unchecked Sendable {
+    let binary: Bool
     let framesContinuation: AsyncStream<Data>.Continuation
     let readyStateContinuation: AsyncStream<Bool>.Continuation
 
     init(
+        binary: Bool,
         framesContinuation: AsyncStream<Data>.Continuation,
         readyStateContinuation: AsyncStream<Bool>.Continuation
     ) {
+        self.binary = binary
         self.framesContinuation = framesContinuation
         self.readyStateContinuation = readyStateContinuation
     }
 
     func dataChannelDidChangeState(_ dataChannel: RTCDataChannel) {
-        log.info("rpc channel state=\(stateLabel(dataChannel.readyState), privacy: .public)")
+        log.info("\(dataChannel.label, privacy: .public) channel state=\(stateLabel(dataChannel.readyState), privacy: .public)")
         switch dataChannel.readyState {
         case .open: readyStateContinuation.yield(true)
         case .closing, .closed: readyStateContinuation.yield(false)
@@ -752,10 +635,8 @@ private final class RPCDataChannelDelegate: NSObject, RTCDataChannelDelegate, @u
     }
 
     func dataChannel(_ dataChannel: RTCDataChannel, didReceiveMessageWith buffer: RTCDataBuffer) {
-        // The rpc channel is text-mode; ignore any binary frames the
-        // server might accidentally send.
-        guard !buffer.isBinary else {
-            log.error("rpc channel got binary frame; dropping")
+        guard buffer.isBinary == binary else {
+            log.error("\(dataChannel.label, privacy: .public) channel got \(buffer.isBinary ? "binary" : "text", privacy: .public) frame; dropping")
             return
         }
         framesContinuation.yield(buffer.data)
@@ -826,41 +707,5 @@ public final class DataChannel: NSObject, RTCDataChannelDelegate, @unchecked Sen
     public func dataChannel(_ dataChannel: RTCDataChannel, didReceiveMessageWith buffer: RTCDataBuffer) {
         guard !buffer.isBinary, let text = String(data: buffer.data, encoding: .utf8) else { return }
         continuation.yield(text)
-    }
-}
-
-/// Delegate for the `host_bridge` data channel. Forwards raw binary
-/// frames to the owning facade's stream; the consumer
-/// (`ClipboardBridge`) parses them as agent-protocol `Envelope`s.
-private final class HostBridgeDataChannelDelegate: NSObject, RTCDataChannelDelegate, @unchecked Sendable {
-    let framesContinuation: AsyncStream<Data>.Continuation
-    let readyStateContinuation: AsyncStream<Bool>.Continuation
-
-    init(
-        framesContinuation: AsyncStream<Data>.Continuation,
-        readyStateContinuation: AsyncStream<Bool>.Continuation
-    ) {
-        self.framesContinuation = framesContinuation
-        self.readyStateContinuation = readyStateContinuation
-    }
-
-    func dataChannelDidChangeState(_ dataChannel: RTCDataChannel) {
-        log.info("host_bridge channel state=\(stateLabel(dataChannel.readyState), privacy: .public)")
-        switch dataChannel.readyState {
-        case .open: readyStateContinuation.yield(true)
-        case .closing, .closed: readyStateContinuation.yield(false)
-        case .connecting: break
-        @unknown default: break
-        }
-    }
-
-    func dataChannel(_ dataChannel: RTCDataChannel, didReceiveMessageWith buffer: RTCDataBuffer) {
-        // The host_bridge channel is binary; ignore any text frames.
-        guard buffer.isBinary else {
-            log.error("host_bridge channel got text frame; dropping")
-            return
-        }
-        log.debug("[WEBRTC] host_bridge inbound: \(buffer.data.count, privacy: .public) bytes")
-        framesContinuation.yield(buffer.data)
     }
 }
