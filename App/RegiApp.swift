@@ -96,23 +96,49 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
-    /// Items to add to the dock icon's right-click menu. The
-    /// system-provided entries (Quit, Show, Options, etc.) appear
-    /// below ours automatically.
+    /// Items to add to the dock icon's right-click menu: a "Connect To"
+    /// submenu with the saved hosts, in the Hosts window's (user-chosen)
+    /// order, then "Other…" for the Hosts window.
+    /// macOS lists open windows above these and its own entries (Options,
+    /// Quit, …) below on its own.
     func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
+        let hosts = NSMenu()
+        for host in MCPHost.shared.hostStore.hosts {
+            let item = NSMenuItem(title: host.displayName, action: #selector(openHost(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = host
+            hosts.addItem(item)
+        }
+        if hosts.numberOfItems > 0 { hosts.addItem(.separator()) }
+        let other = NSMenuItem(title: String(localized: "Other…"), action: #selector(showHosts(_:)), keyEquivalent: "")
+        other.target = self
+        hosts.addItem(other)
+
         let menu = NSMenu()
-        let showHosts = NSMenuItem(
-            title: String(localized: "Show Hosts"),
-            action: #selector(showHosts(_:)),
-            keyEquivalent: ""
-        )
-        showHosts.target = self
-        menu.addItem(showHosts)
+        let connect = NSMenuItem(title: String(localized: "Connect To"), action: nil, keyEquivalent: "")
+        connect.submenu = hosts
+        menu.addItem(connect)
         return menu
     }
 
+    // A Dock menu click doesn't activate the app, so without the
+    // activate() the window opens behind whatever app is in front.
     @objc private func showHosts(_ sender: Any?) {
+        NSApp.activate()
         openHostsViaMenu()
+    }
+
+    /// Opens the host's session window, or brings it forward if open.
+    @objc private func openHost(_ sender: NSMenuItem) {
+        guard let host = sender.representedObject as? SavedHost else { return }
+        NSApp.activate()
+        Task { @MainActor in
+            do {
+                try await MCPTools.openWindowAction()(value: KVMSessionWindowID(saved: host))
+            } catch {
+                log.error("Dock menu: couldn't open \(host.displayName, privacy: .public): \(error)")
+            }
+        }
     }
 }
 

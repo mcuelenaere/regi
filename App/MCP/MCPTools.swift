@@ -114,8 +114,8 @@ enum MCPTools {
 
     /// SwiftUI's `openWindow`, which `HostsView` hands over when it appears.
     /// Regi can launch with no windows at all, so open the Hosts window if it
-    /// never has been.
-    private static func openWindowAction() async throws -> OpenWindowAction {
+    /// never has been. Also used by the Dock menu.
+    static func openWindowAction() async throws -> OpenWindowAction {
         if MCPHost.shared.openWindow == nil { openHostsViaMenu() }
         for _ in 0..<20 {
             if let openWindow = MCPHost.shared.openWindow { return openWindow }
