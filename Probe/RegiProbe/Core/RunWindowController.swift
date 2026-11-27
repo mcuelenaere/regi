@@ -46,8 +46,6 @@ final class RunWindowController: NSObject, NSWindowDelegate {
         super.init()
     }
 
-    var isOpen: Bool { window != nil }
-
     func open(shielded: Bool = true) {
         guard window == nil, model.blocker == nil else { return }
         guard let screen = NSScreen.main else { return }

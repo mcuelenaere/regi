@@ -18,7 +18,6 @@ public final class AXDriver {
         case identifierNotFound(String)
         case attributeUnavailable(String, String)
         case actionFailed(String, AXError)
-        case timedOut(String)
 
         public var description: String {
             switch self {
@@ -39,7 +38,6 @@ public final class AXDriver {
             case .attributeUnavailable(let id, let attr):
                 return "element \"\(id)\" has no \(attr)"
             case .actionFailed(let id, let e): return "action on \"\(id)\" failed: \(e.rawValue)"
-            case .timedOut(let what): return "timed out waiting for \(what)"
             }
         }
     }
@@ -129,22 +127,6 @@ public final class AXDriver {
         guard result == .success else { throw DriverError.actionFailed(identifier, result) }
     }
 
-    /// The capture toggles live inside a menu, so they only enter the tree once
-    /// it is open. Opening it is therefore part of reaching them.
-    public func pressInMenu(menu: String, item: String, settle: TimeInterval = 0.35) throws {
-        try press(menu)
-        Thread.sleep(forTimeInterval: settle)
-        defer {
-            // Leave the menu closed whatever happened, or the next lookup sees
-            // a tree that does not match the app's resting state.
-            let esc = CGEvent(keyboardEventSource: nil, virtualKey: 0x35, keyDown: true)
-            esc?.post(tap: .cghidEventTap)
-            CGEvent(keyboardEventSource: nil, virtualKey: 0x35, keyDown: false)?
-                .post(tap: .cghidEventTap)
-        }
-        try press(item)
-    }
-
     /// Resize the window that contains `identifier`.
     ///
     /// Targeting "the largest window" was wrong: with no session open, the
@@ -175,18 +157,6 @@ public final class AXDriver {
         NSRunningApplication(processIdentifier: pid)?
             .activate(options: [.activateIgnoringOtherApps])
     }
-
-    @discardableResult
-    public func waitFor(_ what: String, timeout: TimeInterval = 10,
-                        poll: TimeInterval = 0.1,
-                        _ condition: () -> Bool) throws -> Bool {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            if condition() { return true }
-            Thread.sleep(forTimeInterval: poll)
-        }
-        throw DriverError.timedOut(what)
-    }
 }
 
 /// Mirrors `App/AXIdentifiers.swift`. There is no compile-time link between
@@ -196,16 +166,9 @@ public enum AXID {
     public static let videoView = "session.videoView"
     public static let resolutionText = "session.resolutionText"
     public static let captureMenu = "session.captureMenu"
-    public static let keyboardCaptureToggle = "session.keyboardCaptureToggle"
-    public static let pointerLockToggle = "session.pointerLockToggle"
-    public static let hideCursorToggle = "session.hideCursorToggle"
-    public static let controlsButton = "session.controlsButton"
     public static let statsButton = "session.statsButton"
-    public static let hostsAddButton = "hosts.addButton"
-    public static func hostsRow(_ host: String) -> String { "hosts.row.\(host)" }
 
-    /// Resolvable without opening anything. The menu items are excluded
-    /// because they only exist while the menu is open.
+    /// Resolvable without opening anything.
     public static let alwaysPresentInSession = [videoView, resolutionText,
                                                 captureMenu, statsButton]
 }

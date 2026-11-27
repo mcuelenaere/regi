@@ -38,12 +38,6 @@ final class ModifierBitsTests: XCTestCase {
 
     // MARK: - "any" convenience flags
 
-    func testAnyControlMatchesEitherSide() {
-        XCTAssertTrue(ModifierBits.leftControl.intersection(.anyControl).rawValue == 0x01)
-        XCTAssertTrue(ModifierBits.rightControl.intersection(.anyControl).rawValue == 0x10)
-        XCTAssertTrue(ModifierBits.leftShift.intersection(.anyControl).isEmpty)
-    }
-
     func testAnyMetaCoversBothSides() {
         XCTAssertEqual(ModifierBits.anyMeta.rawValue, 0x88)
     }

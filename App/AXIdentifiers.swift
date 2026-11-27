@@ -38,8 +38,4 @@ enum AXIdentifiers {
     static let hostsAddButton = "hosts.addButton"
     /// Per-host row: `hosts.row.<host>`. Connecting is opening one.
     static func hostsRow(_ host: String) -> String { "hosts.row.\(host)" }
-
-    /// The pointer-lock confirmation alert. Exposed so a scenario can dismiss
-    /// the real alert rather than requiring it be suppressed.
-    static let pointerLockConfirmButton = "alert.pointerLock.confirm"
 }

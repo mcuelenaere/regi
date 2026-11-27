@@ -191,12 +191,11 @@ enum ScriptOps {
     private static func stable(_ a: MCPTools.Args, _ open: MCPHost.OpenSession, _ run: ScriptRun) async throws -> (Value, String?) {
         let quiet = min(max(a.number("quiet_ms") ?? 500, 100), 60_000) / 1000
         let timeout = min(max(a.number("timeout_s") ?? 10, 0.1), 600)
-        let threshold = a.number("threshold") ?? stableThreshold
         let started = Date()
         guard var previous = await ScreenReader.thumbnail(of: open.session) else { throw MCPTools.noVideo(open) }
         if a.raw["after_change"]?.boolValue == true {
             let before = run.beforeInput ?? previous
-            while ScreenReader.difference(before, previous) <= threshold {
+            while ScreenReader.difference(before, previous) <= stableThreshold {
                 guard Date().timeIntervalSince(started) < timeout else {
                     let ms = Int(Date().timeIntervalSince(started) * 1000)
                     return (["stable": .bool(false), "elapsed_ms": .int(ms), "changed": .bool(false),
@@ -215,7 +214,7 @@ enum ScriptOps {
             let difference = ScreenReader.difference(previous, next)
             previous = next
             peak = max(peak, difference)
-            if difference > threshold {
+            if difference > stableThreshold {
                 changed = true
                 quietSince = Date()
                 noise = 0

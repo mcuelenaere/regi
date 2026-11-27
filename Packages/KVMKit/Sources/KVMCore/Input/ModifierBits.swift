@@ -21,8 +21,8 @@ import Foundation
 /// | 0x40 | Right Alt / AltGr   |
 /// | 0x80 | Right Meta          |
 ///
-/// Used as the modifier byte in `HIDRPCMessage.keyboardReport` and
-/// echoed back from the host in `HIDRPCMessage.keydownState`.
+/// Used as the modifier byte of the keyboard reports sent to the device
+/// and echoed back by the host in its held-key state.
 public struct ModifierBits: OptionSet, Sendable, Hashable {
     public let rawValue: UInt8
 
@@ -39,8 +39,6 @@ public struct ModifierBits: OptionSet, Sendable, Hashable {
     public static let rightAlt     = ModifierBits(rawValue: 0x40)
     public static let rightMeta    = ModifierBits(rawValue: 0x80)
 
-    /// Either side of a modifier (e.g. `.anyControl` matches L_CTRL or R_CTRL).
-    public static let anyControl: ModifierBits = [.leftControl, .rightControl]
     public static let anyMeta:    ModifierBits = [.leftMeta,    .rightMeta]
 
     /// USB-HID Usage ID for the modifier *as a key* (as opposed to the
