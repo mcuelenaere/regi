@@ -4,6 +4,9 @@ import SwiftUI
 import KVMKit
 
 struct KVMWindowView: View {
+    /// The session window is full screen: the toolbar is hidden, so its
+    /// controls move to `fullscreenControls`.
+    let isFullscreen: Bool
     @Environment(Session.self) private var session
     @State private var capturer = KeyboardCapturer()
     @State private var pointerLock = PointerLockManager()
@@ -12,6 +15,12 @@ struct KVMWindowView: View {
     @State private var resignObserver: NSObjectProtocol?
     @State private var showControls = false
     @State private var showStats = false
+    @State private var fullscreenBarOpen = false
+    /// Full screen only: the pointer is within `handleRevealZone` of the top
+    /// edge, which is when the handle for the session controls shows.
+    @State private var pointerNearTop = false
+    @State private var pointerMonitor: Any?
+    private static let handleRevealZone: CGFloat = 40
 
     /// UserDefaults key for the "Don't show this again" preference on
     /// the pointer-lock confirmation dialog.
@@ -175,6 +184,138 @@ struct KVMWindowView: View {
         return Image(nsImage: img)
     }
 
+    // MARK: - Session controls (toolbar, or fullscreenControls in full screen)
+
+    private var captureMenu: some View {
+        Menu {
+            Toggle(isOn: keyboardCaptureBinding) {
+                Label("Keyboard lock", systemImage: "keyboard")
+            }
+            .accessibilityIdentifier(AXIdentifiers.sessionKeyboardCaptureToggle)
+            Toggle(isOn: pointerLockBinding) {
+                Label("Pointer lock", systemImage: "cursorarrow.rays")
+            }
+            .accessibilityIdentifier(AXIdentifiers.sessionPointerLockToggle)
+            Divider()
+            Toggle(isOn: hideCursorBinding) {
+                Label("Hide cursor over video", systemImage: "cursorarrow.slash")
+            }
+            .accessibilityIdentifier(AXIdentifiers.sessionHideCursorToggle)
+        } label: {
+            Self.dualCaptureIcon(
+                keyboardEngaged: keyboardCaptureEngaged,
+                pointerEngaged: pointerLockEngaged
+            )
+            .accessibilityLabel("Capture")
+        }
+        .accessibilityIdentifier(AXIdentifiers.sessionCaptureMenu)
+        .help("Capture system keyboard shortcuts and/or lock the pointer for relative mouse mode. Optionally hide your local cursor over the video area when you'd rather see only the host's cursor. Keyboard capture requires Accessibility permission.")
+    }
+
+    private var controlsButton: some View {
+        Button {
+            showControls.toggle()
+        } label: {
+            Label("Controls", systemImage: "slider.horizontal.3")
+        }
+        .accessibilityIdentifier(AXIdentifiers.sessionControlsButton)
+        .popover(isPresented: $showControls, arrowEdge: .top) {
+            ControlPanel()
+                .environment(session)
+        }
+        .disabled(!controlsReady)
+        .help("Power, clipboard sync, and the device's web interface.")
+    }
+
+    private var statsButton: some View {
+        Button {
+            showStats.toggle()
+        } label: {
+            Label("Stats", systemImage: "chart.line.uptrend.xyaxis")
+        }
+        .accessibilityIdentifier(AXIdentifiers.sessionStatsButton)
+        .popover(isPresented: $showStats, arrowEdge: .top) {
+            StatsPanel()
+                .environment(session)
+        }
+        .help("Live network and video diagnostics.")
+    }
+
+    /// Full screen hides the menu bar and toolbar outright, so touching the
+    /// top edge never covers the host's top row (its own menu bar, on a Mac).
+    /// The session controls live behind this handle instead, which shows
+    /// while the pointer is near the top edge. A click opens them in a bar
+    /// under it, and they stay until it's clicked again (closing on hover-out
+    /// would collapse the bar the moment a menu or popover opened).
+    private var fullscreenControls: some View {
+        VStack(spacing: 6) {
+            Button {
+                withAnimation(.easeOut(duration: 0.15)) { fullscreenBarOpen.toggle() }
+            } label: {
+                Image(systemName: fullscreenBarOpen ? "chevron.compact.up" : "chevron.compact.down")
+                    .font(.system(size: 18, weight: .bold))
+                    .frame(width: 64, height: 22)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .background(.thickMaterial, in: Capsule())
+            .overlay(Capsule().strokeBorder(.secondary.opacity(0.5), lineWidth: 1))
+            .shadow(color: .black.opacity(0.35), radius: 4, y: 1)
+            .opacity(fullscreenBarOpen || pointerNearTop ? 1 : 0)
+            // Hidden still hit-tests in SwiftUI; it must not eat clicks meant
+            // for the host's top row.
+            .allowsHitTesting(fullscreenBarOpen || pointerNearTop)
+            .animation(.easeOut(duration: 0.15), value: pointerNearTop)
+            .help(fullscreenBarOpen ? "Hide session controls" : "Show session controls")
+
+            if fullscreenBarOpen {
+                HStack(spacing: 16) {
+                    if !MCPHost.shared.connections.isEmpty { MCPAgentMenu() }
+                    captureMenu
+                    if hasControlCapabilities { controlsButton }
+                    statsButton
+                    Divider().frame(height: 18)
+                    Button {
+                        NSApp.sendAction(#selector(NSWindow.toggleFullScreen(_:)), to: nil, from: nil)
+                    } label: {
+                        Label("Exit Full Screen", systemImage: "arrow.down.right.and.arrow.up.left")
+                    }
+                    .help("Exit full screen")
+                }
+                .labelStyle(.iconOnly)
+                .buttonStyle(.borderless)
+                .menuStyle(.button)
+                .menuIndicator(.hidden)
+                .font(.system(size: 15))
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                .background(.regularMaterial, in: Capsule())
+                .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .padding(.top, 2)
+    }
+
+    /// Tracks `pointerNearTop` from the window's own mouse-moved events
+    /// (KVMVideoView's tracking area makes the window send them). Pointer
+    /// lock pins the cursor mid-window, so the handle never shows then.
+    private func watchPointerNearTop(_ on: Bool) {
+        if let monitor = pointerMonitor {
+            NSEvent.removeMonitor(monitor)
+            pointerMonitor = nil
+        }
+        guard on else { return }
+        pointerMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged]
+        ) { event in
+            if let height = event.window?.contentView?.bounds.height {
+                let near = height - event.locationInWindow.y < Self.handleRevealZone
+                if near != pointerNearTop { pointerNearTop = near }
+            }
+            return event
+        }
+    }
+
     var body: some View {
         // No StatusStrip in here — it lives in KVMSessionWindow's
         // outer VStack so it stays visible during the
@@ -248,67 +389,27 @@ struct KVMWindowView: View {
             .padding()
         }
         .toolbar {
-            // In the toolbar rather than over the video: it stays up for as
-            // long as a client is connected.
-            if !MCPHost.shared.connections.isEmpty {
-                ToolbarItem(placement: .primaryAction) {
-                    MCPAgentMenu()
+            // Full screen hides the toolbar; fullscreenControls stands in.
+            if !isFullscreen {
+                // In the toolbar rather than over the video: it stays up for
+                // as long as a client is connected.
+                if !MCPHost.shared.connections.isEmpty {
+                    ToolbarItem(placement: .primaryAction) { MCPAgentMenu() }
                 }
+                ToolbarItem(placement: .primaryAction) { captureMenu }
+                if hasControlCapabilities {
+                    ToolbarItem(placement: .primaryAction) { controlsButton }
+                }
+                ToolbarItem(placement: .primaryAction) { statsButton }
             }
-            ToolbarItem(placement: .primaryAction) {
-                Menu {
-                    Toggle(isOn: keyboardCaptureBinding) {
-                        Label("Keyboard lock", systemImage: "keyboard")
-                    }
-                    .accessibilityIdentifier(AXIdentifiers.sessionKeyboardCaptureToggle)
-                    Toggle(isOn: pointerLockBinding) {
-                        Label("Pointer lock", systemImage: "cursorarrow.rays")
-                    }
-                    .accessibilityIdentifier(AXIdentifiers.sessionPointerLockToggle)
-                    Divider()
-                    Toggle(isOn: hideCursorBinding) {
-                        Label("Hide cursor over video", systemImage: "cursorarrow.slash")
-                    }
-                    .accessibilityIdentifier(AXIdentifiers.sessionHideCursorToggle)
-                } label: {
-                    Self.dualCaptureIcon(
-                        keyboardEngaged: keyboardCaptureEngaged,
-                        pointerEngaged: pointerLockEngaged
-                    )
-                    .accessibilityLabel("Capture")
-                }
-                .accessibilityIdentifier(AXIdentifiers.sessionCaptureMenu)
-                .help("Capture system keyboard shortcuts and/or lock the pointer for relative mouse mode. Optionally hide your local cursor over the video area when you'd rather see only the host's cursor. Keyboard capture requires Accessibility permission.")
-            }
-            if hasControlCapabilities {
-                ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        showControls.toggle()
-                    } label: {
-                        Label("Controls", systemImage: "slider.horizontal.3")
-                    }
-                    .accessibilityIdentifier(AXIdentifiers.sessionControlsButton)
-                    .popover(isPresented: $showControls, arrowEdge: .top) {
-                        ControlPanel()
-                            .environment(session)
-                    }
-                    .disabled(!controlsReady)
-                    .help("Power, clipboard sync, and the device's web interface.")
-                }
-            }
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    showStats.toggle()
-                } label: {
-                    Label("Stats", systemImage: "chart.line.uptrend.xyaxis")
-                }
-                .accessibilityIdentifier(AXIdentifiers.sessionStatsButton)
-                .popover(isPresented: $showStats, arrowEdge: .top) {
-                    StatsPanel()
-                        .environment(session)
-                }
-                .help("Live network and video diagnostics.")
-            }
+        }
+        .overlay(alignment: .top) {
+            if isFullscreen { fullscreenControls }
+        }
+        .onChange(of: isFullscreen) {
+            fullscreenBarOpen = false
+            pointerNearTop = false
+            watchPointerNearTop(isFullscreen)
         }
         // Publish actions for the app-wide File menu (RegiCommands).
         // While this window is focused, the menu shows session
@@ -412,6 +513,7 @@ struct KVMWindowView: View {
                 NSEvent.removeMonitor(monitor)
                 keyboardMonitor = nil
             }
+            watchPointerNearTop(false)
             if let observer = resignObserver {
                 NotificationCenter.default.removeObserver(observer)
                 resignObserver = nil

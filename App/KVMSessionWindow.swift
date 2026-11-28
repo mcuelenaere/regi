@@ -52,7 +52,7 @@ struct KVMSessionWindow: View {
         VStack(spacing: 0) {
             ZStack {
                 if isConnectedOrLater {
-                    KVMWindowView()
+                    KVMWindowView(isFullscreen: isFullscreen)
                 }
                 if shouldShowOverlay {
                     ConnectionStatusView(
