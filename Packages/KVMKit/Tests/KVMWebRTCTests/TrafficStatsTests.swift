@@ -37,7 +37,7 @@ final class TrafficStatsTests: XCTestCase {
     func testChannelLabels() {
         XCTAssertEqual(WebRTCStatsParser.category(forDataChannel: "hidrpc-unreliable-ordered"), .input)
         XCTAssertEqual(WebRTCStatsParser.category(forDataChannel: "rpc"), .control)
-        XCTAssertEqual(WebRTCStatsParser.category(forDataChannel: "host_bridge"), .clipboardAndFiles)
+        XCTAssertEqual(WebRTCStatsParser.category(forDataChannel: "guestfile_1"), .clipboardAndFiles)
         XCTAssertEqual(WebRTCStatsParser.category(forDataChannel: "terminal"), .other)
     }
 

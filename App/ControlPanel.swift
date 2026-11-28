@@ -17,7 +17,7 @@ struct ControlPanel: View {
     /// confirmation dialog shared by all destructive power buttons.
     @State private var confirmAction: KVMPowerAction?
     @State private var pendingError: String?
-    /// Persisted across launches; consumed by ClipboardSyncManager
+    /// Persisted across launches; consumed by TextClipboardSyncManager
     /// in KVMSessionWindow to decide whether to actually shuttle
     /// pasteboard data. Off by default — every local clipboard
     /// write while it's on flows to the connected host.
@@ -148,9 +148,8 @@ struct ControlPanel: View {
 
     @ViewBuilder
     private var clipboardSection: some View {
-        // VNC, and a JetKVM with OS Services but no agent, expose a
-        // text-only clipboard surface; otherwise JetKVM uses the agent
-        // bridge.
+        // VNC, and a JetKVM with OS Services, expose a text-only
+        // clipboard surface.
         if let textClipboard = session.textClipboard {
             textClipboardSection(textClipboard)
         } else {
@@ -158,26 +157,15 @@ struct ControlPanel: View {
         }
     }
 
+    /// A JetKVM whose host runs no OS Services sender has no clipboard.
     private var jetKVMClipboardSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Clipboard sync").font(.headline)
-                Spacer()
-                Text(session.clipboardAgentState == .active ? "Agent connected" : "Agent disconnected")
-                    .font(.caption)
-                    .foregroundStyle(session.clipboardAgentState == .active ? .green : .secondary)
-            }
-            Toggle("Sync local clipboard with host", isOn: $clipboardSyncEnabled)
-                .disabled(session.clipboardAgentState != .active)
-            if session.clipboardAgentState != .active {
-                Text("Install the JetKVM Helper or OS Services on the host to enable clipboard sync.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else if clipboardSyncEnabled {
-                Text("Every local clipboard write while this is on flows to the host. Password-manager copies marked transient are skipped.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            Text("Clipboard sync").font(.headline)
+            Toggle("Sync text clipboard with guest", isOn: $clipboardSyncEnabled)
+                .disabled(true)
+            Text("Install OS Services on the host to enable clipboard sync.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 

@@ -153,8 +153,7 @@ public enum TrafficCategory: String, CaseIterable, Sendable {
     case video
     /// Keyboard and mouse reports.
     case input
-    /// Clipboard sync and file transfers (the host agent's bridge, OS
-    /// Services file drops).
+    /// File transfers (OS Services file drops).
     case clipboardAndFiles
     /// The JSON-RPC control plane.
     case control

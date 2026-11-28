@@ -12,10 +12,6 @@ private let log = Logger(subsystem: "app.regi.mac", category: "os-services")
 /// program on the host talks to the KVM over its USB cable, and the KVM
 /// relays its clipboard and file services to us. Its video needs nothing
 /// from us — it arrives on the same video track as HDMI capture.
-///
-/// Runs next to the tinypipe agent (`ClipboardBridge`), which wins while
-/// it is connected: it carries more (images, files both ways) and pushes
-/// its changes.
 extension JetKVMBackend {
 
     /// The service's text limit, in UTF-8 bytes (PROTOCOL.md, clipboard).
@@ -26,8 +22,7 @@ extension JetKVMBackend {
     /// Called whenever an input of the clipboard's availability changes.
     func updateTextClipboard() {
         let guest = videoState?.guestClipboard
-        let available = rpcReady && clipboardAgentState != .active
-            && (guest?.read == true || guest?.write == true)
+        let available = rpcReady && (guest?.read == true || guest?.write == true)
         guard available != textClipboard.isAvailable else { return }
         textClipboard.isAvailable = available
         lastGuestClipboardText = nil

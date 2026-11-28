@@ -45,8 +45,6 @@ public actor WebRTCFacade {
     private var hidDataChannelDelegate: HIDDataChannelDelegate?
     private var rpcChannel: RTCDataChannel?
     private var rpcDelegate: FrameChannelDelegate?
-    private var hostBridgeChannel: RTCDataChannel?
-    private var hostBridgeDelegate: FrameChannelDelegate?
 
     public let localIceCandidates: AsyncStream<IceCandidate>
     public let videoTracks: AsyncStream<RTCVideoTrack>
@@ -61,12 +59,6 @@ public actor WebRTCFacade {
     public let incomingRPCFrames: AsyncStream<Data>
     /// Reflects the open/closed state of the `rpc` channel.
     public let rpcReadyState: AsyncStream<Bool>
-    /// Raw binary frames received on the `host_bridge` data channel.
-    /// JetKVM relays these from a host-side agent (clipboard sync etc.)
-    /// unchanged; consumers parse them as agent-protocol `Envelope`s.
-    public let incomingHostBridgeFrames: AsyncStream<Data>
-    /// Reflects the open/closed state of the `host_bridge` channel.
-    public let hostBridgeReadyState: AsyncStream<Bool>
     /// Connection-quality samples produced by the stats poller every
     /// ~1 second once the peer connection is up.
     public let stats: AsyncStream<ConnectionStats>
@@ -77,8 +69,6 @@ public actor WebRTCFacade {
     private let hidReadyStateContinuation: AsyncStream<Bool>.Continuation
     private let incomingRPCFramesContinuation: AsyncStream<Data>.Continuation
     private let rpcReadyStateContinuation: AsyncStream<Bool>.Continuation
-    private let incomingHostBridgeFramesContinuation: AsyncStream<Data>.Continuation
-    private let hostBridgeReadyStateContinuation: AsyncStream<Bool>.Continuation
     private let statsContinuation: AsyncStream<ConnectionStats>.Continuation
     private var statsTask: Task<Void, Never>?
 
@@ -99,8 +89,6 @@ public actor WebRTCFacade {
         (hidReadyState, hidReadyStateContinuation) = AsyncStream.makeStream()
         (incomingRPCFrames, incomingRPCFramesContinuation) = AsyncStream.makeStream()
         (rpcReadyState, rpcReadyStateContinuation) = AsyncStream.makeStream()
-        (incomingHostBridgeFrames, incomingHostBridgeFramesContinuation) = AsyncStream.makeStream()
-        (hostBridgeReadyState, hostBridgeReadyStateContinuation) = AsyncStream.makeStream()
         (stats, statsContinuation) = AsyncStream.makeStream()
     }
 
@@ -186,25 +174,6 @@ public actor WebRTCFacade {
         }
         rpc.delegate = rpcDelegate
         self.rpcChannel = rpc
-
-        // Open the `host_bridge` channel. Ordered + reliable: the agent
-        // protocol uses raw deflate which can't recover from a dropped
-        // frame, so retransmit is non-negotiable. The label and binary
-        // framing are part of the JetKVM relay's contract — see the
-        // firmware's internal/clipboard/ package.
-        let hostBridgeConfig = RTCDataChannelConfiguration()
-        hostBridgeConfig.isOrdered = true
-        let hostBridgeDelegate = FrameChannelDelegate(
-            binary: true,
-            framesContinuation: incomingHostBridgeFramesContinuation,
-            readyStateContinuation: hostBridgeReadyStateContinuation
-        )
-        self.hostBridgeDelegate = hostBridgeDelegate
-        guard let hostBridge = pc.dataChannel(forLabel: "host_bridge", configuration: hostBridgeConfig) else {
-            throw WebRTCFacadeError.dataChannelCreationFailed(label: "host_bridge")
-        }
-        hostBridge.delegate = hostBridgeDelegate
-        self.hostBridgeChannel = hostBridge
 
         // Kick off the connection-quality stats poller. Runs at ~1 Hz
         // for the lifetime of the peer connection. First sample lands
@@ -296,8 +265,8 @@ public actor WebRTCFacade {
     /// Input frames libwebrtc refused to queue, per connection. A refusal is a
     /// silently lost keypress or button transition -- "reliable" only means
     /// SCTP retransmits what it *accepted* -- so it must never pass unnoticed
-    /// the way it did when this result was discarded. sendHostBridge below has
-    /// always checked; the input path never did.
+    /// the way it did when this result was discarded. The other
+    /// senders always checked; the input path never did.
     public private(set) var hidSendRejections = 0
 
     /// Send a HID-RPC message on the reliable `hidrpc` channel. Best-effort:
@@ -323,36 +292,6 @@ public actor WebRTCFacade {
         return channel.sendData(buffer)
     }
 
-    /// Send one binary frame on the `host_bridge` data channel.
-    /// Returns `false` if the channel isn't open or the underlying
-    /// SCTP send queue rejected the buffer.
-    /// Queue one agent-protocol frame, pacing on the channel's send
-    /// buffer.
-    ///
-    /// The agent protocol's streaming layer has no application-level
-    /// credit scheme — it relies on transport backpressure (see
-    /// tinypipe's docs/transfer.md). That works on the agent's
-    /// WebSocket, whose write blocks, but `RTCDataChannel.sendData`
-    /// *buffers* instead of blocking. Serving one large representation
-    /// hands us a burst of ~63 KiB frames back-to-back, so without
-    /// pacing we'd balloon the SCTP send buffer until libwebrtc starts
-    /// rejecting sends (or drops the channel). Awaiting here propagates
-    /// the backpressure up into the bridge's serving loop, which is the
-    /// behaviour the spec assumes.
-    public func sendHostBridge(_ data: Data) async -> Bool {
-        guard let channel = hostBridgeChannel else {
-            log.debug("[WEBRTC] sendHostBridge: channel nil; dropping \(data.count, privacy: .public) bytes")
-            return false
-        }
-        return await pacedSend(data, isBinary: true, on: channel, highWaterMark: Self.hostBridgeHighWaterMark)
-    }
-
-    /// Start pacing once this much is already queued on `host_bridge`.
-    /// Deep enough to keep the pipe busy between our sends, shallow
-    /// enough that a superseded transfer doesn't sit behind megabytes of
-    /// stale frames.
-    private static let hostBridgeHighWaterMark: UInt64 = 1 * 1024 * 1024
-
     /// Open an ordered, reliable data channel on the live connection —
     /// one the device only expects once asked for it, such as an OS
     /// Services `guestfile_<drop>` channel. Nil when not connected.
@@ -376,16 +315,12 @@ public actor WebRTCFacade {
         hidDataChannelDelegate = nil
         rpcChannel = nil
         rpcDelegate = nil
-        hostBridgeChannel = nil
-        hostBridgeDelegate = nil
         localIceCandidatesContinuation.finish()
         videoTracksContinuation.finish()
         connectionStateContinuation.finish()
         hidReadyStateContinuation.finish()
         incomingRPCFramesContinuation.finish()
         rpcReadyStateContinuation.finish()
-        incomingHostBridgeFramesContinuation.finish()
-        hostBridgeReadyStateContinuation.finish()
         statsContinuation.finish()
     }
 
@@ -585,10 +520,9 @@ private func stateLabel(_ state: RTCDataChannelState) -> String {
     }
 }
 
-/// Delegate for a channel that carries raw frames of one kind: `rpc`
-/// (text; the JSONRPCClient parses it) or `host_bridge` (binary; the
-/// ClipboardBridge parses it as agent-protocol `Envelope`s). Forwards
-/// frames to the owning facade's stream and drops any of the other kind.
+/// Delegate for a channel that carries raw frames of one kind, such as
+/// `rpc` (text; the JSONRPCClient parses it). Forwards frames to the
+/// owning facade's stream and drops any of the other kind.
 private final class FrameChannelDelegate: NSObject, RTCDataChannelDelegate, @unchecked Sendable {
     let binary: Bool
     let framesContinuation: AsyncStream<Data>.Continuation

@@ -47,11 +47,9 @@ over TCP for standalone VNC servers.
 - **Pointer lock.** An optional mode for FPS / CAD work that pins the cursor
   and sends raw relative motion, so the host cursor doesn't walk away from
   yours on multi-monitor hosts.
-- **Clipboard and file transfer** *(JetKVM)*. With the JetKVM Helper on the
-  host, text, HTML, images and files sync both ways, and files dragged onto
-  the video drop where you release them. With OS Services firmware instead,
-  text syncs both ways and dropped files land in the host's Downloads folder,
-  each with its own cancel button. The Helper wins when both are present.
+- **Clipboard and file transfer** *(JetKVM)*. With OS Services firmware,
+  text syncs both ways and files dropped onto the video land in the host's
+  Downloads folder, each with its own cancel button.
 - **Bandwidth gate** *(JetKVM, VNC)*. Once the session window has been
   minimised or fully covered for 5 s, video pauses: the device stops encoding
   (JetKVM) or Regi stops requesting framebuffer updates (VNC). It resumes
@@ -76,7 +74,7 @@ over TCP for standalone VNC servers.
 | Video, keyboard, mouse, scroll | ✓ | ✓ | ✓ |
 | LAN discovery | ✓ | ✓ | — |
 | Power control | ATX | — | XVP, if the server offers it |
-| Clipboard sync | ✓ | — | Text |
+| Clipboard sync | Text | — | Text |
 | File transfer | ✓ | — | — |
 | Bandwidth gate | ✓ | — | ✓ |
 | Link to the device's web interface | ✓ | ✓ | — |
@@ -256,8 +254,8 @@ converted to Core ML by `Tools/ui-detector/convert.py`.
   documented HTTP / WebSocket / Janus interfaces.
 - [`stasel/WebRTC`](https://github.com/stasel/WebRTC) for the
   WebRTC.framework SwiftPM distribution.
-- [`apple/swift-protobuf`](https://github.com/apple/swift-protobuf) for the
-  clipboard transfer wire format.
+- [`apple/swift-protobuf`](https://github.com/apple/swift-protobuf) for
+  RegiProbe's telemetry wire format.
 - The [MCP Swift SDK](https://github.com/modelcontextprotocol/swift-sdk) for
   the MCP server's protocol layer.
 - [Microsoft OmniParser](https://github.com/microsoft/OmniParser) for the

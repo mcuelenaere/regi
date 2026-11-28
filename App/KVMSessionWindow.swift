@@ -18,13 +18,11 @@ private let gateLog = Logger(subsystem: "app.regi.mac", category: "bandwidth-gat
 struct KVMSessionWindow: View {
     let sessionID: KVMSessionWindowID
     @State private var session = Session()
-    @State private var clipboardSync: ClipboardSyncManager?
     /// Text-only clipboard sync (VNC, JetKVM OS Services). Inert unless the
-    /// session exposes a `TextClipboard` (only one of the two managers finds
-    /// its surface non-nil).
+    /// session exposes a `TextClipboard`.
     @State private var textClipboardSync: TextClipboardSyncManager?
     /// Mirror of the ControlPanel toggle so we can drive the clipboard sync
-    /// managers from this view's lifecycle.
+    /// manager from this view's lifecycle.
     @AppStorage("RegiClipboardSyncEnabled") private var clipboardSyncEnabled: Bool = false
     @State private var ownWindow: NSWindow?
     /// True between this window's didEnterFullScreen and
@@ -89,12 +87,6 @@ struct KVMSessionWindow: View {
             // First connection attempt fires on appear. We use .task
             // (not .onAppear) so the connect coroutine is cancelled if
             // the window goes away mid-flight.
-            if clipboardSync == nil {
-                clipboardSync = ClipboardSyncManager(
-                    session: session,
-                    initialEnabled: clipboardSyncEnabled
-                )
-            }
             if textClipboardSync == nil {
                 textClipboardSync = TextClipboardSyncManager(
                     session: session,
@@ -104,15 +96,10 @@ struct KVMSessionWindow: View {
             await connect()
         }
         .onChange(of: clipboardSyncEnabled) { _, newValue in
-            clipboardSync?.setEnabled(newValue)
             textClipboardSync?.setEnabled(newValue)
         }
-        .onChange(of: session.clipboardAgentState) { _, _ in
-            clipboardSync?.sessionStateChanged()
-        }
         .onChange(of: session.textClipboard?.isAvailable) { _, _ in
-            // VNC's tracks the connection; OS Services' the host's sender
-            // and the agent.
+            // VNC's tracks the connection; OS Services' the host's sender.
             textClipboardSync?.sessionStateChanged()
         }
         .onDisappear {
