@@ -37,6 +37,32 @@ licenses:
     Apache License 2.0.
     https://github.com/apple/swift-protobuf
 
-Both are compatible with the AGPL-3.0-or-later terms above. Note that
+  modelcontextprotocol/swift-sdk (MCP Swift SDK)
+    MIT License, in transition to Apache License 2.0: each contribution is
+    under one or the other, as its LICENSE file sets out.
+    Copyright (c) 2024-2025 Model Context Protocol a Series of LF Projects, LLC.
+    https://github.com/modelcontextprotocol/swift-sdk
+
+  apple/swift-log (linked by the MCP Swift SDK)
+    Apache License 2.0. Copyright 2018, 2019 The SwiftLog Project.
+    Contains a derivation of the lock implementation from SwiftNIO
+    (Apache License 2.0, https://github.com/apple/swift-nio).
+    https://github.com/apple/swift-log
+
+  apple/swift-system (linked by the MCP Swift SDK)
+    Apache License 2.0.
+    https://github.com/apple/swift-system
+
+  mattt/eventsource (linked by the MCP Swift SDK)
+    MIT License. Copyright 2025 Mattt (https://mat.tt).
+    https://github.com/mattt/eventsource
+
+  Microsoft OmniParser icon_detect model (the UI element detector,
+  converted to Core ML by Tools/ui-detector/convert.py)
+    GNU Affero General Public License v3.0; a copy is in
+    App/MCP/UIElementDetector.LICENSE.
+    https://github.com/microsoft/OmniParser
+
+All are compatible with the AGPL-3.0-or-later terms above. Note that
 Apache 2.0 is compatible with GPLv3/AGPLv3 but NOT with GPLv2 — keep this in
 mind before relicensing to any GPLv2-family license.

@@ -29,10 +29,11 @@ is in the macOS integration around it.
 
 - **JetKVM, PiKVM and VNC in one app.** Core remote control — video, keyboard,
   mouse, and scroll — works on every backend. Past that they differ: JetKVM
-  adds ATX power and codec/quality controls, JetKVM and VNC both do clipboard
-  sync and the bandwidth gate, and VNC offers power control when the server
-  negotiates XVP. PiKVM sessions are video and input only. Controls that don't
-  apply to the connected device are hidden rather than greyed out.
+  adds ATX power and file transfer, JetKVM and VNC both do clipboard sync and
+  the bandwidth gate, and VNC offers power control when the server negotiates
+  XVP. PiKVM sessions are video and input only. Controls that don't apply to
+  the connected device are hidden rather than greyed out, and for JetKVM and
+  PiKVM the Controls panel links to the device's web interface for the rest.
 - **Standalone VNC (RFB 3.8).** Connect to any plain VNC server. H.264 (RFB
   encoding 50, decoded via VideoToolbox) is preferred where offered, then
   Tight (JPEG via ImageIO), with ZRLE / Zlib / Hextile / CopyRect / Raw
@@ -45,6 +46,13 @@ is in the macOS integration around it.
   **None**, **VNC Authentication** and **VeNCrypt** (TLS) are supported, with
   the same self-signed trust prompt as the other backends — tick "Encrypted
   (TLS)" when adding the host to reach a VeNCrypt server.
+- **Clipboard and file transfer** *(JetKVM)*. Needs one of two things on the
+  host. With the JetKVM Helper running there, text, HTML, images and files
+  sync both ways, and files dragged onto the video are dropped where you
+  release them on the host's screen. With firmware that has OS Services, text
+  syncs both ways and files dropped on the video go to the host's Downloads
+  folder, with a banner showing progress and a cancel button per file. The
+  Helper is used when both are present.
 - **Real keyboard capture.** System shortcuts — ⌘Tab, ⌘Space (Spotlight),
   ⌘Q, ⌘H, Mission Control, function keys — route to the remote host via
   `CGEventTap`. Engages automatically when the session window is
@@ -70,9 +78,14 @@ is in the macOS integration around it.
   stops encoding (JetKVM) or Regi stops requesting framebuffer updates (VNC).
   Saves device CPU and LAN bandwidth while the window's hidden; resumes
   instantly when you bring it back.
+- **Connection stats** (⌘I). Round-trip time, jitter, packet loss, FPS, decode
+  time, input latency and playback delay, each with a history graph, plus a
+  traffic chart and session totals for both directions, split into video,
+  input, clipboard & files and control.
 - **First-class native UI.** SwiftUI, Mission Control thumbnails,
-  Window menu entries with each host's display name, native
-  fullscreen, real app icon in the Dock.
+  Window menu entries with each host's display name, a Dock menu that
+  connects straight to a saved host, native fullscreen, real app icon in
+  the Dock.
 - **MCP server** *(off by default)*. Lets an LLM client (Claude Code, Claude
   Desktop, Cursor, …) list your hosts, open sessions, take screenshots, use
   power controls, and above all run scripts: `run_script` takes JavaScript
@@ -111,16 +124,17 @@ The same comparison holds for PiKVM's web UI — a browser can't forward
 macOS shortcuts there either.
 
 What Regi *doesn't* replace: anything that's not part of an active
-remote-control session. The device's setup flow, advanced settings,
-firmware updates, and (for PiKVM) ATX power and mass-storage controls
-are still done through the web UI. Regi assumes you've configured the
-device there at least once.
+remote-control session. The device's setup flow, video and network
+settings, firmware updates, and (for PiKVM) ATX power and mass-storage
+controls are still done through the web UI, which Controls ▸ Open Web
+Interface… opens for you. Regi assumes you've configured the device
+there at least once.
 
 ## Requirements
 
 - macOS 14 (Sonoma) or later
-- Something to connect to: a JetKVM or PiKVM device on the network, or any
-  reachable VNC server
+- Something to connect to: a JetKVM (the Mini included) or PiKVM device on
+  the network, or any reachable VNC server
 - **JetKVM**: for HTTPS to default-config devices, firmware that
   produces RFC 5280-compliant certificate serial numbers (recent
   firmware does; older firmware still works over plain HTTP, and the
@@ -140,10 +154,9 @@ Releases are signed with a Developer ID and notarized by Apple, so they open wit
 
 `Regi.xcodeproj` is generated from [`project.yml`](project.yml) by
 [XcodeGen](https://xcodegen.com) and is not checked in, so generate it once after
-cloning:
-
-The UI element detector's Core ML weights are stored with Git LFS, so install
-it before cloning (without it the build has a 130-byte pointer instead of a model):
+cloning. The UI element detector's Core ML weights are stored with Git LFS, so
+install it before cloning (without it the build has a 130-byte pointer instead
+of a model):
 
 ```sh
 brew install git-lfs xcodegen
@@ -156,10 +169,11 @@ open Regi.xcodeproj
 
 Hit ⌘R in Xcode.
 
-`project.yml` is the source of truth for both targets — `Regi` and `RegiProbe`.
-Adding a source file needs no project edit: drop it in `App/` or
-`Probe/RegiProbe/` and run `xcodegen generate` again. Don't edit the `.xcodeproj`
-by hand; the next generate overwrites it.
+`project.yml` is the source of truth for all three targets: `Regi`, the
+`regi-mcp` relay it bundles, and `RegiProbe`. Adding a source file needs no
+project edit: drop it in `App/`, `MCPBridge/` or `Probe/RegiProbe/` and run
+`xcodegen generate` again. Don't edit the `.xcodeproj` by hand; the next
+generate overwrites it.
 
 ## About the name
 
@@ -179,8 +193,11 @@ distribute, or run as a network service, has to carry the same freedoms and
 come with its source.
 
 Bundled dependencies keep their own licenses: `stasel/WebRTC` (BSD-3-Clause
-plus the WebRTC patent grant) and `apple/swift-protobuf` (Apache 2.0). Both
-are AGPLv3-compatible. The UI element detector is Microsoft OmniParser's
+plus the WebRTC patent grant), `apple/swift-protobuf` (Apache 2.0) and
+`modelcontextprotocol/swift-sdk` (MIT, moving to Apache 2.0), which brings
+in `apple/swift-log` and `apple/swift-system` (Apache 2.0) and
+`mattt/eventsource` (MIT). All are AGPLv3-compatible; [NOTICE](NOTICE) has
+the full list. The UI element detector is Microsoft OmniParser's
 `icon_detect` model (AGPL-3.0, `App/MCP/UIElementDetector.LICENSE`),
 converted to Core ML by `Tools/ui-detector/convert.py`.
 
@@ -194,5 +211,7 @@ converted to Core ML by `Tools/ui-detector/convert.py`.
   WebRTC.framework SwiftPM distribution.
 - [`apple/swift-protobuf`](https://github.com/apple/swift-protobuf) for the
   clipboard transfer wire format.
+- The [MCP Swift SDK](https://github.com/modelcontextprotocol/swift-sdk) for
+  the MCP server's protocol layer.
 - [Microsoft OmniParser](https://github.com/microsoft/OmniParser) for the
   icon detector behind `screen.elements()`.
