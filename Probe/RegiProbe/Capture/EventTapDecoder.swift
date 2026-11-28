@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import CoreGraphics
+import Foundation
 import ProbeKit
 
 /// Turns a `CGEvent` into a `ProbeEvent.Payload`.
@@ -53,11 +54,19 @@ enum EventTapDecoder {
             ))
 
         case .scrollWheel:
+            // Report the physical wheel's direction, not what this Mac's
+            // natural-scrolling setting turned it into, so scenarios can
+            // assert direction whatever the target is set to. Regi sends the
+            // physical direction too; see KVMVideoView.scrollWheel.
+            let s: Int32 = naturalScrolling ? -1 : 1
+            func axis(_ f: CGEventField) -> Int32 {
+                s &* Int32(truncatingIfNeeded: event.getIntegerValueField(f))
+            }
             return .wheel(.init(
-                lineDeltaY: Int32(truncatingIfNeeded: event.getIntegerValueField(.scrollWheelEventDeltaAxis1)),
-                lineDeltaX: Int32(truncatingIfNeeded: event.getIntegerValueField(.scrollWheelEventDeltaAxis2)),
-                pointDeltaY: Int32(truncatingIfNeeded: event.getIntegerValueField(.scrollWheelEventPointDeltaAxis1)),
-                pointDeltaX: Int32(truncatingIfNeeded: event.getIntegerValueField(.scrollWheelEventPointDeltaAxis2)),
+                lineDeltaY: axis(.scrollWheelEventDeltaAxis1),
+                lineDeltaX: axis(.scrollWheelEventDeltaAxis2),
+                pointDeltaY: axis(.scrollWheelEventPointDeltaAxis1),
+                pointDeltaX: axis(.scrollWheelEventPointDeltaAxis2),
                 // A KVM wheel detent must arrive discrete; trackpad-style
                 // continuous scroll here would be a real finding.
                 isContinuous: event.getIntegerValueField(.scrollWheelEventIsContinuous) != 0,
@@ -68,6 +77,14 @@ enum EventTapDecoder {
         default:
             return gesture(type: type, event: event)
         }
+    }
+
+    /// System Settings' "natural scrolling", the setting behind
+    /// `NSEvent.isDirectionInvertedFromDevice` — which can't be read here
+    /// without AppKit. Absent means the default, which is on. Read per event
+    /// (UserDefaults is thread-safe and cached) so toggling it mid-run counts.
+    private static var naturalScrolling: Bool {
+        UserDefaults.standard.object(forKey: "com.apple.swipescrolldirection") as? Bool ?? true
     }
 
     /// Only the raw event type is available without constructing an `NSEvent`,

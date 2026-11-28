@@ -297,10 +297,10 @@ public enum Catalogue {
 
     // MARK: - Wheel
 
-    /// PRECONDITION for every direction assertion below: the target's
-    /// "natural scrolling" setting must match the driver's. It inverts both
-    /// axes, and these scenarios assert absolute direction, so a mismatch
-    /// fails them for a reason that has nothing to do with Regi.
+    /// Direction is physical wheel direction at both ends, so "natural
+    /// scrolling" on either machine does not matter: Regi undoes the driver's
+    /// (KVMVideoView.scrollWheel) and the probe undoes the target's
+    /// (EventTapDecoder). Injected events carry no inversion to begin with.
     ///
     /// Three detents rather than one, deliberately.
     ///
@@ -324,8 +324,8 @@ public enum Catalogue {
         ])
 
     /// Asserts only that horizontal stays on the horizontal axis and does not
-    /// leak into vertical. The *sign* is asserted separately below, because it
-    /// is currently wrong and the two questions deserve separate verdicts.
+    /// leak into vertical. The *sign* is asserted separately below; the two
+    /// questions deserve separate verdicts.
     public static let wheelHorizontal = Scenario(
         id: "ptr.wheel.horizontal", title: "horizontal wheel stays on the horizontal axis",
         tags: [.pointer],
@@ -344,16 +344,10 @@ public enum Catalogue {
     /// Regression for a real bug: horizontal scroll direction used to be
     /// inverted end to end — scrolling right in Regi scrolled the target left.
     ///
-    /// Confirmed by toggling "natural scrolling" on the target, which flips
-    /// *both* axes: vertical went from correct to inverted while horizontal
-    /// went from inverted to correct. No setting made both correct at once, so
-    /// the axes genuinely disagreed rather than the machines being configured
-    /// differently. USB HID AC Pan runs opposite to NSEvent.scrollingDeltaX;
-    /// JetKVMBackend.sendWheelReport now negates wheelX.
-    ///
-    /// PRECONDITION: the target must have "natural scrolling" set the same way
-    /// as the driver, since it inverts both axes and these assert absolute
-    /// direction.
+    /// Toggling "natural scrolling" on the target flipped both axes, and no
+    /// setting made both correct at once: NSEvent.scrollingDeltaX runs
+    /// opposite to USB HID AC Pan, while scrollingDeltaY matches the HID
+    /// wheel. KVMVideoView.scrollWheel now negates X for every backend.
     public static let wheelHorizontalDirection = Scenario(
         id: "ptr.wheel.horizontalDirection",
         title: "horizontal wheel preserves direction",

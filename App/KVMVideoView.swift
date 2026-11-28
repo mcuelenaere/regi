@@ -289,14 +289,24 @@ final class KVMVideoView: NSView {
     override func otherMouseUp(with event: NSEvent) { sendPointer(event: event, motion: false) }
 
     override func scrollWheel(with event: NSEvent) {
-        // NSEvent.scrollingDelta > 0 = user scrolled up; HID wheel
-        // positive = wheel rotated up = page scrolls up. Same sign,
-        // no negation needed (the web frontend negates because
-        // browser WheelEvent.deltaY uses the opposite convention).
+        // The backends take the physical wheel's motion in USB HID terms
+        // (wheelY > 0 = rolled away from the user, wheelX > 0 = right),
+        // exactly what a real mouse plugged into the target would send.
+        // The target then applies its *own* natural-scrolling setting.
+        //
+        // NSEvent's deltas are not that. AppKit has already applied this
+        // Mac's natural-scrolling setting to them (flagged by
+        // isDirectionInvertedFromDevice), so undo it, or the target applies
+        // it a second time. And with the flip undone, scrollingDeltaY matches
+        // HID's sign but scrollingDeltaX runs opposite to HID's AC Pan
+        // (positive = left), so X is negated as well.
+        let device: CGFloat = event.isDirectionInvertedFromDevice ? -1 : 1
+        let dy = device * event.scrollingDeltaY
+        let dx = -device * event.scrollingDeltaX
         if event.hasPreciseScrollingDeltas {
-            handleTrackpadScroll(event)
+            handleTrackpadScroll(event, dy: dy, dx: dx)
         } else {
-            handleWheelScroll(event)
+            handleWheelScroll(dy: dy, dx: dx)
         }
     }
 
@@ -305,7 +315,7 @@ final class KVMVideoView: NSView {
     /// `wheelEmitInterval` cadence — see `WheelAccumulator` for the
     /// math. Flushes immediately at gesture end so the user's input
     /// isn't held back by the throttle on the final frame.
-    private func handleTrackpadScroll(_ event: NSEvent) {
+    private func handleTrackpadScroll(_ event: NSEvent, dy: CGFloat, dx: CGFloat) {
         let phase = event.phase
         let momentum = event.momentumPhase
 
@@ -326,10 +336,7 @@ final class KVMVideoView: NSView {
             return
         }
 
-        wheelAccumulator.add(
-            deltaY: Double(event.scrollingDeltaY),
-            deltaX: Double(event.scrollingDeltaX)
-        )
+        wheelAccumulator.add(deltaY: Double(dy), deltaX: Double(dx))
 
         // Flush at terminal events regardless of the throttle so the
         // last bit of accumulated motion lands on the host. Two
@@ -350,9 +357,9 @@ final class KVMVideoView: NSView {
     /// `hasPreciseScrollingDeltas == false`). Events arrive at
     /// detent rate already, so we emit immediately per event using
     /// the same `clampWheelDelta` shape the web frontend uses.
-    private func handleWheelScroll(_ event: NSEvent) {
-        let yTick = Self.clampWheelDelta(event.scrollingDeltaY)
-        let xTick = Self.clampWheelDelta(event.scrollingDeltaX)
+    private func handleWheelScroll(dy: CGFloat, dx: CGFloat) {
+        let yTick = Self.clampWheelDelta(dy)
+        let xTick = Self.clampWheelDelta(dx)
         if yTick == 0 && xTick == 0 { return }
         session?.sendWheelReport(wheelY: yTick, wheelX: xTick)
     }
