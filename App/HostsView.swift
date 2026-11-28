@@ -4,10 +4,6 @@ import SwiftUI
 import KVMKit
 
 extension Notification.Name {
-    /// Posted by the File-menu "Add Host…" (⌘N) command. HostsView
-    /// listens via .onReceive and presents the add-host sheet — the same
-    /// one the bottom bar's + button opens.
-    static let regiAddHost = Notification.Name("RegiAddHost")
     /// Posted by the File-menu "Connect", "Edit Host…" and "Delete Host"
     /// (⌘⌫) commands. HostsView acts on the currently-selected host; a
     /// no-op when nothing's selected or a sheet is already open. (Menu
@@ -36,7 +32,6 @@ struct HostsView: View {
     @Environment(\.openWindow) private var openWindow
 
     @State private var selection: HostListEntry.ID?
-    @State private var showingAdd = false
     @State private var editing: SavedHost?
     /// Set non-nil when the user has requested a delete; the alert
     /// binds to this and fires on confirmation. Routes both the
@@ -127,27 +122,24 @@ struct HostsView: View {
             hostMenuModel.hasSelection = selectedEntry != nil
             hostMenuModel.hasSavedHostSelected = selectedSavedHost != nil
         }
-        .sheet(isPresented: $showingAdd) {
+        .sheet(isPresented: Bindable(hostMenuModel).isAddingHost) {
             HostFormSheet(mode: .add) { host in
                 store.add(host)
                 selection = HostListEntry.saved(host).id
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: .regiAddHost)) { _ in
-            showingAdd = true
-        }
         // File-menu Connect/Edit/Delete act on the selection. Guarded so
         // they no-op with nothing selected or while a sheet/alert is up.
         .onReceive(NotificationCenter.default.publisher(for: .regiConnectHost)) { _ in
-            guard editing == nil, !showingAdd, let entry = selectedEntry else { return }
+            guard editing == nil, !hostMenuModel.isAddingHost, let entry = selectedEntry else { return }
             connect(entry)
         }
         .onReceive(NotificationCenter.default.publisher(for: .regiEditHost)) { _ in
-            guard editing == nil, !showingAdd, let host = selectedSavedHost else { return }
+            guard editing == nil, !hostMenuModel.isAddingHost, let host = selectedSavedHost else { return }
             editing = host
         }
         .onReceive(NotificationCenter.default.publisher(for: .regiDeleteHost)) { _ in
-            guard editing == nil, !showingAdd, hostPendingDelete == nil,
+            guard editing == nil, !hostMenuModel.isAddingHost, hostPendingDelete == nil,
                   let host = selectedSavedHost else { return }
             hostPendingDelete = host
         }
@@ -261,7 +253,7 @@ struct HostsView: View {
     private var gutterBar: some View {
         HStack(spacing: 2) {
             Spacer()
-            Button { showingAdd = true } label: {
+            Button { hostMenuModel.isAddingHost = true } label: {
                 Image(systemName: "plus")
             }
             .accessibilityIdentifier(AXIdentifiers.hostsAddButton)

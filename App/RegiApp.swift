@@ -74,7 +74,11 @@ struct KVMSessionWindowID: Hashable, Codable {
 /// item for every `Window` scene and it ends up calling
 /// `openWindow(id: "hosts")` under the hood whether or not an
 /// instance currently exists.
+@MainActor
 private final class AppDelegate: NSObject, NSApplicationDelegate {
+    /// Owned here rather than by RegiApp so the Dock menu can reach it.
+    let hostMenuModel = HostMenuModel()
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         MCPHost.shared.applySettings()
     }
@@ -98,7 +102,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Items to add to the dock icon's right-click menu: a "Connect To"
     /// submenu with the saved hosts, in the Hosts window's (user-chosen)
-    /// order, then "Other…" for the Hosts window.
+    /// order, then "Other…" to add a host.
     /// macOS lists open windows above these and its own entries (Options,
     /// Quit, …) below on its own.
     func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
@@ -110,7 +114,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             hosts.addItem(item)
         }
         if hosts.numberOfItems > 0 { hosts.addItem(.separator()) }
-        let other = NSMenuItem(title: String(localized: "Other…"), action: #selector(showHosts(_:)), keyEquivalent: "")
+        let other = NSMenuItem(title: String(localized: "Other…"), action: #selector(addHost(_:)), keyEquivalent: "")
         other.target = self
         hosts.addItem(other)
 
@@ -123,9 +127,9 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // A Dock menu click doesn't activate the app, so without the
     // activate() the window opens behind whatever app is in front.
-    @objc private func showHosts(_ sender: Any?) {
+    @objc private func addHost(_ sender: Any?) {
         NSApp.activate()
-        openHostsViaMenu()
+        hostMenuModel.addHost()
     }
 
     /// Opens the host's session window, or brings it forward if open.
@@ -208,6 +212,17 @@ final class HostMenuModel {
     /// A saved host selected — gates Edit/Delete (discovered hosts can't
     /// be edited or deleted).
     var hasSavedHostSelected = false
+    /// The Hosts window's add-host sheet. Kept here rather than in the view
+    /// so it can be opened while that window is closed: the sheet shows as
+    /// soon as the window appears.
+    var isAddingHost = false
+
+    /// File ▸ Add Host… and the Dock's "Other…": the Hosts window with the
+    /// add-host sheet open.
+    func addHost() {
+        isAddingHost = true
+        openHostsViaMenu()
+    }
 }
 
 /// File-menu command set. Replaces the entire SwiftUI-auto-generated
@@ -228,7 +243,8 @@ final class HostMenuModel {
 /// Window menu's auto-injected "Hosts" entry (from the `Window("Hosts", …)`
 /// scene) and the dock menu already do that from everywhere.
 ///
-/// Host actions post notifications rather than reading a focused value:
+/// Add Host… goes through HostMenuModel. The other host actions post
+/// notifications rather than reading a focused value:
 /// the Hosts scene is a single `Window` (not a `WindowGroup`), and its
 /// `.focusedSceneValue` doesn't reach `Commands` reliably, so the items
 /// stay enabled and HostsView no-ops them when nothing's selected.
@@ -252,12 +268,12 @@ struct RegiCommands: Commands {
                 // management. (These belong in File, not Edit.) Add (create)
                 // sits on its own; below the divider are the commands that
                 // act on the selected host — Connect (any selection), Edit
-                // and Delete (saved only). Each posts a notification
+                // and Delete (saved only), which post notifications
                 // HostsView handles. Delete also gets ⌘⌫ — plain ⌫ is
                 // handled inside the list so it doesn't shadow Backspace in
                 // text fields.
                 Button {
-                    NotificationCenter.default.post(name: .regiAddHost, object: nil)
+                    hostMenuModel.addHost()
                 } label: {
                     Label("Add Host…", systemImage: "plus")
                 }
@@ -304,7 +320,6 @@ struct RegiApp: App {
     @State private var hostStore = MCPHost.shared.hostStore
     @State private var trustStore = TrustedHostStore()
     @State private var discovery = DeviceDiscovery()
-    @State private var hostMenuModel = HostMenuModel()
 
     var body: some Scene {
         // Root window: the saved-hosts list. `Window` (singular) —
@@ -319,11 +334,11 @@ struct RegiApp: App {
                 .environment(hostStore)
                 .environment(trustStore)
                 .environment(discovery)
-                .environment(hostMenuModel)
+                .environment(appDelegate.hostMenuModel)
                 .onAppear { discovery.start() }
         }
         .defaultSize(width: 520, height: 420)
-        .commands { RegiCommands(hostMenuModel: hostMenuModel) }
+        .commands { RegiCommands(hostMenuModel: appDelegate.hostMenuModel) }
 
         // One window per connected host. Spawned by openWindow(value:)
         // from HostsView with a KVMSessionWindowID. Each window owns
