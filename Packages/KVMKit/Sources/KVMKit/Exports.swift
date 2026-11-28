@@ -3,7 +3,7 @@
 // The App links only `KVMKit` (the umbrella) but uses public types from the
 // core and backend modules directly — `KVMState`, `DeviceEndpoint`,
 // `KVMPowerAction`, input primitives, `TextClipboard` (KVMCore);
-// `ClipboardBridge`, `ClipboardSource`, `VideoState` (JetKVMKit).
+// `VideoState` (JetKVMKit).
 // Re-export them so a single `import KVMKit` in the App resolves everything.
 //
 // KVMWebRTC is intentionally NOT re-exported: the App is WebRTC-free and never

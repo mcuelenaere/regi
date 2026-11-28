@@ -58,8 +58,6 @@ public final class Session {
     public var usbState: String? { jetKVM?.usbState }
     public var streamQualityFactor: Double? { jetKVM?.streamQualityFactor }
     public var failsafe: FailsafeModeNotification? { jetKVM?.failsafe }
-    public var clipboardAgentState: ClipboardAgentState { jetKVM?.clipboardAgentState ?? .absent }
-    public var clipboardBridge: ClipboardBridge? { jetKVM?.clipboardBridge }
     public var canWakeHost: Bool {
         jetKVM?.deviceMetadata?.firmwareIsAtLeast(JetKVMBackend.wakeHostMinVersion) == true
     }
@@ -70,7 +68,7 @@ public final class Session {
     }
 
     /// The text-only clipboard: VNC's, or a JetKVM's OS Services one while
-    /// it is available (otherwise the JetKVM's is the agent bridge above).
+    /// it is available.
     /// The App-layer `TextClipboardSyncManager` binds to it.
     public var textClipboard: TextClipboard? {
         if let vnc = backend as? VNCBackend { return vnc.textClipboard }

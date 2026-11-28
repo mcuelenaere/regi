@@ -118,21 +118,8 @@ public final class JetKVMBackend: KVMBackend {
     /// hasn't sent one yet; `.active == true` is the signal that the
     /// device is in failsafe mode and the UI should warn the user.
     public internal(set) var failsafe: FailsafeModeNotification?
-    /// Presence of a host-side clipboard agent on the connected
-    /// JetKVM. Driven by the `clipboardAgentStateChanged` push
-    /// notification + a bootstrap `getClipboardAgentState` RPC at
-    /// rpc-ready. `.absent` until proven otherwise.
-    public internal(set) var clipboardAgentState: ClipboardAgentState = .absent {
-        didSet { updateTextClipboard() }
-    }
-    /// Wire-protocol bridge for the `host_bridge` data channel.
-    /// Constructed on connect; nil between sessions. The App layer
-    /// injects a `ClipboardSource` (NSPasteboard-backed) into
-    /// `clipboardBridge?.source` so it can ship and receive offers.
-    public private(set) var clipboardBridge: ClipboardBridge?
     /// OS Services' text clipboard (see `JetKVMBackend+OSServices`).
-    /// Available while the host's sender offers one and no tinypipe agent
-    /// is connected.
+    /// Available while the host's sender offers one.
     public let textClipboard = TextClipboard()
     /// The text we last saw on, or put on, the host's clipboard through OS
     /// Services; a read only reaches this Mac when it differs.
@@ -623,16 +610,6 @@ public final class JetKVMBackend: KVMBackend {
         hidQueue = InputQueue { [weak webrtc] message in
             await webrtc?.sendHID(message)
         }
-        // 0. Stand up the clipboard bridge. Lives for the session
-        //    lifetime; the App layer wires a NSPasteboard-backed
-        //    `ClipboardSource` into `bridge.source` and consumes
-        //    `bridge.inboundOffers`. The closure captures `webrtc`
-        //    weakly so we don't keep the facade alive past teardown.
-        let bridge = ClipboardBridge { [weak webrtc] data in
-            guard let webrtc else { return false }
-            return await webrtc.sendHostBridge(data)
-        }
-        self.clipboardBridge = bridge
         // 1. Server → us: answers and ICE candidates from signaling stream.
         pumpTasks.append(Task { [weak self] in
             do {
@@ -740,29 +717,15 @@ public final class JetKVMBackend: KVMBackend {
             }
         })
 
-        // 9. host_bridge channel pumps — feed the clipboard bridge.
-        //    Ready-state drives the Hello handshake; binary frames are
-        //    the wire-protocol envelopes the bridge decodes.
-        pumpTasks.append(Task { @MainActor [weak self] in
-            for await ready in await webrtc.hostBridgeReadyState {
-                await self?.clipboardBridge?.handleChannelReadyChange(ready)
-            }
-        })
-        pumpTasks.append(Task { @MainActor [weak self] in
-            for await frame in await webrtc.incomingHostBridgeFrames {
-                await self?.clipboardBridge?.handleInboundFrame(frame)
-            }
-        })
-
-        // 10. Connection-quality sampler. Drives the live FPS/RTT in
-        //    the status strip and the Stats panel sparklines.
+        // 9. Connection-quality sampler. Drives the live FPS/RTT in
+        //   the status strip and the Stats panel sparklines.
         pumpTasks.append(Task { @MainActor [weak self] in
             for await sample in await webrtc.stats {
                 self?.appendStatsSample(sample)
             }
         })
 
-        // 11. KeypressKeepAlive heartbeat — fires every 50ms on the
+        // 10. KeypressKeepAlive heartbeat — fires every 50ms on the
         //     reliable HID channel for as long as any key is held.
         //     The JetKVM gadget driver auto-releases held keys after
         //     ~100ms of no HID traffic; the keep-alive fills any gap
@@ -828,24 +791,6 @@ public final class JetKVMBackend: KVMBackend {
         case "failsafeMode":
             if let f = try? n.decodeParams(FailsafeModeNotification.self) {
                 failsafe = f
-            }
-
-        case "clipboardAgentStateChanged":
-            // Wire shape: `{ "state": "absent" | "active" }` (see firmware
-            // clipboard.go:125). Drop the notification on shape or value
-            // mismatch rather than clobber state with .absent.
-            struct Payload: Decodable { let state: String }
-            do {
-                let p = try n.decodeParams(Payload.self)
-                if let s = ClipboardAgentState(rawValue: p.state) {
-                    let before = clipboardAgentState
-                    clipboardAgentState = s
-                    log.info("[SESSION] clipboardAgentStateChanged: \(before.rawValue, privacy: .public) → \(s.rawValue, privacy: .public)")
-                } else {
-                    log.error("[SESSION] clipboardAgentStateChanged: unknown state '\(p.state, privacy: .public)'; ignoring")
-                }
-            } catch {
-                log.error("[SESSION] clipboardAgentStateChanged decode failed: \(String(describing: error), privacy: .public)")
             }
 
         default:
@@ -1082,8 +1027,6 @@ public final class JetKVMBackend: KVMBackend {
         atxState = nil
         streamQualityFactor = nil
         failsafe = nil
-        clipboardAgentState = .absent
-        clipboardBridge = nil
         fileDropTask?.cancel()
         fileDropTask = nil
         fileDrop = nil

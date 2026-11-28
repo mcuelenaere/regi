@@ -19,12 +19,6 @@
     "Address" : {
 
     },
-    "Agent connected" : {
-
-    },
-    "Agent disconnected" : {
-
-    },
     "Another peer connected to this device — your session was taken over." : {
 
     },
@@ -91,9 +85,6 @@
     "Enter a hostname or http(s) URL." : {
 
     },
-    "Every local clipboard write while this is on flows to the host. Password-manager copies marked transient are skipped." : {
-
-    },
     "Force Off" : {
 
     },
@@ -124,7 +115,7 @@
     "Incompatible resolution or refresh rate settings" : {
 
     },
-    "Install the JetKVM Helper on the host to enable clipboard sync." : {
+    "Install OS Services on the host to enable clipboard sync." : {
 
     },
     "Issues with the source device's HDMI output" : {
@@ -260,9 +251,6 @@
 
     },
     "Stats" : {
-
-    },
-    "Sync local clipboard with host" : {
 
     },
     "Sync text clipboard with guest" : {

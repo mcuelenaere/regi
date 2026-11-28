@@ -4,8 +4,7 @@ import AppKit
 import Foundation
 
 /// Watches `NSPasteboard.general` for genuine local changes and reports them
-/// via `onLocalChange`. Extracted from `ClipboardSyncManager` so both the
-/// JetKVM agent-based sync and the VNC text-only sync share one implementation.
+/// via `onLocalChange`. Used by `TextClipboardSyncManager`.
 ///
 /// macOS has no public NSPasteboard-changed notification, so this follows the
 /// standard pattern: a low-rate poll plus opportunistic hot checks on

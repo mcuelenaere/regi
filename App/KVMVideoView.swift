@@ -83,31 +83,16 @@ final class KVMVideoView: NSView {
         return NSCursor(image: image, hotSpot: .zero)
     }()
 
-    /// A drag gesture is in progress over this view and we still owe the
-    /// agent a `DragEnd` for it.
-    fileprivate var dragActive: Bool = false
-    /// `drag_id` of that drag, once `beginDrag` has come back with one.
-    fileprivate var activeDragId: UInt32?
-    /// The operator released before `beginDrag` returned; the task that
-    /// started the drag reports this instead.
-    fileprivate var pendingDragEnd: DragEnd.Status?
-    /// Bumped on every entry. `beginDrag` is async, so a gesture that
-    /// leaves and re-enters within one round trip has two announce tasks
-    /// in flight; each checks this to tell whose drag it is holding, so
-    /// the superseded one ends its own `drag_id` instead of leaking it.
-    fileprivate var dragGeneration: UInt64 = 0
-    /// The drag over this view goes to OS Services, not the agent: the
-    /// files are sent on release, with no drag on the host.
-    fileprivate var osServicesDrag = false
+    /// Files are being dragged over this view and the host can take them
+    /// through OS Services: they are sent on release.
+    fileprivate var fileDragAccepted = false
 
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
         layer?.backgroundColor = NSColor.black.cgColor
-        // Drag origin (FEATURE_DRAG_V1): the operator picks files up in
-        // Finder and drags them onto the host's screen. Files only — a
-        // folder drop on the far side has nowhere to put content forms,
-        // and the agent filters them out anyway.
+        // Files dragged from Finder onto the video go to the host's
+        // Downloads folder through OS Services.
         registerForDraggedTypes([.fileURL])
     }
 
@@ -550,15 +535,9 @@ final class KVMVideoView: NSView {
     ///   nearest edge of the video rect, so we can always emit
     ///   button up/down without leaving the host with a stuck button.
     private func normalizedCoords(event: NSEvent, clampOutOfBounds: Bool) -> (x: Int32, y: Int32)? {
-        normalizedCoords(windowPoint: event.locationInWindow, clampOutOfBounds: clampOutOfBounds)
-    }
-
-    /// Same, from a raw window-space point — what `NSDraggingInfo` gives
-    /// us, since a drag session produces no `NSEvent`s for the destination.
-    private func normalizedCoords(windowPoint: NSPoint, clampOutOfBounds: Bool) -> (x: Int32, y: Int32)? {
         let videoRect = videoContentRect
         guard videoRect.width > 0, videoRect.height > 0 else { return nil }
-        let local = convert(windowPoint, from: nil)
+        let local = convert(event.locationInWindow, from: nil)
         let videoX = local.x - videoRect.minX
         let videoY = local.y - videoRect.minY
         let inVideo = videoX >= 0 && videoX <= videoRect.width
@@ -675,133 +654,33 @@ extension KVMVideoView {
     }
 }
 
-// MARK: - Drag destination (FEATURE_DRAG_V1 origin role)
+// MARK: - Drag destination
 //
-// Regi is always the drag *origin*: the operator picks files up locally
-// and drags them onto the video surface, which stands in for the host's
-// screen. We announce the payload on entry, keep the host's cursor
-// following the drag over the HID channel (out-of-band of the transfer
-// protocol, per the spec), and report the release. The agent is the
-// proxy — it engages the host's own drag machinery and, on DROPPED,
-// pulls the bytes with `StreamOpen{DragItem}`.
-//
-// Nothing moves until the drop: `DragOffer` is an announcement, not a
-// transfer.
+// A host with OS Services takes files dropped on the video into its
+// Downloads folder; they are sent on release, with no drag on the host.
 extension KVMVideoView {
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-        let urls = Self.fileURLs(from: sender)
-        // Without an agent, a host with OS Services takes the files into
-        // its Downloads folder.
-        osServicesDrag = !urls.isEmpty && session?.clipboardAgentState != .active
-            && session?.canDropFiles == true
-        if osServicesDrag { return .copy }
-        guard !urls.isEmpty, let bridge = session?.clipboardBridge else { return [] }
-        // Leaving and re-entering the view is one gesture to the operator
-        // but two entries to us. End whatever the previous entry announced
-        // rather than leaking it.
-        endActiveDrag(status: .dragStatusCancelled)
-
-        dragGeneration &+= 1
-        let generation = dragGeneration
-        dragActive = true
-        activeDragId = nil
-        pendingDragEnd = nil
-        // `beginDrag` is async and AppKit needs an answer now, so the offer
-        // goes out behind us. The gesture can therefore finish — or be
-        // superseded by a re-entry — before we have a drag_id.
-        Task { @MainActor [weak self] in
-            let dragId = await bridge.beginDrag(fileURLs: urls)
-            guard let self, self.dragGeneration == generation, self.dragActive else {
-                // Superseded, or the gesture is over: this drag_id is ours
-                // to retire, and nobody else knows about it.
-                if let dragId { await bridge.endDrag(dragId, status: .dragStatusCancelled) }
-                return
-            }
-            guard let dragId else {
-                // Peer can't take drags; stop pretending we have one.
-                self.dragActive = false
-                self.pendingDragEnd = nil
-                return
-            }
-            if let pending = self.pendingDragEnd {
-                self.dragActive = false
-                self.pendingDragEnd = nil
-                await bridge.endDrag(dragId, status: pending)
-            } else {
-                self.activeDragId = dragId
-            }
-        }
-
-        forwardDragPointer(sender)
-        return .copy
+        fileDragAccepted = !Self.fileURLs(from: sender).isEmpty && session?.canDropFiles == true
+        return fileDragAccepted ? .copy : []
     }
 
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
-        if osServicesDrag { return .copy }
-        guard dragActive else { return [] }
-        // The cursor rides the KVM's HID channel, out-of-band of the
-        // transfer protocol — without this the host's proxy drag has
-        // nothing to follow.
-        forwardDragPointer(sender)
-        return .copy
+        fileDragAccepted ? .copy : []
     }
 
     override func draggingExited(_ sender: NSDraggingInfo?) {
-        osServicesDrag = false
-        endActiveDrag(status: .dragStatusCancelled)
+        fileDragAccepted = false
     }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
-        if osServicesDrag {
-            osServicesDrag = false
-            session?.dropFiles(Self.fileURLs(from: sender))
-            return true
-        }
-        guard dragActive else { return false }
-        forwardDragPointer(sender)
-        endActiveDrag(status: .dragStatusDropped)
+        guard fileDragAccepted else { return false }
+        fileDragAccepted = false
+        session?.dropFiles(Self.fileURLs(from: sender))
         return true
     }
 
-    /// Safety net: AppKit always ends a session here, so a gesture that
-    /// aborted without an exit or a drop still gets its `DragEnd`.
     override func draggingEnded(_ sender: NSDraggingInfo) {
-        osServicesDrag = false
-        endActiveDrag(status: .dragStatusCancelled)
-    }
-
-    private func forwardDragPointer(_ sender: NSDraggingInfo) {
-        guard let session else { return }
-        guard let coords = normalizedCoords(
-            windowPoint: sender.draggingLocation,
-            clampOutOfBounds: false
-        ) else { return }
-        session.sendPointerMotion(normalizedX: coords.x, normalizedY: coords.y, buttons: [])
-    }
-
-    /// Report the operator's release exactly once per gesture. AppKit
-    /// calls exit/drop *and* `draggingEnded`, so this has to be idempotent.
-    private func endActiveDrag(status: DragEnd.Status) {
-        guard dragActive else { return }
-        guard let bridge = session?.clipboardBridge else {
-            // Session went away mid-gesture; there's nobody to report to.
-            dragActive = false
-            activeDragId = nil
-            pendingDragEnd = nil
-            return
-        }
-        guard let dragId = activeDragId else {
-            // `beginDrag` hasn't answered yet — leave the gesture active and
-            // let its task deliver the end status. First release wins:
-            // AppKit follows a drop with `draggingEnded`, and the drop is
-            // the one that actually happened.
-            if pendingDragEnd == nil { pendingDragEnd = status }
-            return
-        }
-        dragActive = false
-        activeDragId = nil
-        pendingDragEnd = nil
-        Task { @MainActor in await bridge.endDrag(dragId, status: status) }
+        fileDragAccepted = false
     }
 
     private static func fileURLs(from sender: NSDraggingInfo) -> [URL] {

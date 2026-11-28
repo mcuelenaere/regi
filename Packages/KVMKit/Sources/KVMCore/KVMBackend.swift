@@ -123,7 +123,7 @@ public enum KVMPowerAction: String, Sendable, CaseIterable {
 }
 
 /// Which optional control-plane features a connected backend exposes.
-/// The App layer gates optional UI (the clipboard agent) on these so a PiKVM
+/// The App layer gates optional UI (clipboard sync) on these so a PiKVM
 /// session shows only what it can actually drive. JetKVM advertises
 /// everything; PiKVM v1 advertises nothing (core video + input only). Power
 /// control is gated separately on `availablePowerActions`, and the web

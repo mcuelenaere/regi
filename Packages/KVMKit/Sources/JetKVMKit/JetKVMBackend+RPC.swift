@@ -100,19 +100,6 @@ extension JetKVMBackend {
         try await rpcCall(method: "getUSBState")
     }
 
-    // MARK: - Clipboard agent
-    //
-    // Bootstrap call paired with the `clipboardAgentStateChanged` push
-    // notification handled in Session. Wire shape: a bare string —
-    // "absent" or "active".
-
-    public func getClipboardAgentState() async throws -> ClipboardAgentState {
-        let raw: String = try await rpcCall(method: "getClipboardAgentState")
-        let parsed = ClipboardAgentState(rawValue: raw) ?? .absent
-        log.info("[SESSION] getClipboardAgentState RPC returned '\(raw, privacy: .public)' → \(parsed.rawValue, privacy: .public)")
-        return parsed
-    }
-
     // MARK: - OS Services
     //
     // Firmware with OS Services (jetkvm/kvm#1769) relays these to a sender
@@ -165,13 +152,11 @@ extension JetKVMBackend {
         async let usb = fetch("getUSBState") { try await self.getUSBState() }
         async let atx = fetch("getATXState") { try await self.getATXState() }
         async let factor = fetch("getStreamQualityFactor") { try await self.getStreamQualityFactor() }
-        async let clipAgent = fetch("getClipboardAgentState") { try await self.getClipboardAgentState() }
 
         videoState = await video
         usbState = await usb
         atxState = await atx
         streamQualityFactor = await factor
-        if let c = await clipAgent { clipboardAgentState = c }
     }
 
     private func fetch<R>(_ method: String, _ call: () async throws -> R) async -> R? {

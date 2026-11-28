@@ -8,10 +8,7 @@ import OSLog
 private let log = Logger(subsystem: "app.regi.mac", category: "text-clipboard-sync")
 
 /// Text-only NSPasteboard ↔ remote clipboard synchronisation: VNC cut text, or
-/// a JetKVM's OS Services clipboard. One instance per KVM session window,
-/// alongside (and mutually exclusive at runtime with) the JetKVM agent-based
-/// `ClipboardSyncManager` — the session only exposes a `TextClipboard` while
-/// no agent is connected.
+/// a JetKVM's OS Services clipboard. One instance per KVM session window.
 ///
 /// Active iff the user toggle is on and the session exposes a live
 /// `TextClipboard`. Uses the shared `PasteboardMonitor` for local-change

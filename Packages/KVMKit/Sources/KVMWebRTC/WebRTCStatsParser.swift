@@ -182,7 +182,6 @@ struct WebRTCStatsParser {
     static func category(forDataChannel label: String) -> TrafficCategory {
         switch label {
         case "rpc": return .control
-        case "host_bridge": return .clipboardAndFiles
         case _ where label.hasPrefix("hidrpc"): return .input
         case _ where label.hasPrefix("guestfile_"): return .clipboardAndFiles
         default: return .other

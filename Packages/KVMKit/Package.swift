@@ -10,8 +10,6 @@ let package = Package(
         .library(name: "KVMKit", targets: ["KVMKit"]),
     ],
     dependencies: [
-        // Only JetKVMKit's clipboard uses protobuf (the agent.proto bindings).
-        .package(url: "https://github.com/apple/swift-protobuf.git", from: "1.41.0"),
         // Pinned to a specific milestone: WebRTC ships breaking API
         // changes between them. M150 was the first upstream release with
         // the macOS-slice headers fixed (stasel/WebRTC#145), which got us
@@ -36,19 +34,13 @@ let package = Package(
             ]
         ),
 
-        // JetKVM backend: WebRTC + HID-RPC + JSON-RPC control plane + clipboard.
+        // JetKVM backend: WebRTC + HID-RPC + JSON-RPC control plane + OS Services.
         .target(
             name: "JetKVMKit",
             dependencies: [
                 "KVMCore",
                 "KVMWebRTC",
-                .product(name: "SwiftProtobuf", package: "swift-protobuf"),
                 .product(name: "WebRTC", package: "WebRTC"),
-            ],
-            exclude: [
-                // Source-of-truth schema; regenerated bindings live in
-                // Clipboard/generated/. Not a Swift source.
-                "Clipboard/agent.proto",
             ]
         ),
 
