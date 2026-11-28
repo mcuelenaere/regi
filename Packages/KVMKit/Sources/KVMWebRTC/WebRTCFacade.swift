@@ -42,7 +42,6 @@ public actor WebRTCFacade {
     private var peerConnection: RTCPeerConnection?
     private var delegate: PeerDelegate?
     private var hidrpcReliable: RTCDataChannel?
-    private var hidrpcUnreliableOrdered: RTCDataChannel?
     private var hidDataChannelDelegate: HIDDataChannelDelegate?
     private var rpcChannel: RTCDataChannel?
     private var rpcDelegate: FrameChannelDelegate?
@@ -152,8 +151,8 @@ public actor WebRTCFacade {
         transceiverInit.direction = .recvOnly
         _ = pc.addTransceiver(of: .video, init: transceiverInit)
 
-        // Open the HID data channels BEFORE creating the offer so they
-        // appear in the offer SDP. The server's dispatch is keyed on
+        // Open the HID data channel BEFORE creating the offer so it
+        // appears in the offer SDP. The server's dispatch is keyed on
         // channel label (`webrtc.go:382-414`); reliability options
         // matter only for client-side transport behaviour.
         let hidDelegate = HIDDataChannelDelegate(
@@ -168,18 +167,6 @@ public actor WebRTCFacade {
         }
         reliable.delegate = hidDelegate
         self.hidrpcReliable = reliable
-
-        let unreliableConfig = RTCDataChannelConfiguration()
-        unreliableConfig.isOrdered = true
-        unreliableConfig.maxRetransmits = 0
-        guard let unreliable = pc.dataChannel(
-            forLabel: "hidrpc-unreliable-ordered",
-            configuration: unreliableConfig
-        ) else {
-            throw WebRTCFacadeError.dataChannelCreationFailed(label: "hidrpc-unreliable-ordered")
-        }
-        unreliable.delegate = hidDelegate
-        self.hidrpcUnreliableOrdered = unreliable
 
         // Open the `rpc` channel for JSON-RPC traffic. Ordered,
         // reliable, text-mode. Server-pushed events fire on this
@@ -386,7 +373,6 @@ public actor WebRTCFacade {
         peerConnection = nil
         delegate = nil
         hidrpcReliable = nil
-        hidrpcUnreliableOrdered = nil
         hidDataChannelDelegate = nil
         rpcChannel = nil
         rpcDelegate = nil
@@ -548,8 +534,7 @@ private final class PeerDelegate: NSObject, RTCPeerConnectionDelegate, @unchecke
     }
 }
 
-/// Delegate handling state for the HID data channels. Both `hidrpc` and
-/// `hidrpc-unreliable-ordered` share this instance.
+/// Delegate handling state for the `hidrpc` data channel.
 ///
 /// Critical: when `hidrpc` opens, this delegate sends the HID-RPC
 /// handshake (`[0x01, 0x01]`) **synchronously** inside the
@@ -566,11 +551,6 @@ private final class HIDDataChannelDelegate: NSObject, RTCDataChannelDelegate, @u
 
     func dataChannelDidChangeState(_ dataChannel: RTCDataChannel) {
         log.info("HID channel \(dataChannel.label, privacy: .public) state=\(stateLabel(dataChannel.readyState), privacy: .public)")
-        // Only the reliable channel triggers handshake + ready signal.
-        // The unreliable channel is just a transport — when it opens it's
-        // ready to ship pointer reports immediately, but the server still
-        // requires the reliable handshake before acting on anything.
-        guard dataChannel.label == "hidrpc" else { return }
         switch dataChannel.readyState {
         case .open:
             // Send handshake synchronously here. Don't `Task { ... }` it —
